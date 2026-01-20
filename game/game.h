@@ -11,7 +11,7 @@ class Game {
   public:
     Map map;
     std::vector<Player> players;
-    Game(int size, MapType mapType);
+    Game(int size, MapTypes::MapType mapType);
 };
 
 #endif

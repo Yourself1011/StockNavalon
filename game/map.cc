@@ -5,11 +5,11 @@
 #include <stdexcept>
 #include <vector>
 
-Map::Map(int size, MapType mapType) : size{size}, mapType{mapType} {
+Map::Map(int size, MapTypes::MapType mapType) : size{size}, mapType{mapType} {
     tiles = std::vector<Tile>();
     for (int x = 0; x < size; x++) {
         for (int y = 0; y < size; y++) {
-            tiles.push_back(Tile(x, y, FIELD));
+            tiles.push_back(Tile(x, y, TerrainTypes::FIELD));
         }
     }
 };

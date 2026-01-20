@@ -5,6 +5,9 @@
 
 class Tile;
 class Player;
+class Game;
+
+namespace Abilities {
 
 enum Ability {
     DASH,
@@ -51,28 +54,31 @@ enum Ability {
     AUTOFLOOD,
     DRENCH,
     AMPHIBIOUS,
-    NAVAL, // NOTE: changed from "WATER" to prevent duplicate enum
+    WATER,
     LAND
 };
+}
 
 class Unit {
   public:
+    Game *game;
     Player *player;
     Tile *tile;
     std::string type;
-    int idx;
     bool hidden; // is hidden from troop training menu in city (stuff that
                  // spawns outside a city)
     int cost, maxHealth, health, defence, movement, range, attack, kills;
     std::string id;
-    std::vector<Ability> abilities;
+    std::vector<Abilities::Ability> abilities;
     bool canAttack, canMove, canUseAbility;
 
-    Unit(Player *player, Tile *tile, std::string type, int idx, bool hidden,
+    Unit(Game *game, Player *player, Tile *tile, std::string type, bool hidden,
          int cost, int maxHealth, int defence, int movement, int range,
-         int attack, int kills, std::string id, std::vector<Ability> abilities);
+         int attack, int kills, std::string id,
+         std::vector<Abilities::Ability> abilities);
 
     void move(Tile *to);
+    std::vector<Tile> *validMoves();
 };
 
 #endif

@@ -3,6 +3,7 @@
 
 class Unit;
 
+namespace TerrainTypes {
 enum TerrainType {
     FIELD = 'F',
     FOREST = 'T',
@@ -10,13 +11,14 @@ enum TerrainType {
     WATER = 'W',
     OCEAN = 'O'
 };
+}
 
 class Tile {
   public:
     int x, y;
     Unit *unit;
-    TerrainType terrainType;
-    Tile(int x, int y, TerrainType terrainType);
+    TerrainTypes::TerrainType terrainType;
+    Tile(int x, int y, TerrainTypes::TerrainType terrainType);
 };
 
 #endif

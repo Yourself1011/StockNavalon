@@ -4,15 +4,17 @@
 #ifndef MAP_H
 #define MAP_H
 
+namespace MapTypes {
 enum MapType { DRYLANDS, LAKES, PANGEA, CONTINENTS, ARCHIPELAGO, WATERWORLD };
+}
 
 class Map {
-    int size;
-    MapType mapType;
+    MapTypes::MapType mapType;
     std::vector<Tile> tiles;
 
   public:
-    Map(int size, MapType mapType);
+    int size;
+    Map(int size, MapTypes::MapType mapType);
     Tile *at(int x, int y);
     void print();
 };
