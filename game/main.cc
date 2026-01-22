@@ -22,7 +22,15 @@ int main() {
         std::string cmd;
         std::cin >> cmd;
         if (cmd == "l") {
-            std::vector<Tile> *moves = warrior->validMoves();
+            int x, y;
+            std::cin >> x >> y;
+            Unit *unit = game.map.at(x, y)->unit;
+            if (unit == nullptr) {
+                std::cout << "No unit on that tile" << std::endl;
+                continue;
+            }
+
+            std::vector<Tile> *moves = unit->validMoves();
 
             for (Tile tile : *moves) {
                 std::cout << "(" << tile.x << "," << tile.y << ") ";
@@ -35,7 +43,26 @@ int main() {
             std::cin >> fromx >> fromy >> tox >> toy;
 
             Unit *unit = game.map.at(fromx, fromy)->unit;
-            // TODO: also check for move validity
+
+            if (unit == nullptr) {
+                std::cout << "No unit on that tile" << std::endl;
+                continue;
+            }
+
+            bool isValid = false;
+            std::vector<Tile> *moves = unit->validMoves();
+            for (Tile tile : *moves) {
+                if (tile.x == tox && tile.y == toy) {
+                    isValid = true;
+                    break;
+                }
+            }
+            delete moves;
+            if (!isValid) {
+                std::cout << "Invalid move" << std::endl;
+                continue;
+            }
+
             if (unit) {
                 unit->move(game.map.at(tox, toy));
             }

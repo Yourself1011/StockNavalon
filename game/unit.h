@@ -1,3 +1,4 @@
+#include <bitset>
 #include <string>
 #include <vector>
 #ifndef UNIT_H
@@ -55,7 +56,8 @@ enum Ability {
     DRENCH,
     AMPHIBIOUS,
     WATER,
-    LAND
+    LAND,
+    ABILITY_SIZE
 };
 }
 
@@ -69,13 +71,13 @@ class Unit {
                  // spawns outside a city)
     int cost, maxHealth, health, defence, movement, range, attack, kills;
     std::string id;
-    std::vector<Abilities::Ability> abilities;
+    std::bitset<Abilities::ABILITY_SIZE> abilities;
     bool canAttack, canMove, canUseAbility;
 
     Unit(Game *game, Player *player, Tile *tile, std::string type, bool hidden,
          int cost, int maxHealth, int defence, int movement, int range,
          int attack, int kills, std::string id,
-         std::vector<Abilities::Ability> abilities);
+         std::vector<Abilities::Ability> abilitiesVec);
 
     void move(Tile *to);
     std::vector<Tile> *validMoves();

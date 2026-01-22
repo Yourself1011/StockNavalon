@@ -3,6 +3,8 @@
 
 #include "tile.h"
 #include "units.h"
+#include "utils.h"
+#include <bitset>
 #include <string>
 #include <vector>
 
@@ -18,17 +20,16 @@ class Tech {
     std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
     // abilityUnlocks
     // taskUnlocks
-    std::vector<TerrainTypes::TerrainType> movementUnlocks;
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> movementUnlocks;
     Tech(int cost, std::vector<Tech> techUnlocks,
          std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)>
              unitUnlocks,
-         std::vector<TerrainTypes::TerrainType> movementUnlocks);
+         std::vector<TerrainTypes::TerrainType> movementUnlocksVec);
     Tech();
 };
 
 namespace Techs {
-const Tech basic =
-    Tech(0, {}, {*Units::warrior}, {TerrainTypes::FIELD, TerrainTypes::FOREST});
+extern const Tech basic;
 }; // namespace Techs
 
 #endif // !TECH_H

@@ -5,7 +5,15 @@
 #define MAP_H
 
 namespace MapTypes {
-enum MapType { DRYLANDS, LAKES, PANGEA, CONTINENTS, ARCHIPELAGO, WATERWORLD };
+enum MapType {
+    DRYLANDS,
+    LAKES,
+    PANGEA,
+    CONTINENTS,
+    ARCHIPELAGO,
+    WATERWORLD,
+    MAP_TYPE_SIZE
+};
 }
 
 class Map {

@@ -4,17 +4,21 @@
 #include "tech.h"
 #include "tile.h"
 #include "unit.h"
+#include "utils.h"
+#include <bitset>
+#include <iostream>
 #include <vector>
 
 Unit::Unit(Game *game, Player *player, Tile *tile, std::string type,
            bool hidden, int cost, int maxHealth, int defence, int movement,
            int range, int attack, int kills, std::string id,
-           std::vector<Abilities::Ability> abilities)
+           std::vector<Abilities::Ability> abilitiesVec)
     : game{game}, player{player}, tile{tile}, type{type}, hidden{hidden},
       cost{cost}, maxHealth{maxHealth}, health{maxHealth}, defence{defence},
       movement{movement}, range{range}, attack{attack}, kills{kills}, id{id},
-      abilities{abilities}, canAttack{false}, canMove{false},
-      canUseAbility{false} {};
+      abilities{}, canAttack{false}, canMove{false}, canUseAbility{false} {
+    vectorToBitset(&abilities, abilitiesVec);
+};
 
 void Unit::move(Tile *to) {
     tile->unit = nullptr;
@@ -23,29 +27,17 @@ void Unit::move(Tile *to) {
     canMove = false;
     canUseAbility = false;
 
-    bool hasDash = false;
-    for (Abilities::Ability ability : abilities) {
-        if (ability == Abilities::DASH) {
-            hasDash = true;
-        }
-    }
-    if (!hasDash) {
+    if (!abilities.test(Abilities::DASH)) {
         canAttack = false;
     }
 }
 
-void dfs(int dist, std::vector<TerrainTypes::TerrainType> unlockedTerrain,
+void dfs(int dist, std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> unlockedTerrain,
          Map map, Tile tile, std::vector<Tile> *visited, bool first = false) {
 
     // check that terrain is unlocked
-    bool terrainIsUnlocked = false;
-    for (TerrainTypes::TerrainType terrainType : unlockedTerrain) {
-        if (tile.terrainType == terrainType) {
-            terrainIsUnlocked = true;
-            break;
-        }
-    }
-    if (!terrainIsUnlocked) {
+    if (!unlockedTerrain.test(tile.terrainType)) {
+        std::cout << unlockedTerrain << ' ' << tile.terrainType << std::endl;
         return;
     }
 
@@ -63,10 +55,11 @@ void dfs(int dist, std::vector<TerrainTypes::TerrainType> unlockedTerrain,
 
     // movement points logic
     if (!first) {
-        if (tile.terrainType == TerrainTypes::FIELD) {
-            dist--;
-        } else if (tile.terrainType == TerrainTypes::FOREST) {
+        if (tile.terrainType == TerrainTypes::FOREST ||
+            tile.terrainType == TerrainTypes::MOUNTAIN) {
             dist = 0;
+        } else {
+            dist--;
         }
 
         if (dist <= 0) {
@@ -107,14 +100,16 @@ void dfs(int dist, std::vector<TerrainTypes::TerrainType> unlockedTerrain,
 
 std::vector<Tile> *Unit::validMoves() {
     std::vector<Tile> *moves = new std::vector<Tile>;
-    std::vector<TerrainTypes::TerrainType> terrains;
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrains;
 
     for (const Tech *tech : player->techs) {
-        terrains.insert(terrains.end(), tech->movementUnlocks.begin(),
-                        tech->movementUnlocks.end());
+        terrains |= tech->movementUnlocks;
     }
 
     dfs(movement, terrains, game->map, *tile, moves, true);
-    moves->erase(moves->begin());
+
+    if (!moves->empty()) {
+        moves->erase(moves->begin());
+    }
     return moves;
 }

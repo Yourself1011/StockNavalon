@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <vector>
 
-Map::Map(int size, MapTypes::MapType mapType) : size{size}, mapType{mapType} {
+Map::Map(int size, MapTypes::MapType mapType) : mapType{mapType}, size{size} {
     tiles = std::vector<Tile>();
     for (int x = 0; x < size; x++) {
         for (int y = 0; y < size; y++) {
@@ -39,7 +39,7 @@ void Map::print() {
 
         for (int x = 0; x < size; x++) {
             Tile *tile = at(x, y);
-            std::cout << (char)tile->terrainType;
+            std::cout << TerrainTypes::terrainChars.at(tile->terrainType);
             if (tile->unit) {
                 std::cout << tile->unit->id;
             } else {
@@ -50,7 +50,7 @@ void Map::print() {
         std::cout << std::endl << "   ";
 
         for (int x = 0; x < size; x++) {
-            Tile *tile = at(x, y);
+            // Tile *tile = at(x, y);
             // this will print improvement data eventually
             std::cout << "   ";
             std::cout << ' ';
