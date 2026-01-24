@@ -1,0 +1,15 @@
+14 0
+F F F F F F F W F F F F F F
+F F F F F F F W F F F F F F
+F F T F F F F W F F F F F F
+F F F F F F F W F F F F F F
+F F F F F F W O F F F F F F
+F F F F M W O O F F F F F F
+F F W W W O O O F F F F F F
+W W O O O O O O F F F F F F
+F F F F F F F F F F F F F F
+F F F F F F F F F F F F F F
+F F F F F F F F F F F F F F
+F F F F F F F F F F F F F F
+F F F F F F F F F F F F F F
+F F F F F F F F F F F F F F

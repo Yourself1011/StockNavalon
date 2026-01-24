@@ -6,17 +6,17 @@
 #include "unit.h"
 #include "utils.h"
 #include <bitset>
-#include <iostream>
 #include <vector>
 
 Unit::Unit(Game *game, Player *player, Tile *tile, std::string type,
-           bool hidden, int cost, int maxHealth, int defence, int movement,
-           int range, int attack, int kills, std::string id,
+           bool hidden, int cost, int maxHealth, double attack, int defence,
+           int movement, int range, int kills, std::string id,
            std::vector<Abilities::Ability> abilitiesVec)
     : game{game}, player{player}, tile{tile}, type{type}, hidden{hidden},
-      cost{cost}, maxHealth{maxHealth}, health{maxHealth}, defence{defence},
-      movement{movement}, range{range}, attack{attack}, kills{kills}, id{id},
-      abilities{}, canAttack{false}, canMove{false}, canUseAbility{false} {
+      cost{cost}, maxHealth{maxHealth}, health{(double)maxHealth},
+      attack{attack}, defence{defence}, movement{movement}, range{range},
+      kills{kills}, id{id}, abilities{}, canAttack{false}, canMove{false},
+      canUseAbility{false} {
     vectorToBitset(&abilities, abilitiesVec);
 };
 
@@ -32,13 +32,28 @@ void Unit::move(Tile *to) {
     }
 }
 
-void dfs(int dist, std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> unlockedTerrain,
-         Map map, Tile tile, std::vector<Tile> *visited, bool first = false) {
+void dfs(int dist,
+         std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> &unlockedTerrain,
+         Map &map, Tile &tile, Unit &unit, std::vector<Tile> *visited,
+         bool first = false) {
 
-    // check that terrain is unlocked
-    if (!unlockedTerrain.test(tile.terrainType)) {
-        std::cout << unlockedTerrain << ' ' << tile.terrainType << std::endl;
-        return;
+    // if the unit can move on water, allow it even if water movement is not
+    // unlocked yet
+    if (!(tile.terrainType == TerrainTypes::WATER &&
+          unit.abilities.test(Abilities::WATER))) {
+        // check that terrain is unlocked
+        if ((!unlockedTerrain.test(tile.terrainType)) ||
+            // only allow water units to go on water
+            ((tile.terrainType == TerrainTypes::WATER ||
+              tile.terrainType == TerrainTypes::OCEAN) &&
+             !unit.abilities.test(Abilities::WATER)) ||
+            // only allow land units to go on land
+            ((tile.terrainType == TerrainTypes::FIELD ||
+              tile.terrainType == TerrainTypes::FOREST ||
+              tile.terrainType == TerrainTypes::MOUNTAIN) &&
+             !unit.abilities.test(Abilities::LAND))) {
+            return;
+        }
     }
 
     // add to visited vector if we haven't visited before
@@ -69,31 +84,35 @@ void dfs(int dist, std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> unlockedTerrain,
 
     // go next iteration
     if (tile.x != 0 && tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y - 1),
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y - 1), unit,
             visited);
     }
     if (tile.x != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y), visited);
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y), unit,
+            visited);
     }
     if (tile.x != 0 && tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y + 1),
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y + 1), unit,
             visited);
     }
     if (tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y - 1), visited);
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y - 1), unit,
+            visited);
     }
     if (tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y + 1), visited);
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y + 1), unit,
+            visited);
     }
     if (tile.x != map.size - 1 && tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y - 1),
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y - 1), unit,
             visited);
     }
     if (tile.x != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y), visited);
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y), unit,
+            visited);
     }
     if (tile.x != map.size - 1 && tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y + 1),
+        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y + 1), unit,
             visited);
     }
 }
@@ -106,7 +125,7 @@ std::vector<Tile> *Unit::validMoves() {
         terrains |= tech->movementUnlocks;
     }
 
-    dfs(movement, terrains, game->map, *tile, moves, true);
+    dfs(movement, terrains, game->map, *tile, *this, moves, true);
 
     if (!moves->empty()) {
         moves->erase(moves->begin());

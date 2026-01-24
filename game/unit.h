@@ -69,14 +69,15 @@ class Unit {
     std::string type;
     bool hidden; // is hidden from troop training menu in city (stuff that
                  // spawns outside a city)
-    int cost, maxHealth, health, defence, movement, range, attack, kills;
+    int cost, maxHealth, defence, movement, range, kills;
+    double attack, health;
     std::string id;
     std::bitset<Abilities::ABILITY_SIZE> abilities;
     bool canAttack, canMove, canUseAbility;
 
     Unit(Game *game, Player *player, Tile *tile, std::string type, bool hidden,
-         int cost, int maxHealth, int defence, int movement, int range,
-         int attack, int kills, std::string id,
+         int cost, int maxHealth, double attack, int defence, int movement,
+         int range, int kills, std::string id,
          std::vector<Abilities::Ability> abilitiesVec);
 
     void move(Tile *to);

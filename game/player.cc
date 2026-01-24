@@ -2,5 +2,5 @@
 #include <vector>
 
 Player::Player(int idx)
-    : idx{idx}, techs{std::vector<const Tech *>()},
-      units{std::vector<Unit *>()} {}
+    : idx{idx}, units{std::vector<Unit *>()},
+      techs{std::vector<const Tech *>()} {}

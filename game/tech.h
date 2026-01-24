@@ -30,6 +30,37 @@ class Tech {
 
 namespace Techs {
 extern const Tech basic;
+
+extern const Tech riding;
+extern const Tech roads;
+extern const Tech trade;
+extern const Tech freeSpirit;
+extern const Tech chivlary;
+
+extern const Tech organization;
+extern const Tech farming;
+extern const Tech construction;
+extern const Tech strategy;
+extern const Tech diplomacy;
+
+extern const Tech climbing;
+extern const Tech meditation;
+extern const Tech philosophy;
+extern const Tech mining;
+extern const Tech smithery;
+
+extern const Tech fishing;
+extern const Tech ramming;
+extern const Tech aquatism;
+extern const Tech sailing;
+extern const Tech navagation;
+
+extern const Tech hunting;
+extern const Tech forestry;
+extern const Tech mathematics;
+extern const Tech archery;
+extern const Tech spiritualism;
+
 }; // namespace Techs
 
 #endif // !TECH_H

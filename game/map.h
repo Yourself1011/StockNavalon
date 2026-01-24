@@ -23,6 +23,7 @@ class Map {
   public:
     int size;
     Map(int size, MapTypes::MapType mapType);
+    Map(std::string fileName);
     Tile *at(int x, int y);
     void print();
 };

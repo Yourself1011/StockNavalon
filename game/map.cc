@@ -1,6 +1,7 @@
 #include "map.h"
 #include "tile.h"
 #include "unit.h"
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -13,6 +14,35 @@ Map::Map(int size, MapTypes::MapType mapType) : mapType{mapType}, size{size} {
         }
     }
 };
+
+Map::Map(std::string fileName) {
+    std::fstream file(fileName);
+    int mapInt;
+    file >> size >> mapInt;
+    mapType = static_cast<MapTypes::MapType>(mapInt);
+
+    tiles = std::vector<Tile>();
+    for (int x = 0; x < size; x++) {
+        for (int y = 0; y < size; y++) {
+            tiles.push_back(Tile(x, y, TerrainTypes::FIELD));
+        }
+    }
+
+    std::string tileString;
+    int i = 0;
+    while (file >> tileString) {
+        int idx = 0;
+        for (; idx < TerrainTypes::terrainChars.size(); idx++) {
+            if (TerrainTypes::terrainChars.at(idx) == tileString.at(0))
+                break;
+        }
+
+        at(i % size, i / size)->terrainType =
+            static_cast<TerrainTypes::TerrainType>(idx);
+
+        i++;
+    }
+}
 
 Tile *Map::at(int x, int y) {
     if (x >= size || y >= size) {

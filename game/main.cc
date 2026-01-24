@@ -7,8 +7,7 @@
 
 int main() {
     Game game = Game(14, MapTypes::DRYLANDS);
-    game.map.at(2, 2)->terrainType = TerrainTypes::FOREST;
-    game.map.at(4, 5)->terrainType = TerrainTypes::MOUNTAIN;
+    game.map = Map("map.txt");
     Unit *warrior = Units::rider(&game, &game.players.at(0), game.map.at(1, 1));
     warrior->canMove = true;
     warrior->canAttack = true;
