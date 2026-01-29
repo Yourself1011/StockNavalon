@@ -10,6 +10,14 @@
 
 class Unit;
 class Player;
+class Tech;
+
+struct TechArgs {
+    std::vector<Tech> techUnlocks;
+    std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
+    std::vector<TerrainTypes::TerrainType> movementUnlocksVec;
+    std::vector<TerrainTypes::TerrainType> defenceBonusesVec;
+};
 
 class Tech {
   public:
@@ -21,10 +29,8 @@ class Tech {
     // abilityUnlocks
     // taskUnlocks
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> movementUnlocks;
-    Tech(int cost, std::vector<Tech> techUnlocks,
-         std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)>
-             unitUnlocks,
-         std::vector<TerrainTypes::TerrainType> movementUnlocksVec);
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceBonuses;
+    Tech(int cost, TechArgs args);
     Tech();
 };
 

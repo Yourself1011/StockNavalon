@@ -6,6 +6,8 @@
 #include "unit.h"
 #include "utils.h"
 #include <bitset>
+#include <cmath>
+#include <iostream>
 #include <vector>
 
 Unit::Unit(Game *game, Player *player, Tile *tile, std::string type,
@@ -131,4 +133,78 @@ std::vector<Tile> *Unit::validMoves() {
         moves->erase(moves->begin());
     }
     return moves;
+}
+
+double Unit::getDefenceBonus() {
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceTerrains;
+
+    for (const Tech *tech : player->techs) {
+        defenceTerrains |= tech->defenceBonuses;
+    }
+
+    if (defenceTerrains.test(this->tile->terrainType)) {
+        return 1.5;
+    };
+
+    return 1;
+}
+
+void Unit::attackUnit(Unit *defender) {
+    double attackForce = this->attack * (this->health / this->maxHealth),
+           defenseForce = defender->defence *
+                          (defender->health / defender->maxHealth) *
+                          defender->getDefenceBonus(),
+           totalDamage = attackForce + defenseForce;
+    defender->health -= round((attackForce / totalDamage) * this->attack * 4.5);
+
+    if (defender->health > 0 && !defender->abilities.test(Abilities::STIFF) &&
+        abs(this->tile->x - defender->tile->x) <= defender->range &&
+        abs(this->tile->y - defender->tile->y) <= defender->range) {
+        this->health -=
+            round((defenseForce / totalDamage) * defender->defence * 4.5);
+    }
+
+    canUseAbility = false;
+    canAttack = false;
+    canMove = false;
+    if (defender->health <= 0) {
+        Tile *tile = defender->tile;
+        defender->die();
+        this->tile->unit = nullptr;
+        this->tile = tile;
+        this->tile->unit = this;
+        this->kills++;
+        if (abilities.test(Abilities::PERSIST)) {
+            canAttack = true;
+        }
+    } else if (this->health <= 0) {
+        this->die();
+    }
+
+    if (abilities.test(Abilities::ESCAPE)) {
+        canMove = true;
+    }
+}
+
+std::vector<Tile> *Unit::validAttacks() {
+    std::vector<Tile> *attacks = new std::vector<Tile>;
+
+    for (int x = std::max(tile->x - range, 0);
+         x <= std::min(tile->x + range, game->map.size - 1); x++) {
+        for (int y = std::max(tile->y - range, 0);
+             y <= std::min(tile->y + range, game->map.size - 1); y++) {
+
+            Tile *tile = game->map.at(x, y);
+            if (tile->unit && tile->unit->player != this->player) {
+                attacks->push_back(*tile);
+            }
+        }
+    }
+
+    return attacks;
+}
+
+void Unit::die() {
+    tile->unit = nullptr;
+    delete this;
 }

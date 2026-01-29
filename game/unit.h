@@ -82,6 +82,10 @@ class Unit {
 
     void move(Tile *to);
     std::vector<Tile> *validMoves();
+    void attackUnit(Unit *defender);
+    std::vector<Tile> *validAttacks();
+    double getDefenceBonus();
+    void die();
 };
 
 #endif

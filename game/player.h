@@ -8,7 +8,6 @@ class Tech;
 class Player {
   public:
     int idx;
-    std::vector<Unit *> units;
     std::vector<const Tech *> techs;
     Player(int idx);
 };

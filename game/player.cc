@@ -1,6 +1,4 @@
 #include "player.h"
 #include <vector>
 
-Player::Player(int idx)
-    : idx{idx}, units{std::vector<Unit *>()},
-      techs{std::vector<const Tech *>()} {}
+Player::Player(int idx) : idx{idx}, techs{std::vector<const Tech *>()} {}
