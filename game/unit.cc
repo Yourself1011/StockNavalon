@@ -5,6 +5,7 @@
 #include "tile.h"
 #include "unit.h"
 #include "utils.h"
+#include <algorithm>
 #include <bitset>
 #include <cmath>
 #include <iostream>
@@ -81,6 +82,18 @@ void dfs(int dist,
 
         if (dist <= 0) {
             return;
+        }
+
+        // zone of control
+        for (int x = std::max(tile.x - 1, 0);
+             x < std::min(tile.x + 2, map.size); x++) {
+            for (int y = std::max(tile.y - 1, 0);
+                 y < std::min(tile.y + 2, map.size); y++) {
+                Tile *zocTile = map.at(x, y);
+                if (zocTile->unit && zocTile->unit->player != unit.player) {
+                    return;
+                }
+            }
         }
     }
 
