@@ -7,7 +7,7 @@
 
 int main() {
     Game game = Game(14, MapTypes::DRYLANDS);
-    game.map = Map("map.txt");
+    game.map = Map("./src/game/map.txt");
     Unit *unit1 = Units::rider(&game, &game.players.at(0), game.map.at(1, 1));
     unit1->canMove = true;
     unit1->canAttack = true;
@@ -15,10 +15,10 @@ int main() {
 
     game.players.at(0).techs.push_back(&Techs::basic);
 
-    Unit *unit2 = Units::warrior(&game, &game.players.at(1), game.map.at(2, 1));
+    Unit *unit2 = Units::warrior(&game, &game.players.at(1), game.map.at(4, 1));
     unit2->canMove = true;
     unit2->canAttack = true;
-    game.map.at(2, 1)->unit = unit2;
+    game.map.at(4, 1)->unit = unit2;
 
     game.players.at(1).techs.push_back(&Techs::basic);
 
