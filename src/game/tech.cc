@@ -21,8 +21,8 @@ const Tech Techs::riding =
              .unitUnlocks{*Units::rider}});
 const Tech Techs::roads = Tech(2, {.techUnlocks{Techs::trade}});
 const Tech Techs::trade = Tech(3, {});
-const Tech Techs::freeSpirit = Tech(2, {.techUnlocks{Techs::chivlary}});
-const Tech Techs::chivlary = Tech(3, {.unitUnlocks{*Units::knight}});
+const Tech Techs::freeSpirit = Tech(2, {.techUnlocks{Techs::chivalry}});
+const Tech Techs::chivalry = Tech(3, {.unitUnlocks{*Units::knight}});
 
 const Tech Techs::organization =
     Tech(1, {.techUnlocks{Techs::farming, Techs::strategy}});
@@ -49,10 +49,10 @@ const Tech Techs::ramming =
     Tech(2, {.techUnlocks{Techs::aquatism}, .unitUnlocks{*Units::rammer}});
 const Tech Techs::aquatism =
     Tech(3, {.defenceBonusesVec{TerrainTypes::WATER, TerrainTypes::OCEAN}});
-const Tech Techs::sailing = Tech(2, {.techUnlocks{Techs::navagation},
+const Tech Techs::sailing = Tech(2, {.techUnlocks{Techs::navigation},
                                      .unitUnlocks{*Units::scout},
                                      .movementUnlocksVec{TerrainTypes::OCEAN}});
-const Tech Techs::navagation = Tech(3, {.unitUnlocks{Units::bomber}});
+const Tech Techs::navigation = Tech(3, {.unitUnlocks{Units::bomber}});
 
 const Tech Techs::hunting =
     Tech(1, {.techUnlocks{Techs::forestry, Techs::archery}});

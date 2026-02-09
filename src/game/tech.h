@@ -41,7 +41,7 @@ extern const Tech riding;
 extern const Tech roads;
 extern const Tech trade;
 extern const Tech freeSpirit;
-extern const Tech chivlary;
+extern const Tech chivalry;
 
 extern const Tech organization;
 extern const Tech farming;
@@ -59,7 +59,7 @@ extern const Tech fishing;
 extern const Tech ramming;
 extern const Tech aquatism;
 extern const Tech sailing;
-extern const Tech navagation;
+extern const Tech navigation;
 
 extern const Tech hunting;
 extern const Tech forestry;
