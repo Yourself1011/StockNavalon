@@ -8,30 +8,38 @@
 int main() {
     Game game = Game(14, MapTypes::DRYLANDS);
     game.map = Map("./src/game/map.txt");
-    Unit *unit1 = Units::rider(&game, &game.players.at(0), game.map.at(1, 1));
-    unit1->canMove = true;
-    unit1->canAttack = true;
-    game.map.at(1, 1)->unit = unit1;
+    game.players.push_back(Player(0));
+    game.players.push_back(Player(1));
 
-    game.players.at(0).techs.push_back(&Techs::basic);
+    Unit *unit1 = Units::rider(&game, &game.players.at(0), game.map.at(1, 1));
+    game.map.at(1, 1)->unit = unit1;
+    game.players.at(0).units.push_back(unit1);
 
     Unit *unit2 = Units::warrior(&game, &game.players.at(1), game.map.at(4, 1));
-    unit2->canMove = true;
-    unit2->canAttack = true;
     game.map.at(4, 1)->unit = unit2;
+    game.players.at(1).units.push_back(unit2);
 
-    game.players.at(1).techs.push_back(&Techs::basic);
+    game.currentPlayer().startTurn();
 
     while (true) {
+        std::cout << "Player " << game.currentPlayerIdx << "'s turn (Round "
+                  << game.turnNumber << ")" << std::endl;
         game.map.print();
         std::string cmd;
         std::cin >> cmd;
-        if (cmd == "l") {
+        if (cmd == "e") {
+            game.endTurnAndAdvance();
+        } else if (cmd == "l") {
             int x, y;
             std::cin >> x >> y;
             Unit *unit = game.map.at(x, y)->unit;
             if (unit == nullptr) {
                 std::cout << "No unit on that tile" << std::endl;
+                continue;
+            }
+
+            if (unit->player->idx != game.currentPlayerIdx) {
+                std::cout << "Not your unit" << std::endl;
                 continue;
             }
 
@@ -69,6 +77,11 @@ int main() {
                 continue;
             }
 
+            if (unit->player->idx != game.currentPlayerIdx) {
+                std::cout << "Not your unit" << std::endl;
+                continue;
+            }
+
             if (!unit->canMove) {
                 std::cout << "Unit out of moves this turn" << std::endl;
                 continue;
@@ -98,6 +111,11 @@ int main() {
 
             if (attacker == nullptr) {
                 std::cout << "No attacker on that tile" << std::endl;
+                continue;
+            }
+
+            if (attacker->player->idx != game.currentPlayerIdx) {
+                std::cout << "Not your unit" << std::endl;
                 continue;
             }
 
