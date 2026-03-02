@@ -65,19 +65,20 @@ class Unit {
   public:
     Game *game;
     Player *player;
-    Tile *tile;
+    Tile *tile, *home;
     std::string type;
-    bool hidden; // is hidden from troop training menu in city (stuff that
-                 // spawns outside a city)
-    int cost, maxHealth, defence, movement, range, kills;
+    bool trainable;
+    int cost, maxHealth, defence, movement, range, kills, promotionLevel;
     double attack, health;
     std::string id;
     std::bitset<Abilities::ABILITY_SIZE> abilities;
     bool canAttack, canMove, canUseAbility;
 
-    Unit(Game *game, Player *player, Tile *tile, std::string type, bool hidden,
-         int cost, int maxHealth, double attack, int defence, int movement,
-         int range, int kills, std::string id,
+    Unit *leader, *follower; // only for centipedes
+
+    Unit(Game *game, Player *player, Tile *tile, std::string type,
+         bool trainable, int cost, int maxHealth, double attack, int defence,
+         int movement, int range, int kills, std::string id,
          std::vector<Abilities::Ability> abilitiesVec);
 
     void move(Tile *to);

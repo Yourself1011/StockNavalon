@@ -8,18 +8,18 @@
 #include <algorithm>
 #include <bitset>
 #include <cmath>
-#include <iostream>
 #include <vector>
 
 Unit::Unit(Game *game, Player *player, Tile *tile, std::string type,
-           bool hidden, int cost, int maxHealth, double attack, int defence,
+           bool trainable, int cost, int maxHealth, double attack, int defence,
            int movement, int range, int kills, std::string id,
            std::vector<Abilities::Ability> abilitiesVec)
-    : game{game}, player{player}, tile{tile}, type{type}, hidden{hidden},
-      cost{cost}, maxHealth{maxHealth}, health{(double)maxHealth},
-      attack{attack}, defence{defence}, movement{movement}, range{range},
-      kills{kills}, id{id}, abilities{}, canAttack{false}, canMove{false},
-      canUseAbility{false} {
+    : game{game}, player{player}, tile{tile}, home{tile}, type{type},
+      trainable{trainable}, cost{cost}, maxHealth{maxHealth},
+      health{(double)maxHealth}, attack{attack}, defence{defence},
+      movement{movement}, range{range}, kills{kills}, id{id}, abilities{},
+      canAttack{false}, canMove{false}, canUseAbility{false},
+      promotionLevel{3} {
     vectorToBitset(&abilities, abilitiesVec);
 };
 

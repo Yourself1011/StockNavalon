@@ -7,7 +7,8 @@ class Unit;
 class Tech;
 class Player {
   public:
-    int idx;
+    int idx, stars;
+
     std::vector<const Tech *> techs;
     Player(int idx);
 };

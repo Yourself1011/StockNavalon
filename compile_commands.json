@@ -1,0 +1,65 @@
+[
+  {
+    "file": "src/game/main.cc",
+    "arguments": [
+      "c++",
+      "-I./src",
+      "-I./src/game",
+      "-I./src/game/improvements",
+      "-MMD",
+      "-MP",
+      "-g",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer",
+      "-D_GLIBCXX_DEBUG",
+      "-c",
+      "src/game/main.cc",
+      "-o",
+      "build/./src/game/main.cc.o"
+    ],
+    "directory": "/Users/danielzhang/projects/stockNavalon/bot",
+    "output": "build/./src/game/main.cc.o"
+  },
+  {
+    "file": "src/game/improvements/improvement.cc",
+    "arguments": [
+      "c++",
+      "-I./src",
+      "-I./src/game",
+      "-I./src/game/improvements",
+      "-MMD",
+      "-MP",
+      "-g",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer",
+      "-D_GLIBCXX_DEBUG",
+      "-c",
+      "src/game/improvements/improvement.cc",
+      "-o",
+      "build/./src/game/improvements/improvement.cc.o"
+    ],
+    "directory": "/Users/danielzhang/projects/stockNavalon/bot",
+    "output": "build/./src/game/improvements/improvement.cc.o"
+  },
+  {
+    "file": "src/game/map.cc",
+    "arguments": [
+      "c++",
+      "-I./src",
+      "-I./src/game",
+      "-I./src/game/improvements",
+      "-MMD",
+      "-MP",
+      "-g",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer",
+      "-D_GLIBCXX_DEBUG",
+      "-c",
+      "src/game/map.cc",
+      "-o",
+      "build/./src/game/map.cc.o"
+    ],
+    "directory": "/Users/danielzhang/projects/stockNavalon/bot",
+    "output": "build/./src/game/map.cc.o"
+  }
+]
