@@ -10,7 +10,7 @@ class Improvement {
         borderSize, upgradeCount;
     // there is also a rebellionBuffer field, unsure why this is useful
     bool connectedPlayerCapital, underRebellion;
-    Player *foundedTribe;
+    Player *foundedPlayer;
 
   public:
     Improvement(Player *player, Tile *tile, ImprovementData &improvementData);
