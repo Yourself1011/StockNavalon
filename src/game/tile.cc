@@ -4,7 +4,7 @@
 #include "tile.h"
 
 Tile::Tile(int x, int y, TerrainTypes::TerrainType terrainType)
-    : x{x}, y{y}, unit{nullptr}, terrainType{terrainType},
+    : x{x}, y{y}, city{nullptr}, unit{nullptr}, terrainType{terrainType},
       resource(ResourceTypes::NONE) {}
 
 void Tile::improve(Player *player, ImprovementData *improvementData) {
@@ -14,5 +14,8 @@ void Tile::improve(Player *player, ImprovementData *improvementData) {
     if (improvementData->isBuilding) {
         improvement = new Improvement(player, this, *improvementData);
         resource = ResourceTypes::NONE;
+    }
+    if (improvementData->population) {
+        city->improvement->addPopulation(improvementData->population);
     }
 }

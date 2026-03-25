@@ -34,7 +34,7 @@ class Tile {
     int x, y;
     Unit *unit;
     Player *owner;
-    Tile *capital;
+    Tile *city;
     TerrainTypes::TerrainType terrainType;
     ResourceTypes::ResourceType resource;
     Improvement *improvement;

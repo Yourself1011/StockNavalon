@@ -28,13 +28,13 @@ enum ImprovementType {
     MOUNTAINTEMPLE,
     MINE,
     FORGE,
-    MONUMENT1,
-    MONUMENT2,
-    MONUMENT3,
-    MONUMENT4,
-    MONUMENT5,
-    MONUMENT6,
-    MONUMENT7,
+    ALTEROFPEACE,
+    EMPERORSTOMB,
+    EYEOFGOD,
+    GATEOFPOWER,
+    GRANDBAZAAR,
+    PARKOFFORTUNE,
+    TOWEROFWISDOM,
     ENCHANTANIMAL,
     ENCHANTWHALE,
     SANCTUARY,
@@ -67,12 +67,14 @@ enum ImprovementType {
 
 struct ImprovementData {
     ImprovementTypes::ImprovementType type;
-    bool hidden, isBuilding, global;
-    int cost;
-    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> *terrainRequirements;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> *adjacencyRequirements;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> *adjacencyImprovements;
-    ResourceTypes::ResourceType resourceRequirement;
+    bool isBuilding = false, global = false, unique = false;
+    int cost = 0, population = 0, maxLevel = 0, growthRate = 0, growthScore = 0;
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> *terrainRequirements = nullptr;
+    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
+        *adjacencyRequirements = nullptr;
+    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
+        *adjacencyImprovements = nullptr;
+    ResourceTypes::ResourceType resourceRequirement = ResourceTypes::NONE;
 
     void (*createEffect)(Tile &tile);
 };
@@ -93,40 +95,40 @@ extern const ImprovementData lumberHut;
 extern const ImprovementData sawmill;
 extern const ImprovementData growForest;
 extern const ImprovementData harvestFruit;
-extern const ImprovementData whaleHunting;
+// extern const ImprovementData whaleHunting;
 extern const ImprovementData temple;
 extern const ImprovementData forestTemple;
 extern const ImprovementData waterTemple;
 extern const ImprovementData mountainTemple;
 extern const ImprovementData mine;
 extern const ImprovementData forge;
-extern const ImprovementData monument1;
-extern const ImprovementData monument2;
-extern const ImprovementData monument3;
-extern const ImprovementData monument4;
-extern const ImprovementData monument5;
-extern const ImprovementData monument6;
-extern const ImprovementData monument7;
-extern const ImprovementData enchantAnimal;
-extern const ImprovementData enchantWhale;
-extern const ImprovementData sanctuary;
-extern const ImprovementData outpost;
-extern const ImprovementData iceBank;
-extern const ImprovementData iceTemple;
-extern const ImprovementData polarisClimate;
-extern const ImprovementData fungi;
-extern const ImprovementData algae;
-extern const ImprovementData mycelium;
-extern const ImprovementData burnsSpores;
-extern const ImprovementData clathrus;
-extern const ImprovementData hiddenSanctuary;
-extern const ImprovementData harvestSpores;
-extern const ImprovementData nullBuilding;
-extern const ImprovementData cultivate;
-extern const ImprovementData starFishing;
+extern const ImprovementData alterOfPeace;
+extern const ImprovementData emperorsTomb;
+extern const ImprovementData eyeOfGod;
+extern const ImprovementData gateOfPower;
+extern const ImprovementData grandBazaar;
+extern const ImprovementData parkOfFortune;
+extern const ImprovementData towerOfWisdom;
+// extern const ImprovementData enchantAnimal;
+// extern const ImprovementData enchantWhale;
+// extern const ImprovementData sanctuary;
+// extern const ImprovementData outpost;
+// extern const ImprovementData iceBank;
+// extern const ImprovementData iceTemple;
+// extern const ImprovementData polarisClimate;
+// extern const ImprovementData fungi;
+// extern const ImprovementData algae;
+// extern const ImprovementData mycelium;
+// extern const ImprovementData burnsSpores;
+// extern const ImprovementData clathrus;
+// extern const ImprovementData hiddenSanctuary;
+// extern const ImprovementData harvestSpores;
+// extern const ImprovementData nullBuilding;
+// extern const ImprovementData cultivate;
+// extern const ImprovementData starFishing;
 extern const ImprovementData lighthouse;
 extern const ImprovementData bridge;
-extern const ImprovementData aquaFarm;
+// extern const ImprovementData aquaFarm;
 } // namespace Improvements
 
 #endif // !IMPROVEMENT_DATA_H
