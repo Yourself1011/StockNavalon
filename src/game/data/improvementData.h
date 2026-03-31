@@ -61,13 +61,15 @@ enum ImprovementType {
     FERTILIZE,
     LANDFILL,
     JETTY,
+    DESTROY,
     IMPROVEMENT_TYPE_SIZE
 };
 };
 
 struct ImprovementData {
     ImprovementTypes::ImprovementType type;
-    bool isBuilding = false, global = false, unique = false;
+    bool isBuilding = false, global = false, unique = false,
+         uniqueToCity = false;
     int cost = 0, population = 0, maxLevel = 0, growthRate = 0, growthScore = 0;
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> *terrainRequirements = nullptr;
     std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
@@ -125,10 +127,12 @@ extern const ImprovementData towerOfWisdom;
 // extern const ImprovementData harvestSpores;
 // extern const ImprovementData nullBuilding;
 // extern const ImprovementData cultivate;
-// extern const ImprovementData starFishing;
+extern const ImprovementData starFishing;
 extern const ImprovementData lighthouse;
 extern const ImprovementData bridge;
+extern const ImprovementData market;
 // extern const ImprovementData aquaFarm;
+extern const ImprovementData destroy;
 } // namespace Improvements
 
 #endif // !IMPROVEMENT_DATA_H

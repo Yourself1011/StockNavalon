@@ -24,6 +24,20 @@ const ImprovementData farm = {
     .terrainRequirements =
         vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>({TerrainTypes::FIELD}),
     .resourceRequirement = ResourceTypes::CROP};
+const ImprovementData windmill = {
+    .type = ImprovementTypes::WINDMILL,
+    .isBuilding = true,
+    .uniqueToCity = true,
+    .cost = 5,
+    .terrainRequirements =
+        vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>({TerrainTypes::FIELD}),
+    .adjacencyRequirements =
+        vectorToBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
+            {ImprovementTypes::FARM}),
+    .adjacencyImprovements =
+        vectorToBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
+            {ImprovementTypes::FARM}),
+};
 const ImprovementData fishing = {
     .type = ImprovementTypes::FISHING,
     .isBuilding = false,
@@ -77,10 +91,13 @@ const ImprovementData lumberHut = {
     .population = 1,
     .terrainRequirements = vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
         {TerrainTypes::FOREST})};
-const ImprovementData sawMill = {
+const ImprovementData sawmill = {
     .type = ImprovementTypes::SAWMILL,
     .isBuilding = true,
+    .uniqueToCity = true,
     .cost = 5,
+    .terrainRequirements = vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
+        {TerrainTypes::FIELD, TerrainTypes::FOREST}),
     .adjacencyRequirements =
         vectorToBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
             {ImprovementTypes::LUMBERHUT}),
@@ -149,6 +166,7 @@ const ImprovementData mine = {
 const ImprovementData forge = {
     .type = ImprovementTypes::FORGE,
     .isBuilding = true,
+    .uniqueToCity = true,
     .cost = 5,
     .terrainRequirements = vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
         {TerrainTypes::MOUNTAIN}),
@@ -194,6 +212,11 @@ const ImprovementData towerOfWisdom = {
     .unique = true,
     .terrainRequirements = vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
         {TerrainTypes::FIELD, TerrainTypes::WATER})};
+// TODO: make this work
+const ImprovementData starFishing = {
+    .type = ImprovementTypes::STARFISHING,
+    .resourceRequirement = ResourceTypes::STARFISH,
+    .createEffect = [](Tile &tile) { tile.resource = ResourceTypes::NONE; }};
 const ImprovementData lighthouse = {
     .type = ImprovementTypes::LIGHTHOUSE,
     .isBuilding = true,
@@ -206,4 +229,17 @@ const ImprovementData bridge = {
     .cost = 5,
     .terrainRequirements =
         vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>({TerrainTypes::WATER})};
+const ImprovementData market = {
+    .type = ImprovementTypes::MARKET,
+    .isBuilding = true,
+    .uniqueToCity = true,
+    .cost = 5,
+    .terrainRequirements =
+        vectorToBitset<TerrainTypes::TERRAIN_TYPE_SIZE>({TerrainTypes::FIELD})};
+// TODO: fix this error
+const ImprovementData destroy = {.type = ImprovementTypes::DESTROY,
+                                 .createEffect = [](Tile &tile) {
+                                     delete tile.improvement;
+                                     tile.improvement = nullptr;
+                                 }};
 } // namespace Improvements

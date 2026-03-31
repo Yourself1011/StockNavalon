@@ -1,6 +1,8 @@
 #ifndef TECH_H
 #define TECH_H
 
+#include "data/improvementData.h"
+#include "improvement.h"
 #include "tile.h"
 #include "units.h"
 #include "utils.h"
@@ -14,6 +16,7 @@ class Tech;
 
 struct TechArgs {
     std::vector<Tech> techUnlocks;
+    std::vector<ImprovementData> improvementUnlocks;
     std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
     std::vector<TerrainTypes::TerrainType> movementUnlocksVec;
     std::vector<TerrainTypes::TerrainType> defenceBonusesVec;
@@ -23,7 +26,7 @@ class Tech {
   public:
     int cost;
     std::vector<Tech> techUnlocks;
-    // improvementUnlocks
+    std::vector<ImprovementData> improvementUnlocks;
     // a vector of pointers to unit factory functions
     std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
     // abilityUnlocks
