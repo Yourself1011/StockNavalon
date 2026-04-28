@@ -6,3 +6,13 @@ Improvement::Improvement(Player *player, Tile *tile,
       baseScore{0}, borderSize{1}, upgradeCount{0}, createdTurn{0},
       connectedPlayerCapital{false}, underRebellion{false},
       foundedPlayer{player} {}
+
+void Improvement::addPopulation(int amt) {
+    if (currentPopulation + amt >= totalPopulation) {
+        currentPopulation = currentPopulation + amt - totalPopulation;
+        totalPopulation++;
+        level++;
+    } else {
+        currentPopulation += amt;
+    }
+}

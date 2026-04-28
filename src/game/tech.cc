@@ -3,80 +3,107 @@
 #include "tile.h"
 #include "units.h"
 #include "utils.h"
-
-Tech::Tech(int cost, TechArgs args)
-    : cost{cost}, techUnlocks{args.techUnlocks},
+Tech::Tech(TechTypes::TechTypes type, int cost, TechArgs args)
+    : type{type}, cost{cost}, techUnlocks{},
       improvementUnlocks{args.improvementUnlocks},
       unitUnlocks{args.unitUnlocks}, movementUnlocks{}, defenceBonuses{} {
     vectorToBitset(&movementUnlocks, args.movementUnlocksVec);
     vectorToBitset(&defenceBonuses, args.defenceBonusesVec);
+    vectorToBitset(&techUnlocks, args.techUnlocks);
 }
 
-namespace Techs {
+const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
 
-const Tech basic =
-    Tech(0, {.techUnlocks{riding, organization, climbing, fishing, hunting},
-             .unitUnlocks{*Units::warrior, *Units::giant, *Units::dagger},
-             .movementUnlocksVec{TerrainTypes::FIELD, TerrainTypes::FOREST}});
+    Tech(TechTypes::BASIC, 0,
+         {.techUnlocks{TechTypes::RIDING, TechTypes::ORGANIZATION,
+                       TechTypes::CLIMBING, TechTypes::FISHING,
+                       TechTypes::HUNTING},
+          .unitUnlocks{*Units::warrior, *Units::giant, *Units::dagger},
+          .movementUnlocksVec{TerrainTypes::FIELD, TerrainTypes::FOREST}}),
 
-const Tech riding = Tech(
-    1, {.techUnlocks{roads, Techs::freeSpirit}, .unitUnlocks{*Units::rider}});
-const Tech roads =
-    Tech(2, {.techUnlocks{Techs::trade},
-             .improvementUnlocks{Improvements::road, Improvements::bridge}});
-const Tech trade = Tech(3, {.improvementUnlocks{Improvements::market}});
-const Tech freeSpirit = Tech(2, {.techUnlocks{Techs::chivalry},
-                                 .improvementUnlocks{Improvements::temple}});
-const Tech chivalry = Tech(3, {.improvementUnlocks{Improvements::destroy},
-                               .unitUnlocks{*Units::knight}});
+    Tech(TechTypes::RIDING, 1,
+         {.techUnlocks{TechTypes::ROADS, TechTypes::FREESPIRIT},
+          .unitUnlocks{*Units::rider}}),
 
-const Tech organization = Tech(1, {.techUnlocks{farming, strategy}});
-const Tech farming = Tech(
-    2, {.techUnlocks{construction}, .improvementUnlocks{Improvements::farm}});
-const Tech construction = Tech(
-    3, {.improvementUnlocks{Improvements::windmill, Improvements::burnForest}});
-const Tech strategy =
-    Tech(2, {.techUnlocks{diplomacy}, .unitUnlocks{*Units::defender}});
-const Tech diplomacy = Tech(3, {.unitUnlocks{*Units::cloak}});
+    Tech(TechTypes::ROADS, 2,
+         {.techUnlocks{TechTypes::TRADE},
+          .improvementUnlocks{Improvements::road, Improvements::bridge}}),
 
-const Tech climbing = Tech(1, {.techUnlocks{meditation, mining},
-                               .movementUnlocksVec{TerrainTypes::MOUNTAIN},
-                               .defenceBonusesVec{TerrainTypes::MOUNTAIN}});
-const Tech meditation =
-    Tech(2, {.techUnlocks{philosophy},
-             .improvementUnlocks{Improvements::mountainTemple}});
-const Tech philosophy = Tech(3, {.unitUnlocks{*Units::mindBender}});
-const Tech mining =
-    Tech(2, {.techUnlocks{smithery}, .improvementUnlocks{Improvements::mine}});
-const Tech smithery = Tech(3, {.improvementUnlocks{Improvements::forge},
-                               .unitUnlocks{*Units::swordsman}});
+    Tech(TechTypes::TRADE, 3, {.improvementUnlocks{Improvements::market}}),
+    Tech(TechTypes::FREESPIRIT, 2,
+         {.techUnlocks{TechTypes::CHIVALRY},
+          .improvementUnlocks{Improvements::temple}}),
+    Tech(TechTypes::CHIVALRY, 3,
+         {.improvementUnlocks{Improvements::destroy},
+          .unitUnlocks{*Units::knight}}),
 
-const Tech fishing =
-    Tech(1, {.techUnlocks{ramming, sailing},
-             .improvementUnlocks{Improvements::fishing, Improvements::port},
-             .unitUnlocks{*Units::raft},
-             .movementUnlocksVec{TerrainTypes::WATER}});
-const Tech ramming =
-    Tech(2, {.techUnlocks{aquatism}, .unitUnlocks{*Units::rammer}});
-const Tech aquatism =
-    Tech(3, {.improvementUnlocks{Improvements::waterTemple},
-             .defenceBonusesVec{TerrainTypes::WATER, TerrainTypes::OCEAN}});
-const Tech sailing = Tech(2, {.techUnlocks{Techs::navigation},
-                              .unitUnlocks{*Units::scout},
-                              .movementUnlocksVec{TerrainTypes::OCEAN}});
-const Tech navigation = Tech(3, {.improvementUnlocks{Improvements::starFishing},
-                                 .unitUnlocks{Units::bomber}});
+    Tech(TechTypes::ORGANIZATION, 1,
+         {.techUnlocks{TechTypes::FARMING, TechTypes::STRATEGY}}),
+    Tech(TechTypes::FARMING, 2,
+         {.techUnlocks{TechTypes::CONSTRUCTION},
+          .improvementUnlocks{Improvements::farm}}),
 
-const Tech hunting = Tech(1, {.techUnlocks{forestry, archery},
-                              .improvementUnlocks{Improvements::hunting}});
-const Tech forestry = Tech(2, {.techUnlocks{mathematics},
-                               .improvementUnlocks{Improvements::lumberHut}});
-const Tech mathematics = Tech(3, {.improvementUnlocks{Improvements::sawmill},
-                                  .unitUnlocks{*Units::catapult}});
-const Tech archery = Tech(2, {.techUnlocks{spiritualism},
-                              .unitUnlocks{*Units::archer},
-                              .defenceBonusesVec{TerrainTypes::FOREST}});
-const Tech spiritualism =
-    Tech(3, {.improvementUnlocks{Improvements::growForest,
-                                 Improvements::forestTemple}});
-} // namespace Techs
+    Tech(TechTypes::CONSTRUCTION, 3,
+         {.improvementUnlocks{Improvements::windmill,
+                              Improvements::burnForest}}),
+
+    Tech(TechTypes::STRATEGY, 2,
+         {.techUnlocks{TechTypes::DIPLOMACY}, .unitUnlocks{*Units::defender}}),
+
+    Tech(TechTypes::DIPLOMACY, 3, {.unitUnlocks{*Units::cloak}}),
+
+    Tech(TechTypes::CLIMBING, 1,
+         {.techUnlocks{TechTypes::MEDITATION, TechTypes::MINING},
+          .movementUnlocksVec{TerrainTypes::MOUNTAIN},
+          .defenceBonusesVec{TerrainTypes::MOUNTAIN}}),
+
+    Tech(TechTypes::MEDITATION, 2,
+         {.techUnlocks{TechTypes::PHILOSOPHY},
+          .improvementUnlocks{Improvements::mountainTemple}}),
+
+    Tech(TechTypes::PHILOSOPHY, 3, {.unitUnlocks{*Units::mindBender}}),
+    Tech(TechTypes::MINING, 2,
+         {.techUnlocks{TechTypes::SMITHERY},
+          .improvementUnlocks{Improvements::mine}}),
+    Tech(TechTypes::SMITHERY, 3,
+         {.improvementUnlocks{Improvements::forge},
+          .unitUnlocks{*Units::swordsman}}),
+
+    Tech(TechTypes::FISHING, 1,
+         {.techUnlocks{TechTypes::RAMMING, TechTypes::SAILING},
+          .improvementUnlocks{Improvements::fishing, Improvements::port},
+          .unitUnlocks{*Units::raft},
+          .movementUnlocksVec{TerrainTypes::WATER}}),
+
+    Tech(TechTypes::RAMMING, 2,
+         {.techUnlocks{TechTypes::AQUATISM}, .unitUnlocks{*Units::rammer}}),
+
+    Tech(TechTypes::AQUATISM, 3,
+         {.improvementUnlocks{Improvements::waterTemple},
+          .defenceBonusesVec{TerrainTypes::WATER, TerrainTypes::OCEAN}}),
+    Tech(TechTypes::SAILING, 2,
+         {.techUnlocks{TechTypes::NAVIGATION},
+          .unitUnlocks{*Units::scout},
+          .movementUnlocksVec{TerrainTypes::OCEAN}}),
+
+    Tech(TechTypes::NAVIGATION, 3,
+         {.improvementUnlocks{Improvements::starFishing},
+          .unitUnlocks{Units::bomber}}),
+
+    Tech(TechTypes::HUNTING, 1,
+         {.techUnlocks{TechTypes::FORESTRY, TechTypes::ARCHERY},
+          .improvementUnlocks{Improvements::hunting}}),
+    Tech(TechTypes::FORESTRY, 2,
+         {.techUnlocks{TechTypes::MATHEMATICS},
+          .improvementUnlocks{Improvements::lumberHut}}),
+    Tech(TechTypes::MATHEMATICS, 3,
+         {.improvementUnlocks{Improvements::sawmill},
+          .unitUnlocks{*Units::catapult}}),
+    Tech(TechTypes::ARCHERY, 2,
+         {.techUnlocks{TechTypes::SPIRITUALISM},
+          .unitUnlocks{*Units::archer},
+          .defenceBonusesVec{TerrainTypes::FOREST}}),
+    Tech(TechTypes::SPIRITUALISM, 3,
+         {.improvementUnlocks{Improvements::growForest,
+                              Improvements::forestTemple}}),
+};

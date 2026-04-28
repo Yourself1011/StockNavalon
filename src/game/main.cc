@@ -22,13 +22,38 @@ int main() {
     game.currentPlayer().startTurn();
 
     while (true) {
+        Player &currentPlayer = game.currentPlayer();
         std::cout << "Player " << game.currentPlayerIdx << "'s turn (Round "
                   << game.turnNumber << ")" << std::endl;
+        std::cout << "Stars: " << currentPlayer.stars << std::endl;
         game.map.print();
         std::string cmd;
         std::cin >> cmd;
+
         if (cmd == "e") {
             game.endTurnAndAdvance();
+        } else if (cmd == "lt") {
+            std::cout << "Unlocked Techs:" << std::endl;
+            for (const Tech *tech :
+                 BitsetIndex{currentPlayer.techs, TechDataAccessor{}}) {
+                std::cout << tech->type << std::endl;
+            }
+            std::cout << std::endl << "Unlockable Techs:" << std::endl;
+            for (const Tech *tech :
+                 BitsetIndex{currentPlayer.buyableTechs, TechDataAccessor{}}) {
+                std::cout << tech->type << std::endl;
+            }
+        } else if (cmd == "t") {
+            int buy;
+            std::cin >> buy;
+            if (!currentPlayer.buyableTechs[buy]) {
+                std::cout << "Not buyable" << std::endl;
+            } else if (techData.at(buy).cost > currentPlayer.stars) {
+                std::cout << "Too expensive" << std::endl;
+            } else {
+                currentPlayer.buyTech((TechTypes::TechTypes)buy);
+                std::cout << "Success" << std::endl;
+            }
         } else if (cmd == "l") {
             int x, y;
             std::cin >> x >> y;

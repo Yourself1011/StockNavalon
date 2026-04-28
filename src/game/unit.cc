@@ -136,7 +136,7 @@ std::vector<Tile> *Unit::validMoves() {
     std::vector<Tile> *moves = new std::vector<Tile>;
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrains;
 
-    for (const Tech *tech : player->techs) {
+    for (const Tech *tech : BitsetIndex{player->techs, TechDataAccessor{}}) {
         terrains |= tech->movementUnlocks;
     }
 
@@ -151,7 +151,7 @@ std::vector<Tile> *Unit::validMoves() {
 double Unit::getDefenceBonus() {
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceTerrains;
 
-    for (const Tech *tech : player->techs) {
+    for (const Tech *tech : BitsetIndex{player->techs, TechDataAccessor{}}) {
         defenceTerrains |= tech->defenceBonuses;
     }
 

@@ -28,7 +28,7 @@ CPPFLAGS := $(INC_FLAGS) -MMD -MP
 .PHONY: dev
 dev: CXXFLAGS += -g -fsanitize=address,undefined \
            -fno-omit-frame-pointer \
-           -D_GLIBCXX_DEBUG
+           -D_GLIBCXX_DEBUG --std=c++20
 dev: LDFLAGS += -fsanitize=address,undefined
 dev: $(BUILD_DIR)/$(TARGET_EXEC)
 

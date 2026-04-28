@@ -15,7 +15,7 @@ void Tile::improve(Player *player, ImprovementData *improvementData) {
         improvement = new Improvement(player, this, *improvementData);
         resource = ResourceTypes::NONE;
     }
-    if (improvementData->population) {
+    if (improvementData->population && city) {
         city->improvement->addPopulation(improvementData->population);
     }
 }

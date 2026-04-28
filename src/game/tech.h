@@ -14,18 +14,50 @@ class Unit;
 class Player;
 class Tech;
 
+namespace TechTypes {
+enum TechTypes {
+    BASIC,
+    RIDING,
+    ROADS,
+    TRADE,
+    FREESPIRIT,
+    CHIVALRY,
+    ORGANIZATION,
+    FARMING,
+    CONSTRUCTION,
+    STRATEGY,
+    DIPLOMACY,
+    CLIMBING,
+    MEDITATION,
+    PHILOSOPHY,
+    MINING,
+    SMITHERY,
+    FISHING,
+    RAMMING,
+    AQUATISM,
+    SAILING,
+    NAVIGATION,
+    HUNTING,
+    FORESTRY,
+    MATHEMATICS,
+    ARCHERY,
+    SPIRITUALISM,
+    TECH_TYPE_SIZE
+};
+}
+
 struct TechArgs {
-    std::vector<Tech> techUnlocks;
+    std::vector<TechTypes::TechTypes> techUnlocks;
     std::vector<ImprovementData> improvementUnlocks;
     std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
     std::vector<TerrainTypes::TerrainType> movementUnlocksVec;
     std::vector<TerrainTypes::TerrainType> defenceBonusesVec;
 };
 
-class Tech {
-  public:
+struct Tech {
     int cost;
-    std::vector<Tech> techUnlocks;
+    TechTypes::TechTypes type;
+    std::bitset<TechTypes::TECH_TYPE_SIZE> techUnlocks;
     std::vector<ImprovementData> improvementUnlocks;
     // a vector of pointers to unit factory functions
     std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
@@ -33,43 +65,14 @@ class Tech {
     // taskUnlocks
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> movementUnlocks;
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceBonuses;
-    Tech(int cost, TechArgs args);
+    Tech(TechTypes::TechTypes type, int cost, TechArgs args);
     Tech();
 };
 
-namespace Techs {
-extern const Tech basic;
+extern const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData;
 
-extern const Tech riding;
-extern const Tech roads;
-extern const Tech trade;
-extern const Tech freeSpirit;
-extern const Tech chivalry;
-
-extern const Tech organization;
-extern const Tech farming;
-extern const Tech construction;
-extern const Tech strategy;
-extern const Tech diplomacy;
-
-extern const Tech climbing;
-extern const Tech meditation;
-extern const Tech philosophy;
-extern const Tech mining;
-extern const Tech smithery;
-
-extern const Tech fishing;
-extern const Tech ramming;
-extern const Tech aquatism;
-extern const Tech sailing;
-extern const Tech navigation;
-
-extern const Tech hunting;
-extern const Tech forestry;
-extern const Tech mathematics;
-extern const Tech archery;
-extern const Tech spiritualism;
-
-}; // namespace Techs
+struct TechDataAccessor {
+    const Tech *operator()(int pos) const { return &techData.at(pos); }
+};
 
 #endif // !TECH_H
