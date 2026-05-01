@@ -4,7 +4,7 @@
 #include "data/improvementData.h"
 #include "improvement.h"
 #include "tile.h"
-#include "units.h"
+#include "unitData.h"
 #include "utils.h"
 #include <bitset>
 #include <string>
@@ -49,7 +49,7 @@ enum TechTypes {
 struct TechArgs {
     std::vector<TechTypes::TechTypes> techUnlocks;
     std::vector<ImprovementData> improvementUnlocks;
-    std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
+    std::vector<UnitTypes::UnitType> unitUnlocks;
     std::vector<TerrainTypes::TerrainType> movementUnlocksVec;
     std::vector<TerrainTypes::TerrainType> defenceBonusesVec;
 };
@@ -60,7 +60,7 @@ struct Tech {
     std::bitset<TechTypes::TECH_TYPE_SIZE> techUnlocks;
     std::vector<ImprovementData> improvementUnlocks;
     // a vector of pointers to unit factory functions
-    std::vector<Unit *(*)(Game * game, Player *player, Tile *tile)> unitUnlocks;
+    std::bitset<UnitTypes::UNIT_TYPE_SIZE> unitUnlocks;
     // abilityUnlocks
     // taskUnlocks
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> movementUnlocks;

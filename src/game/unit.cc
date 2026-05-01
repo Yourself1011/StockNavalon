@@ -4,24 +4,20 @@
 #include "tech.h"
 #include "tile.h"
 #include "unit.h"
+#include "unitData.h"
 #include "utils.h"
 #include <algorithm>
 #include <bitset>
 #include <cmath>
 #include <vector>
 
-Unit::Unit(Game *game, Player *player, Tile *tile, std::string type,
-           bool trainable, int cost, int maxHealth, double attack, int defence,
-           int movement, int range, int kills, std::string id,
-           std::vector<Abilities::Ability> abilitiesVec)
-    : game{game}, player{player}, tile{tile}, home{tile}, type{type},
-      trainable{trainable}, cost{cost}, maxHealth{maxHealth},
-      health{(double)maxHealth}, attack{attack}, defence{defence},
-      movement{movement}, range{range}, kills{kills}, id{id}, abilities{},
-      canAttack{false}, canMove{false}, canUseAbility{false},
-      promotionLevel{3} {
-    vectorToBitset(&abilities, abilitiesVec);
-};
+Unit::Unit(Game *game, Player *player, Tile *tile, const UnitData &data)
+    : game{game}, player{player}, tile{tile}, home{tile}, type{data.type},
+      trainable{data.trainable}, cost{data.cost}, maxHealth{data.maxHealth},
+      health{(double)data.maxHealth}, attack{data.attack},
+      defence{data.defence}, movement{data.movement}, range{data.range},
+      kills{0}, id{data.id}, abilities{data.abilities}, canAttack{false},
+      canMove{false}, canUseAbility{false}, promotionLevel{3} {};
 
 void Unit::move(Tile *to) {
     tile->unit = nullptr;

@@ -1,15 +1,15 @@
 #include "data/improvementData.h"
 #include "tech.h"
 #include "tile.h"
-#include "units.h"
 #include "utils.h"
 Tech::Tech(TechTypes::TechTypes type, int cost, TechArgs args)
     : type{type}, cost{cost}, techUnlocks{},
-      improvementUnlocks{args.improvementUnlocks},
-      unitUnlocks{args.unitUnlocks}, movementUnlocks{}, defenceBonuses{} {
+      improvementUnlocks{args.improvementUnlocks}, unitUnlocks{},
+      movementUnlocks{}, defenceBonuses{} {
     vectorToBitset(&movementUnlocks, args.movementUnlocksVec);
     vectorToBitset(&defenceBonuses, args.defenceBonusesVec);
     vectorToBitset(&techUnlocks, args.techUnlocks);
+    vectorToBitset(&unitUnlocks, args.unitUnlocks);
 }
 
 const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
@@ -18,12 +18,12 @@ const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
          {.techUnlocks{TechTypes::RIDING, TechTypes::ORGANIZATION,
                        TechTypes::CLIMBING, TechTypes::FISHING,
                        TechTypes::HUNTING},
-          .unitUnlocks{*Units::warrior, *Units::giant, *Units::dagger},
+          .unitUnlocks{UnitTypes::WARRIOR, UnitTypes::GIANT, UnitTypes::DAGGER},
           .movementUnlocksVec{TerrainTypes::FIELD, TerrainTypes::FOREST}}),
 
     Tech(TechTypes::RIDING, 1,
          {.techUnlocks{TechTypes::ROADS, TechTypes::FREESPIRIT},
-          .unitUnlocks{*Units::rider}}),
+          .unitUnlocks{UnitTypes::RIDER}}),
 
     Tech(TechTypes::ROADS, 2,
          {.techUnlocks{TechTypes::TRADE},
@@ -35,7 +35,7 @@ const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
           .improvementUnlocks{Improvements::temple}}),
     Tech(TechTypes::CHIVALRY, 3,
          {.improvementUnlocks{Improvements::destroy},
-          .unitUnlocks{*Units::knight}}),
+          .unitUnlocks{UnitTypes::KNIGHT}}),
 
     Tech(TechTypes::ORGANIZATION, 1,
          {.techUnlocks{TechTypes::FARMING, TechTypes::STRATEGY}}),
@@ -48,9 +48,10 @@ const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
                               Improvements::burnForest}}),
 
     Tech(TechTypes::STRATEGY, 2,
-         {.techUnlocks{TechTypes::DIPLOMACY}, .unitUnlocks{*Units::defender}}),
+         {.techUnlocks{TechTypes::DIPLOMACY},
+          .unitUnlocks{UnitTypes::DEFENDER}}),
 
-    Tech(TechTypes::DIPLOMACY, 3, {.unitUnlocks{*Units::cloak}}),
+    Tech(TechTypes::DIPLOMACY, 3, {.unitUnlocks{UnitTypes::CLOAK}}),
 
     Tech(TechTypes::CLIMBING, 1,
          {.techUnlocks{TechTypes::MEDITATION, TechTypes::MINING},
@@ -61,34 +62,34 @@ const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
          {.techUnlocks{TechTypes::PHILOSOPHY},
           .improvementUnlocks{Improvements::mountainTemple}}),
 
-    Tech(TechTypes::PHILOSOPHY, 3, {.unitUnlocks{*Units::mindBender}}),
+    Tech(TechTypes::PHILOSOPHY, 3, {.unitUnlocks{UnitTypes::MINDBENDER}}),
     Tech(TechTypes::MINING, 2,
          {.techUnlocks{TechTypes::SMITHERY},
           .improvementUnlocks{Improvements::mine}}),
     Tech(TechTypes::SMITHERY, 3,
          {.improvementUnlocks{Improvements::forge},
-          .unitUnlocks{*Units::swordsman}}),
+          .unitUnlocks{UnitTypes::SWORDSMAN}}),
 
     Tech(TechTypes::FISHING, 1,
          {.techUnlocks{TechTypes::RAMMING, TechTypes::SAILING},
           .improvementUnlocks{Improvements::fishing, Improvements::port},
-          .unitUnlocks{*Units::raft},
+          .unitUnlocks{UnitTypes::RAFT},
           .movementUnlocksVec{TerrainTypes::WATER}}),
 
     Tech(TechTypes::RAMMING, 2,
-         {.techUnlocks{TechTypes::AQUATISM}, .unitUnlocks{*Units::rammer}}),
+         {.techUnlocks{TechTypes::AQUATISM}, .unitUnlocks{UnitTypes::RAMMER}}),
 
     Tech(TechTypes::AQUATISM, 3,
          {.improvementUnlocks{Improvements::waterTemple},
           .defenceBonusesVec{TerrainTypes::WATER, TerrainTypes::OCEAN}}),
     Tech(TechTypes::SAILING, 2,
          {.techUnlocks{TechTypes::NAVIGATION},
-          .unitUnlocks{*Units::scout},
+          .unitUnlocks{UnitTypes::SCOUT},
           .movementUnlocksVec{TerrainTypes::OCEAN}}),
 
     Tech(TechTypes::NAVIGATION, 3,
          {.improvementUnlocks{Improvements::starFishing},
-          .unitUnlocks{Units::bomber}}),
+          .unitUnlocks{UnitTypes::BOMBER}}),
 
     Tech(TechTypes::HUNTING, 1,
          {.techUnlocks{TechTypes::FORESTRY, TechTypes::ARCHERY},
@@ -98,10 +99,10 @@ const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData = {
           .improvementUnlocks{Improvements::lumberHut}}),
     Tech(TechTypes::MATHEMATICS, 3,
          {.improvementUnlocks{Improvements::sawmill},
-          .unitUnlocks{*Units::catapult}}),
+          .unitUnlocks{UnitTypes::CATAPULT}}),
     Tech(TechTypes::ARCHERY, 2,
          {.techUnlocks{TechTypes::SPIRITUALISM},
-          .unitUnlocks{*Units::archer},
+          .unitUnlocks{UnitTypes::ARCHER},
           .defenceBonusesVec{TerrainTypes::FOREST}}),
     Tech(TechTypes::SPIRITUALISM, 3,
          {.improvementUnlocks{Improvements::growForest,

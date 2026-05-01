@@ -1,7 +1,7 @@
 #include "game.h"
 #include "player.h"
 #include "tech.h"
-#include "units.h"
+#include "unit.h"
 #include <iostream>
 #include <vector>
 
@@ -11,11 +11,13 @@ int main() {
     game.players.push_back(Player(0));
     game.players.push_back(Player(1));
 
-    Unit *unit1 = Units::rider(&game, &game.players.at(0), game.map.at(1, 1));
+    Unit *unit1 =
+        new Unit(&game, &game.players.at(0), game.map.at(1, 1), Units::rider);
     game.map.at(1, 1)->unit = unit1;
     game.players.at(0).units.push_back(unit1);
 
-    Unit *unit2 = Units::warrior(&game, &game.players.at(1), game.map.at(4, 1));
+    Unit *unit2 =
+        new Unit(&game, &game.players.at(1), game.map.at(4, 1), Units::warrior);
     game.map.at(4, 1)->unit = unit2;
     game.players.at(1).units.push_back(unit2);
 

@@ -1,3 +1,4 @@
+#include "data/unitData.h"
 #include <bitset>
 #include <string>
 #include <vector>
@@ -8,65 +9,12 @@ class Tile;
 class Player;
 class Game;
 
-namespace Abilities {
-
-enum Ability {
-    DASH,
-    ESCAPE,
-    SCOUT,
-    SNEAK,
-    HIDE,
-    BUILD,
-    PERSIST,
-    CONVERT,
-    HEAL,
-    SWIM,
-    CARRY,
-    GROW,
-    FLY,
-    SPLASH,
-    DECAY,
-    NAVIGATE,
-    CRUSH,
-    FREEZE,
-    FREEZEAREA,
-    AUTOFREEZE,
-    SKATE,
-    FORTIFY,
-    CREEP,
-    BOOST,
-    INDEPENDENT,
-    POISON,
-    EAT,
-    UNIQUE,
-    EXPLODE,
-    SURPRISE,
-    AGENT,
-    INFILTRATE,
-    DETECT,
-    INTERCEPT,
-    STIFF,
-    PROTECT,
-    STOMP,
-    AUTOHEAL,
-    STATIC,
-    DIVE,
-    TENTACLES,
-    AUTOFLOOD,
-    DRENCH,
-    AMPHIBIOUS,
-    WATER,
-    LAND,
-    ABILITY_SIZE
-};
-}
-
 class Unit {
   public:
     Game *game;
     Player *player;
     Tile *tile, *home;
-    std::string type;
+    UnitTypes::UnitType type;
     bool trainable;
     int cost, maxHealth, defence, movement, range, kills, promotionLevel;
     double attack, health;
@@ -76,10 +24,7 @@ class Unit {
 
     Unit *leader, *follower; // only for centipedes
 
-    Unit(Game *game, Player *player, Tile *tile, std::string type,
-         bool trainable, int cost, int maxHealth, double attack, int defence,
-         int movement, int range, int kills, std::string id,
-         std::vector<Abilities::Ability> abilitiesVec);
+    Unit(Game *game, Player *player, Tile *tile, const UnitData &data);
 
     void move(Tile *to);
     std::vector<Tile> *validMoves();
