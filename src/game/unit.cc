@@ -1,23 +1,23 @@
+#include "unit.h"
 #include "game.h"
 #include "map.h"
 #include "player.h"
 #include "tech.h"
 #include "tile.h"
-#include "unit.h"
-#include "unitData.h"
 #include "utils.h"
 #include <algorithm>
 #include <bitset>
 #include <cmath>
+#include <cstdlib>
+#include <utility>
 #include <vector>
 
 Unit::Unit(Game *game, Player *player, Tile *tile, const UnitData &data)
     : game{game}, player{player}, tile{tile}, home{tile}, type{data.type},
       trainable{data.trainable}, cost{data.cost}, maxHealth{data.maxHealth},
-      health{(double)data.maxHealth}, attack{data.attack},
       defence{data.defence}, movement{data.movement}, range{data.range},
-      kills{0}, id{data.id}, abilities{data.abilities}, canAttack{false},
-      canMove{false}, canUseAbility{false}, promotionLevel{3} {};
+      attack{data.attack}, health{static_cast<double>(data.maxHealth)},
+      id{data.id}, abilities{data.abilities} {}
 
 void Unit::move(Tile *to) {
     tile->unit = nullptr;
@@ -31,181 +31,169 @@ void Unit::move(Tile *to) {
     }
 }
 
-void dfs(int dist,
-         std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> &unlockedTerrain,
-         Map &map, Tile &tile, Unit &unit, std::vector<Tile> *visited,
-         bool first = false) {
+namespace {
 
+std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE>
+unlockedMovement(const Player &player) {
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrains;
+    for (const Tech *tech : BitsetIndex{player.techs, TechDataAccessor{}}) {
+        terrains |= tech->movementUnlocks;
+    }
+    return terrains;
+}
+
+bool isWater(TerrainTypes::TerrainType terrain) {
+    return terrain == TerrainTypes::WATER || terrain == TerrainTypes::OCEAN;
+}
+
+bool canEnter(const Unit &unit, const Tile &tile,
+              const std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> &unlocked) {
     // if the unit can move on water, allow it even if water movement is not
     // unlocked yet
-    if (!(tile.terrainType == TerrainTypes::WATER &&
-          unit.abilities.test(Abilities::WATER))) {
-        // check that terrain is unlocked
-        if ((!unlockedTerrain.test(tile.terrainType)) ||
-            // only allow water units to go on water
-            ((tile.terrainType == TerrainTypes::WATER ||
-              tile.terrainType == TerrainTypes::OCEAN) &&
-             !unit.abilities.test(Abilities::WATER)) ||
-            // only allow land units to go on land
-            ((tile.terrainType == TerrainTypes::FIELD ||
-              tile.terrainType == TerrainTypes::FOREST ||
-              tile.terrainType == TerrainTypes::MOUNTAIN) &&
-             !unit.abilities.test(Abilities::LAND))) {
-            return;
+    if (tile.terrainType == TerrainTypes::WATER &&
+        unit.abilities.test(Abilities::WATER)) {
+        return true;
+    }
+    if (!unlocked.test(tile.terrainType)) {
+        return false;
+    }
+    // water units stay on water, land units stay on land
+    return isWater(tile.terrainType) ? unit.abilities.test(Abilities::WATER)
+                                     : unit.abilities.test(Abilities::LAND);
+}
+
+bool inEnemyZoneOfControl(Map &map, const Tile &tile, const Player *player) {
+    for (int x = tile.x - 1; x <= tile.x + 1; x++) {
+        for (int y = tile.y - 1; y <= tile.y + 1; y++) {
+            if (!map.inBounds(x, y)) {
+                continue;
+            }
+            const Unit *other = map.at(x, y)->unit;
+            if (other && other->player != player) {
+                return true;
+            }
         }
     }
+    return false;
+}
 
-    // add to visited vector if we haven't visited before
-    bool found = false;
-    for (Tile visitedTile : *visited) {
-        if (tile.x == visitedTile.x && tile.y == visitedTile.y) {
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
-        visited->push_back(tile);
-    }
+} // namespace
 
-    // movement points logic
-    if (!first) {
-        if (tile.terrainType == TerrainTypes::FOREST ||
-            tile.terrainType == TerrainTypes::MOUNTAIN) {
-            dist = 0;
-        } else {
-            dist--;
-        }
+std::vector<Tile *> Unit::validMoves() const {
+    Map &map = game->map;
+    const auto unlocked = unlockedMovement(*player);
 
-        if (dist <= 0) {
-            return;
-        }
+    // most movement left when leaving each tile, -1 if never left
+    std::vector<int> bestRemaining(map.size * map.size, -1);
+    std::vector<bool> reachable(map.size * map.size, false);
+    std::vector<std::pair<Tile *, int>> frontier{{tile, movement}};
+    bestRemaining[tile->x * map.size + tile->y] = movement;
 
-        // zone of control
-        for (int x = std::max(tile.x - 1, 0);
-             x < std::min(tile.x + 2, map.size); x++) {
-            for (int y = std::max(tile.y - 1, 0);
-                 y < std::min(tile.y + 2, map.size); y++) {
-                Tile *zocTile = map.at(x, y);
-                if (zocTile->unit && zocTile->unit->player != unit.player) {
-                    return;
+    while (!frontier.empty()) {
+        auto [from, remaining] = frontier.back();
+        frontier.pop_back();
+
+        for (int x = from->x - 1; x <= from->x + 1; x++) {
+            for (int y = from->y - 1; y <= from->y + 1; y++) {
+                if (!map.inBounds(x, y)) {
+                    continue;
                 }
+                Tile *to = map.at(x, y);
+                if (!canEnter(*this, *to, unlocked)) {
+                    continue;
+                }
+                int idx = x * map.size + y;
+                reachable[idx] = true;
+
+                // forests and mountains end movement
+                int left = (to->terrainType == TerrainTypes::FOREST ||
+                            to->terrainType == TerrainTypes::MOUNTAIN)
+                               ? 0
+                               : remaining - 1;
+                if (left <= 0 || left <= bestRemaining[idx] ||
+                    inEnemyZoneOfControl(map, *to, player)) {
+                    continue;
+                }
+                bestRemaining[idx] = left;
+                frontier.emplace_back(to, left);
             }
         }
     }
 
-    // go next iteration
-    if (tile.x != 0 && tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y - 1), unit,
-            visited);
-    }
-    if (tile.x != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y), unit,
-            visited);
-    }
-    if (tile.x != 0 && tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x - 1, tile.y + 1), unit,
-            visited);
-    }
-    if (tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y - 1), unit,
-            visited);
-    }
-    if (tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x, tile.y + 1), unit,
-            visited);
-    }
-    if (tile.x != map.size - 1 && tile.y != 0) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y - 1), unit,
-            visited);
-    }
-    if (tile.x != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y), unit,
-            visited);
-    }
-    if (tile.x != map.size - 1 && tile.y != map.size - 1) {
-        dfs(dist, unlockedTerrain, map, *map.at(tile.x + 1, tile.y + 1), unit,
-            visited);
-    }
-}
-
-std::vector<Tile> *Unit::validMoves() {
-    std::vector<Tile> *moves = new std::vector<Tile>;
-    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrains;
-
-    for (const Tech *tech : BitsetIndex{player->techs, TechDataAccessor{}}) {
-        terrains |= tech->movementUnlocks;
-    }
-
-    dfs(movement, terrains, game->map, *tile, *this, moves, true);
-
-    if (!moves->empty()) {
-        moves->erase(moves->begin());
+    std::vector<Tile *> moves;
+    for (int x = 0; x < map.size; x++) {
+        for (int y = 0; y < map.size; y++) {
+            Tile *to = map.at(x, y);
+            // units may pass through friendly units but not stop on them
+            if (reachable[x * map.size + y] && to->unit == nullptr) {
+                moves.push_back(to);
+            }
+        }
     }
     return moves;
 }
 
-double Unit::getDefenceBonus() {
+double Unit::getDefenceBonus() const {
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceTerrains;
 
     for (const Tech *tech : BitsetIndex{player->techs, TechDataAccessor{}}) {
         defenceTerrains |= tech->defenceBonuses;
     }
 
-    if (defenceTerrains.test(this->tile->terrainType)) {
+    if (defenceTerrains.test(tile->terrainType)) {
         return 1.5;
-    };
+    }
 
     return 1;
 }
 
 void Unit::attackUnit(Unit *defender) {
-    double attackForce = this->attack * (this->health / this->maxHealth),
+    double attackForce = attack * (health / maxHealth),
            defenseForce = defender->defence *
                           (defender->health / defender->maxHealth) *
                           defender->getDefenceBonus(),
            totalDamage = attackForce + defenseForce;
-    defender->health -= round((attackForce / totalDamage) * this->attack * 4.5);
+    defender->health -= std::round((attackForce / totalDamage) * attack * 4.5);
 
     if (defender->health > 0 && !defender->abilities.test(Abilities::STIFF) &&
-        abs(this->tile->x - defender->tile->x) <= defender->range &&
-        abs(this->tile->y - defender->tile->y) <= defender->range) {
-        this->health -=
-            round((defenseForce / totalDamage) * defender->defence * 4.5);
+        std::abs(tile->x - defender->tile->x) <= defender->range &&
+        std::abs(tile->y - defender->tile->y) <= defender->range) {
+        health -= std::round((defenseForce / totalDamage) * defender->defence *
+                             4.5);
     }
 
     canUseAbility = false;
     canAttack = false;
-    canMove = false;
+    canMove = abilities.test(Abilities::ESCAPE);
+
     if (defender->health <= 0) {
-        Tile *tile = defender->tile;
+        Tile *defenderTile = defender->tile;
         defender->die();
-        this->tile->unit = nullptr;
-        this->tile = tile;
-        this->tile->unit = this;
-        this->kills++;
+        // only melee units move into the tile of a unit they kill
+        if (range == 1) {
+            move(defenderTile);
+            canMove = abilities.test(Abilities::ESCAPE);
+        }
+        kills++;
         if (abilities.test(Abilities::PERSIST)) {
             canAttack = true;
         }
-    } else if (this->health <= 0) {
-        this->die();
-    }
-
-    if (abilities.test(Abilities::ESCAPE)) {
-        canMove = true;
+    } else if (health <= 0) {
+        die();
     }
 }
 
-std::vector<Tile> *Unit::validAttacks() {
-    std::vector<Tile> *attacks = new std::vector<Tile>;
+std::vector<Tile *> Unit::validAttacks() const {
+    std::vector<Tile *> attacks;
+    Map &map = game->map;
 
     for (int x = std::max(tile->x - range, 0);
-         x <= std::min(tile->x + range, game->map.size - 1); x++) {
+         x <= std::min(tile->x + range, map.size - 1); x++) {
         for (int y = std::max(tile->y - range, 0);
-             y <= std::min(tile->y + range, game->map.size - 1); y++) {
-
-            Tile *tile = game->map.at(x, y);
-            if (tile->unit && tile->unit->player != this->player) {
-                attacks->push_back(*tile);
+             y <= std::min(tile->y + range, map.size - 1); y++) {
+            Tile *target = map.at(x, y);
+            if (target->unit && target->unit->player != player) {
+                attacks.push_back(target);
             }
         }
     }
@@ -215,5 +203,5 @@ std::vector<Tile> *Unit::validAttacks() {
 
 void Unit::die() {
     tile->unit = nullptr;
-    delete this;
+    player->removeUnit(this);
 }

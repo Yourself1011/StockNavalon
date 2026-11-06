@@ -1,18 +1,11 @@
-#ifndef TECH_H
-#define TECH_H
+#pragma once
 
 #include "data/improvementData.h"
-#include "improvement.h"
+#include "data/unitData.h"
 #include "tile.h"
-#include "unitData.h"
-#include "utils.h"
+#include <array>
 #include <bitset>
-#include <string>
 #include <vector>
-
-class Unit;
-class Player;
-class Tech;
 
 namespace TechTypes {
 enum TechTypes {
@@ -48,31 +41,27 @@ enum TechTypes {
 
 struct TechArgs {
     std::vector<TechTypes::TechTypes> techUnlocks;
-    std::vector<ImprovementData> improvementUnlocks;
+    std::vector<ImprovementTypes::ImprovementType> improvementUnlocks;
     std::vector<UnitTypes::UnitType> unitUnlocks;
     std::vector<TerrainTypes::TerrainType> movementUnlocksVec;
     std::vector<TerrainTypes::TerrainType> defenceBonusesVec;
 };
 
 struct Tech {
-    int cost;
     TechTypes::TechTypes type;
+    int cost;
     std::bitset<TechTypes::TECH_TYPE_SIZE> techUnlocks;
-    std::vector<ImprovementData> improvementUnlocks;
-    // a vector of pointers to unit factory functions
+    std::vector<ImprovementTypes::ImprovementType> improvementUnlocks;
     std::bitset<UnitTypes::UNIT_TYPE_SIZE> unitUnlocks;
     // abilityUnlocks
     // taskUnlocks
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> movementUnlocks;
     std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> defenceBonuses;
-    Tech(TechTypes::TechTypes type, int cost, TechArgs args);
-    Tech();
+    Tech(TechTypes::TechTypes type, int cost, const TechArgs &args);
 };
 
 extern const std::array<Tech, TechTypes::TECH_TYPE_SIZE> techData;
 
 struct TechDataAccessor {
-    const Tech *operator()(int pos) const { return &techData.at(pos); }
+    const Tech *operator()(std::size_t pos) const { return &techData.at(pos); }
 };
-
-#endif // !TECH_H

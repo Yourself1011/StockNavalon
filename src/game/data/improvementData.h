@@ -1,8 +1,12 @@
-#ifndef IMPROVEMENT_DATA_H
-#define IMPROVEMENT_DATA_H
+#pragma once
 
-#include "game/tile.h"
+#include "tile.h"
 #include <bitset>
+#include <string>
+#include <unordered_map>
+
+class Player;
+
 namespace ImprovementTypes {
 enum ImprovementType {
     NONE,
@@ -64,75 +68,25 @@ enum ImprovementType {
     DESTROY,
     IMPROVEMENT_TYPE_SIZE
 };
-};
+} // namespace ImprovementTypes
 
 struct ImprovementData {
-    ImprovementTypes::ImprovementType type;
+    ImprovementTypes::ImprovementType type = ImprovementTypes::NONE;
+    std::string displayName = "";
     bool isBuilding = false, global = false, unique = false,
          uniqueToCity = false;
     int cost = 0, population = 0, maxLevel = 0, growthRate = 0, growthScore = 0;
-    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> *terrainRequirements = nullptr;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
-        *adjacencyRequirements = nullptr;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
-        *adjacencyImprovements = nullptr;
+    // an empty bitset means there is no requirement
+    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrainRequirements;
+    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> adjacencyRequirements;
+    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> adjacencyImprovements;
     ResourceTypes::ResourceType resourceRequirement = ResourceTypes::NONE;
 
-    void (*createEffect)(Tile &tile);
+    // run on the tile when the improvement is made, by the player making it
+    void (*createEffect)(Tile &tile, Player &player) = nullptr;
 };
 
-namespace Improvements {
-extern const ImprovementData city;
-extern const ImprovementData ruin;
-extern const ImprovementData road;
-extern const ImprovementData customHouse;
-extern const ImprovementData farm;
-extern const ImprovementData windmill;
-extern const ImprovementData fishing;
-extern const ImprovementData port;
-extern const ImprovementData hunting;
-extern const ImprovementData clearForest;
-extern const ImprovementData burnForest;
-extern const ImprovementData lumberHut;
-extern const ImprovementData sawmill;
-extern const ImprovementData growForest;
-extern const ImprovementData harvestFruit;
-// extern const ImprovementData whaleHunting;
-extern const ImprovementData temple;
-extern const ImprovementData forestTemple;
-extern const ImprovementData waterTemple;
-extern const ImprovementData mountainTemple;
-extern const ImprovementData mine;
-extern const ImprovementData forge;
-extern const ImprovementData alterOfPeace;
-extern const ImprovementData emperorsTomb;
-extern const ImprovementData eyeOfGod;
-extern const ImprovementData gateOfPower;
-extern const ImprovementData grandBazaar;
-extern const ImprovementData parkOfFortune;
-extern const ImprovementData towerOfWisdom;
-// extern const ImprovementData enchantAnimal;
-// extern const ImprovementData enchantWhale;
-// extern const ImprovementData sanctuary;
-// extern const ImprovementData outpost;
-// extern const ImprovementData iceBank;
-// extern const ImprovementData iceTemple;
-// extern const ImprovementData polarisClimate;
-// extern const ImprovementData fungi;
-// extern const ImprovementData algae;
-// extern const ImprovementData mycelium;
-// extern const ImprovementData burnsSpores;
-// extern const ImprovementData clathrus;
-// extern const ImprovementData hiddenSanctuary;
-// extern const ImprovementData harvestSpores;
-// extern const ImprovementData nullBuilding;
-// extern const ImprovementData cultivate;
-extern const ImprovementData starFishing;
-extern const ImprovementData lighthouse;
-extern const ImprovementData bridge;
-extern const ImprovementData market;
-// extern const ImprovementData aquaFarm;
-extern const ImprovementData destroy;
-} // namespace Improvements
+extern const std::unordered_map<ImprovementTypes::ImprovementType,
+                                ImprovementData>
+    ImprovementMap;
 
-#endif // !IMPROVEMENT_DATA_H

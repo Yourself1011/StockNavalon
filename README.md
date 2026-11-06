@@ -3,14 +3,14 @@
 ## Build
 
 ```bash
-make dev    # dev build with sanitizers
-make        # release build
+make        # release build -> build/release/final_program
+make dev    # dev build with sanitizers -> build/dev/final_program
 ```
 
 ## Run
 
 ```bash
-./build/final_program
+./build/release/final_program   # or ./build/dev/final_program
 ```
 
 ## CLI Commands

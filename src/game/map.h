@@ -1,8 +1,8 @@
-#include "tile.h"
-#include <vector>
+#pragma once
 
-#ifndef MAP_H
-#define MAP_H
+#include "tile.h"
+#include <string>
+#include <vector>
 
 namespace MapTypes {
 enum MapType {
@@ -14,18 +14,21 @@ enum MapType {
     WATERWORLD,
     MAP_TYPE_SIZE
 };
-}
+} // namespace MapTypes
 
 class Map {
     MapTypes::MapType mapType;
     std::vector<Tile> tiles;
 
   public:
+    Game *game;
     int size;
-    Map(int size, MapTypes::MapType mapType);
-    Map(std::string fileName);
-    Tile *at(int x, int y);
-    void print();
-};
+    Map(Game *game, int size, MapTypes::MapType mapType);
+    Map(Game *game, const std::string &fileName);
 
-#endif // !MAP_H
+    bool inBounds(int x, int y) const;
+    // throws std::out_of_range if (x, y) is off the map
+    Tile *at(int x, int y);
+    const Tile *at(int x, int y) const;
+    void print() const;
+};

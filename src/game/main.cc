@@ -1,205 +1,193 @@
+#include "data/improvementData.h"
 #include "game.h"
 #include "player.h"
 #include "tech.h"
 #include "unit.h"
+#include "utils.h"
+#include <algorithm>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
+namespace {
+
+bool containsTile(const std::vector<Tile *> &tiles, int x, int y) {
+    return std::any_of(tiles.begin(), tiles.end(), [x, y](const Tile *tile) {
+        return tile->x == x && tile->y == y;
+    });
+}
+
+void printTiles(const std::string &label, const std::vector<Tile *> &tiles) {
+    std::cout << label << ": ";
+    for (const Tile *tile : tiles) {
+        std::cout << "(" << tile->x << "," << tile->y << ") ";
+    }
+    std::cout << '\n';
+}
+
+// returns the current player's unit on (x, y), or nullptr after printing why
+Unit *ownUnitAt(Game &game, int x, int y) {
+    Unit *unit = game.map.at(x, y)->unit;
+    if (unit == nullptr) {
+        std::cout << "No unit on that tile\n";
+        return nullptr;
+    }
+    if (unit->player->idx != game.currentPlayerIdx) {
+        std::cout << "Not your unit\n";
+        return nullptr;
+    }
+    return unit;
+}
+
+void printUnit(const Unit &unit) {
+    std::cout << "Player " << unit.player->idx << "'s " << unit.type
+              << "\nHealth: " << unit.health << "/" << unit.maxHealth
+              << "\nAttack: " << unit.attack << "\nDefence: " << unit.defence;
+    if (unit.getDefenceBonus() != 1) {
+        std::cout << "(" << unit.getDefenceBonus() << ")";
+    }
+    std::cout << "\nMovement: " << unit.movement << "\nRange: " << unit.range;
+    if (!unit.abilities.test(Abilities::STATIC)) {
+        std::cout << "\n" << unit.kills << "/3 to become a veteran";
+    }
+    std::cout << "\n" << (unit.canMove ? "Can move" : "Cannot move") << "\n"
+              << (unit.canAttack ? "Can attack" : "Cannot attack") << "\n"
+              << (unit.canUseAbility ? "Can use ability" : "Cannot use ability")
+              << '\n';
+}
+
+// runs one command; returns false once input is exhausted
+bool runCommand(Game &game) {
+    Player &currentPlayer = game.currentPlayer();
+    std::string cmd;
+    if (!(std::cin >> cmd)) {
+        return false;
+    }
+
+    if (cmd == "e") {
+        game.endTurnAndAdvance();
+    } else if (cmd == "lt") {
+        std::cout << "Unlocked Techs:\n";
+        for (const Tech *tech :
+             BitsetIndex{currentPlayer.techs, TechDataAccessor{}}) {
+            std::cout << tech->type << '\n';
+        }
+        std::cout << "\nUnlockable Techs:\n";
+        for (const Tech *tech :
+             BitsetIndex{currentPlayer.buyableTechs, TechDataAccessor{}}) {
+            std::cout << tech->type << '\n';
+        }
+    } else if (cmd == "t") {
+        int buy;
+        if (!(std::cin >> buy)) {
+            return false;
+        }
+        if (buy < 0 || buy >= TechTypes::TECH_TYPE_SIZE) {
+            std::cout << "No such tech\n";
+            return true;
+        }
+        auto tech = static_cast<TechTypes::TechTypes>(buy);
+        if (!currentPlayer.buyableTechs.test(tech)) {
+            std::cout << "Not buyable\n";
+        } else if (!currentPlayer.canBuyTech(tech)) {
+            std::cout << "Too expensive\n";
+        } else {
+            currentPlayer.buyTech(tech);
+            std::cout << "Success\n";
+        }
+    } else if (cmd == "l") {
+        int x, y;
+        if (!(std::cin >> x >> y)) {
+            return false;
+        }
+        Unit *unit = ownUnitAt(game, x, y);
+        if (unit == nullptr) {
+            return true;
+        }
+        if (unit->canMove) {
+            printTiles("Valid Moves", unit->validMoves());
+        }
+        if (unit->canAttack) {
+            printTiles("Valid Attacks", unit->validAttacks());
+        }
+    } else if (cmd == "m") {
+        int fromx, fromy, tox, toy;
+        if (!(std::cin >> fromx >> fromy >> tox >> toy)) {
+            return false;
+        }
+        Unit *unit = ownUnitAt(game, fromx, fromy);
+        if (unit == nullptr) {
+            return true;
+        }
+        if (!unit->canMove) {
+            std::cout << "Unit out of moves this turn\n";
+        } else if (!containsTile(unit->validMoves(), tox, toy)) {
+            std::cout << "Invalid move\n";
+        } else {
+            unit->move(game.map.at(tox, toy));
+        }
+    } else if (cmd == "a") {
+        int fromx, fromy, tox, toy;
+        if (!(std::cin >> fromx >> fromy >> tox >> toy)) {
+            return false;
+        }
+        Unit *attacker = ownUnitAt(game, fromx, fromy);
+        if (attacker == nullptr) {
+            return true;
+        }
+        Unit *defender = game.map.at(tox, toy)->unit;
+        if (defender == nullptr) {
+            std::cout << "No defender on that tile\n";
+        } else if (!attacker->canAttack) {
+            std::cout << "Unit out of moves this turn\n";
+        } else if (!containsTile(attacker->validAttacks(), tox, toy)) {
+            std::cout << "Invalid attack\n";
+        } else {
+            attacker->attackUnit(defender);
+        }
+    } else if (cmd == "i") {
+        int x, y;
+        if (!(std::cin >> x >> y)) {
+            return false;
+        }
+        const Unit *unit = game.map.at(x, y)->unit;
+        if (unit == nullptr) {
+            std::cout << "No unit on that tile\n";
+        } else {
+            printUnit(*unit);
+        }
+    } else {
+        std::cout << "Unknown command\n";
+    }
+    return true;
+}
+
+} // namespace
+
 int main() {
-    Game game = Game(14, MapTypes::DRYLANDS);
-    game.map = Map("./src/game/map.txt");
-    game.players.push_back(Player(0));
-    game.players.push_back(Player(1));
+    Game game("./src/game/map.txt", 2);
 
-    Unit *unit1 =
-        new Unit(&game, &game.players.at(0), game.map.at(1, 1), Units::rider);
-    game.map.at(1, 1)->unit = unit1;
-    game.players.at(0).units.push_back(unit1);
-
-    Unit *unit2 =
-        new Unit(&game, &game.players.at(1), game.map.at(4, 1), Units::warrior);
-    game.map.at(4, 1)->unit = unit2;
-    game.players.at(1).units.push_back(unit2);
+    game.map.at(1, 1)->spawnUnit(game.players.at(0), Units::rider);
+    game.map.at(4, 1)->spawnUnit(game.players.at(1), Units::warrior);
+    game.map.at(1, 2)->improve(game.players.at(0),
+                               ImprovementMap.at(ImprovementTypes::CITY));
 
     game.currentPlayer().startTurn();
 
     while (true) {
-        Player &currentPlayer = game.currentPlayer();
         std::cout << "Player " << game.currentPlayerIdx << "'s turn (Round "
-                  << game.turnNumber << ")" << std::endl;
-        std::cout << "Stars: " << currentPlayer.stars << std::endl;
+                  << game.turnNumber << ")\n"
+                  << "Stars: " << game.currentPlayer().stars << '\n';
         game.map.print();
-        std::string cmd;
-        std::cin >> cmd;
+        std::cout << std::flush;
 
-        if (cmd == "e") {
-            game.endTurnAndAdvance();
-        } else if (cmd == "lt") {
-            std::cout << "Unlocked Techs:" << std::endl;
-            for (const Tech *tech :
-                 BitsetIndex{currentPlayer.techs, TechDataAccessor{}}) {
-                std::cout << tech->type << std::endl;
+        try {
+            if (!runCommand(game)) {
+                return 0;
             }
-            std::cout << std::endl << "Unlockable Techs:" << std::endl;
-            for (const Tech *tech :
-                 BitsetIndex{currentPlayer.buyableTechs, TechDataAccessor{}}) {
-                std::cout << tech->type << std::endl;
-            }
-        } else if (cmd == "t") {
-            int buy;
-            std::cin >> buy;
-            if (!currentPlayer.buyableTechs[buy]) {
-                std::cout << "Not buyable" << std::endl;
-            } else if (techData.at(buy).cost > currentPlayer.stars) {
-                std::cout << "Too expensive" << std::endl;
-            } else {
-                currentPlayer.buyTech((TechTypes::TechTypes)buy);
-                std::cout << "Success" << std::endl;
-            }
-        } else if (cmd == "l") {
-            int x, y;
-            std::cin >> x >> y;
-            Unit *unit = game.map.at(x, y)->unit;
-            if (unit == nullptr) {
-                std::cout << "No unit on that tile" << std::endl;
-                continue;
-            }
-
-            if (unit->player->idx != game.currentPlayerIdx) {
-                std::cout << "Not your unit" << std::endl;
-                continue;
-            }
-
-            if (unit->canMove) {
-                std::vector<Tile> *moves = unit->validMoves();
-
-                std::cout << "Valid Moves: ";
-                for (Tile tile : *moves) {
-                    std::cout << "(" << tile.x << "," << tile.y << ") ";
-                }
-                std::cout << std::endl;
-
-                delete moves;
-            }
-
-            if (unit->canAttack) {
-                std::vector<Tile> *attacks = unit->validAttacks();
-
-                std::cout << "Valid Attacks: ";
-                for (Tile tile : *attacks) {
-                    std::cout << "(" << tile.x << "," << tile.y << ") ";
-                }
-                std::cout << std::endl;
-
-                delete attacks;
-            }
-        } else if (cmd == "m") {
-            int fromx, fromy, tox, toy;
-            std::cin >> fromx >> fromy >> tox >> toy;
-
-            Unit *unit = game.map.at(fromx, fromy)->unit;
-
-            if (unit == nullptr) {
-                std::cout << "No unit on that tile" << std::endl;
-                continue;
-            }
-
-            if (unit->player->idx != game.currentPlayerIdx) {
-                std::cout << "Not your unit" << std::endl;
-                continue;
-            }
-
-            if (!unit->canMove) {
-                std::cout << "Unit out of moves this turn" << std::endl;
-                continue;
-            }
-
-            bool isValid = false;
-            std::vector<Tile> *moves = unit->validMoves();
-            for (Tile tile : *moves) {
-                if (tile.x == tox && tile.y == toy) {
-                    isValid = true;
-                    break;
-                }
-            }
-            delete moves;
-            if (!isValid) {
-                std::cout << "Invalid move" << std::endl;
-                continue;
-            }
-
-            unit->move(game.map.at(tox, toy));
-        } else if (cmd == "a") {
-            int fromx, fromy, tox, toy;
-            std::cin >> fromx >> fromy >> tox >> toy;
-
-            Unit *attacker = game.map.at(fromx, fromy)->unit;
-            Unit *defender = game.map.at(tox, toy)->unit;
-
-            if (attacker == nullptr) {
-                std::cout << "No attacker on that tile" << std::endl;
-                continue;
-            }
-
-            if (attacker->player->idx != game.currentPlayerIdx) {
-                std::cout << "Not your unit" << std::endl;
-                continue;
-            }
-
-            if (defender == nullptr) {
-                std::cout << "No defender on that tile" << std::endl;
-                continue;
-            }
-
-            if (!attacker->canAttack) {
-                std::cout << "Unit out of moves this turn" << std::endl;
-                continue;
-            }
-
-            bool isValid = false;
-            std::vector<Tile> *attacks = attacker->validAttacks();
-            for (Tile tile : *attacks) {
-                if (tile.x == tox && tile.y == toy) {
-                    isValid = true;
-                    break;
-                }
-            }
-            delete attacks;
-
-            if (!isValid) {
-                std::cout << "Invalid attack" << std::endl;
-                continue;
-            }
-
-            attacker->attackUnit(defender);
-        } else if (cmd == "i") {
-            int x, y;
-            std::cin >> x >> y;
-            Unit *unit = game.map.at(x, y)->unit;
-            if (unit == nullptr) {
-                std::cout << "No unit on that tile" << std::endl;
-                continue;
-            }
-
-            std::cout << "Player " << unit->player->idx << "'s " << unit->type
-                      << "\nHealth: " << unit->health << "/" << unit->maxHealth
-                      << "\nAttack: " << unit->attack
-                      << "\nDefence: " << unit->defence;
-            if (unit->getDefenceBonus() != 1) {
-                std::cout << "(" << unit->getDefenceBonus() << ")";
-            }
-            std::cout << "\nMovement: " << unit->movement
-                      << "\nRange: " << unit->range;
-            if (!unit->abilities.test(Abilities::STATIC)) {
-                std::cout << "\n" << unit->kills << "/3 to become a veteran";
-            }
-            std::cout << "\n" << (unit->canMove ? "Can move" : "Cannot move");
-            std::cout << "\n"
-                      << (unit->canAttack ? "Can attack" : "Cannot attack");
-            std::cout << "\n"
-                      << (unit->canUseAbility ? "Can use ability"
-                                              : "Cannot use ability");
-            std::cout << std::endl;
+        } catch (const std::out_of_range &e) {
+            std::cout << e.what() << '\n';
         }
     }
 }

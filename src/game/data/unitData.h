@@ -1,6 +1,5 @@
 
-#ifndef UNIT_DATA_H
-#define UNIT_DATA_H
+#pragma once
 
 #include <bitset>
 #include <string>
@@ -81,9 +80,11 @@ enum UnitType {
 
 struct UnitData {
     UnitTypes::UnitType type;
-    bool trainable;
-    int cost, maxHealth, defence, movement, range;
-    double attack;
+    bool trainable = false;
+    int cost = 0, maxHealth = 0;
+    double defence = 0;
+    int movement = 0, range = 0;
+    double attack = 0;
     std::string id;
     std::bitset<Abilities::ABILITY_SIZE> abilities;
 };
@@ -105,4 +106,3 @@ extern const UnitData archer;
 extern const UnitData giant;
 extern const UnitData dagger;
 } // namespace Units
-#endif // !UNIT_DATA_H

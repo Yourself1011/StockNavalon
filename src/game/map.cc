@@ -1,57 +1,83 @@
 #include "map.h"
+#include "improvement.h"
 #include "tile.h"
 #include "unit.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
-#include <vector>
+#include <string>
+#include <utility>
 
-Map::Map(int size, MapTypes::MapType mapType) : mapType{mapType}, size{size} {
-    tiles = std::vector<Tile>();
+Map::Map(Game *game, int size, MapTypes::MapType mapType)
+    : mapType{mapType}, game{game}, size{size} {
+    tiles.reserve(size * size);
     for (int x = 0; x < size; x++) {
         for (int y = 0; y < size; y++) {
-            tiles.push_back(Tile(x, y, TerrainTypes::FIELD));
+            tiles.emplace_back(game, x, y, TerrainTypes::FIELD);
         }
-    }
-};
-
-Map::Map(std::string fileName) {
-    std::fstream file(fileName);
-    int mapInt;
-    file >> size >> mapInt;
-    mapType = static_cast<MapTypes::MapType>(mapInt);
-
-    tiles = std::vector<Tile>();
-    for (int x = 0; x < size; x++) {
-        for (int y = 0; y < size; y++) {
-            tiles.push_back(Tile(x, y, TerrainTypes::FIELD));
-        }
-    }
-
-    std::string tileString;
-    int i = 0;
-    while (file >> tileString) {
-        int idx = 0;
-        for (; idx < TerrainTypes::terrainChars.size(); idx++) {
-            if (TerrainTypes::terrainChars.at(idx) == tileString.at(0))
-                break;
-        }
-
-        at(i % size, i / size)->terrainType =
-            static_cast<TerrainTypes::TerrainType>(idx);
-
-        i++;
     }
 }
 
-Tile *Map::at(int x, int y) {
-    if (x >= size || y >= size) {
-        throw std::out_of_range("Matrix index out of range");
+// file format: "<size> <mapType>" followed by size * size terrain characters,
+// row by row
+Map::Map(Game *game, const std::string &fileName) : game{game} {
+    std::ifstream file(fileName);
+    if (!file) {
+        throw std::runtime_error("Could not open map file " + fileName);
     }
-    return &tiles.at(x * size + y);
-};
+    int mapInt;
+    if (!(file >> size >> mapInt) || size <= 0 || mapInt < 0 ||
+        mapInt >= MapTypes::MAP_TYPE_SIZE) {
+        throw std::runtime_error("Invalid map header in " + fileName);
+    }
+    mapType = static_cast<MapTypes::MapType>(mapInt);
 
-void Map::print() {
+    tiles.reserve(size * size);
+    for (int x = 0; x < size; x++) {
+        for (int y = 0; y < size; y++) {
+            tiles.emplace_back(game, x, y, TerrainTypes::FIELD);
+        }
+    }
+
+    const auto &chars = TerrainTypes::terrainChars;
+    std::string tileString;
+    int i = 0;
+    while (file >> tileString) {
+        if (i >= size * size) {
+            throw std::runtime_error("Too many tiles in " + fileName);
+        }
+        auto found = std::find(chars.begin(), chars.end(), tileString.at(0));
+        if (found == chars.end()) {
+            throw std::runtime_error("Unknown terrain '" + tileString +
+                                     "' in " + fileName);
+        }
+        at(i % size, i / size)->terrainType =
+            static_cast<TerrainTypes::TerrainType>(found - chars.begin());
+        i++;
+    }
+    if (i != size * size) {
+        throw std::runtime_error("Too few tiles in " + fileName);
+    }
+}
+
+bool Map::inBounds(int x, int y) const {
+    return x >= 0 && y >= 0 && x < size && y < size;
+}
+
+const Tile *Map::at(int x, int y) const {
+    if (!inBounds(x, y)) {
+        throw std::out_of_range("Tile (" + std::to_string(x) + ", " +
+                                std::to_string(y) + ") is off the map");
+    }
+    return &tiles[x * size + y];
+}
+
+Tile *Map::at(int x, int y) {
+    return const_cast<Tile *>(std::as_const(*this).at(x, y));
+}
+
+void Map::print() const {
     std::cout << "   ";
     for (int i = 0; i < size; i++) {
         std::cout << i << "  ";
@@ -59,7 +85,7 @@ void Map::print() {
             std::cout << ' ';
         }
     }
-    std::cout << std::endl;
+    std::cout << '\n';
 
     for (int y = 0; y < size; y++) {
         std::cout << y << ' ';
@@ -68,7 +94,7 @@ void Map::print() {
         }
 
         for (int x = 0; x < size; x++) {
-            Tile *tile = at(x, y);
+            const Tile *tile = at(x, y);
             std::cout << TerrainTypes::terrainChars.at(tile->terrainType);
             if (tile->unit) {
                 std::cout << tile->unit->id;
@@ -77,14 +103,18 @@ void Map::print() {
             }
             std::cout << ' ';
         }
-        std::cout << std::endl << "   ";
+        std::cout << "\n   ";
 
         for (int x = 0; x < size; x++) {
-            // Tile *tile = at(x, y);
+            const Tile *tile = at(x, y);
+            if (tile->improvement) {
+                std::cout << tile->improvement->staticData.displayName << ' ';
+            } else {
+                std::cout << "   ";
+            }
             // this will print improvement data eventually
-            std::cout << "   ";
             std::cout << ' ';
         }
-        std::cout << std::endl;
+        std::cout << '\n';
     }
 }

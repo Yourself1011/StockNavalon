@@ -1,38 +1,37 @@
-#ifndef UTILS_H
-#define UTILS_H
+#pragma once
 
 #include <bitset>
 #include <cstddef>
+#include <initializer_list>
+#include <type_traits>
 #include <vector>
 
-template <size_t size, typename E>
-void vectorToBitset(std::bitset<size> *bitset, std::vector<E> vector) {
-    for (int index : vector) {
-        bitset->set(index);
+template <std::size_t size, typename E>
+void setBits(std::bitset<size> &bitset, const std::vector<E> &indices) {
+    for (E index : indices) {
+        bitset.set(index);
     }
-};
+}
 
-template <size_t size>
-std::bitset<size> *vectorToBitset(std::vector<int> vector) {
-    std::bitset<size> *bitset = new std::bitset<size>(0);
-
-    for (int index : vector) {
-        bitset->set(index);
+template <std::size_t size>
+std::bitset<size> makeBitset(std::initializer_list<int> indices) {
+    std::bitset<size> bitset;
+    for (int index : indices) {
+        bitset.set(index);
     }
-
     return bitset;
-};
+}
 
 struct PositionAccessor {
-    int operator()(int pos) const { return pos; }
+    int operator()(std::size_t pos) const { return static_cast<int>(pos); }
 };
 
-template <size_t size, typename Accessor> struct BitsetIndexIterator {
+template <std::size_t size, typename Accessor> struct BitsetIndexIterator {
     using difference_type = std::ptrdiff_t;
-    using value_type = std::invoke_result_t<Accessor, int>;
+    using value_type = std::invoke_result_t<Accessor, std::size_t>;
 
     const std::bitset<size> *bs;
-    int index;
+    std::size_t index;
     Accessor accessor;
 
     value_type operator*() const { return accessor(index); }
@@ -64,20 +63,21 @@ template <size_t size, typename Accessor> struct BitsetIndexIterator {
     }
 };
 
-template <size_t size, typename Accessor = PositionAccessor>
+// iterate over the set bits of a bitset, passing each index through accessor
+template <std::size_t size, typename Accessor = PositionAccessor>
 struct BitsetIndex {
     const std::bitset<size> &bs;
     Accessor accessor;
 
-    BitsetIndexIterator<size, Accessor> begin() {
+    BitsetIndexIterator<size, Accessor> begin() const {
         BitsetIndexIterator<size, Accessor> iterator{&bs, 0, accessor};
         iterator.advance();
         return iterator;
     }
-    BitsetIndexIterator<size, Accessor> end() { return {&bs, size, accessor}; }
+    BitsetIndexIterator<size, Accessor> end() const {
+        return {&bs, size, accessor};
+    }
 
     BitsetIndex(const std::bitset<size> &bs, Accessor accessor = {})
         : bs{bs}, accessor{accessor} {}
 };
-
-#endif // !UTILS_H
