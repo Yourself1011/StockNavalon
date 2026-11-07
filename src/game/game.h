@@ -30,6 +30,9 @@ struct GameSettings {
 // Bots only need legalCommands() and apply(). The rest is public so tests and
 // tools can inspect and set up positions.
 class Game {
+    // builds its lists from the same generators as legalCommands()
+    friend class LegalMoves;
+
   public:
     int size;
     MapTypes::MapType mapType;

@@ -40,4 +40,6 @@ struct City {
     int pendingRewards = 0;
     int parks = 0;
     bool workshop = false, wall = false, borderGrown = false;
+
+    bool operator==(const City &) const = default;
 };

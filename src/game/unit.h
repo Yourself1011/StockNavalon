@@ -35,4 +35,5 @@ struct Unit {
         return data().abilities.test(ability);
     }
     bool isNaval() const { return has(Abilities::WATER); }
+    bool operator==(const Unit &) const = default;
 };

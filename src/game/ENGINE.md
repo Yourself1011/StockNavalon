@@ -13,6 +13,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `tasks.cc`: tasks, which unlock monuments
 - `diplomacy.cc`: peace treaties and embassies
 - `view.h`: `makeView(game, player)`, everything one player knows. Bots should read this, not the `Game`.
+- `legalMoves.h`: `LegalMoves`, the current player's legal commands kept up to date one command at a time, for search. A node keeps one next to its `Game`. It finds what changed by comparing the states before and after, and regenerates only the unit and tile commands near the changes. It always matches `legalCommands()` as a set; the tests check that after every command on every map type.
 - `mapgen.h`: `generateMap(settings)`, every map type
 - `bots/randomBot.h`: a bot that plays random legal commands
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic

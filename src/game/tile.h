@@ -27,4 +27,5 @@ struct Tile {
     std::uint32_t explored = 0;
 
     bool exploredBy(int player) const { return explored >> player & 1; }
+    bool operator==(const Tile &) const = default;
 };

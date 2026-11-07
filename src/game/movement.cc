@@ -82,11 +82,16 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
     Unit passenger = unit;
     passenger.type = unit.passenger;
 
-    // movement is counted in half steps, since a road step costs half
-    std::vector<int> best(tiles.size(), -1);
-    std::vector<char> destination(tiles.size(), 0), landing(tiles.size(), 0);
+    // movement is counted in half steps, since a road step costs half.
+    // The buffers are reused between calls: this runs for every unit on
+    // every legal-move query.
+    thread_local std::vector<int> best, stack;
+    thread_local std::vector<char> destination, landing;
+    best.assign(tiles.size(), -1);
+    destination.assign(tiles.size(), 0);
+    landing.assign(tiles.size(), 0);
     best[unit.tile] = unit.data().movement * 2;
-    std::vector<int> stack{unit.tile};
+    stack.assign(1, unit.tile);
 
     while (!stack.empty()) {
         int from = stack.back();

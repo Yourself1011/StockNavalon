@@ -319,11 +319,49 @@ void Game::addCityCommands(int city, std::vector<Command> &out) const {
     }
 }
 
+namespace {
+// The improvements that can go on each terrain, so most are never checked.
+// Built on first use: improvementData lives in another file, and globals
+// across files have no set order of initialization.
+const std::vector<ImprovementTypes::ImprovementType> &
+buildableOn(TerrainTypes::TerrainType terrain) {
+    static const auto table = [] {
+        std::array<std::vector<ImprovementTypes::ImprovementType>,
+                   TerrainTypes::TERRAIN_TYPE_SIZE>
+            out;
+        for (int type = ImprovementTypes::FARM;
+             type < ImprovementTypes::IMPROVEMENT_TYPE_SIZE; type++) {
+            for (int t = 0; t < TerrainTypes::TERRAIN_TYPE_SIZE; t++) {
+                if (improvementData[type].terrain.test(t)) {
+                    out[t].push_back(
+                        static_cast<ImprovementTypes::ImprovementType>(type));
+                }
+            }
+        }
+        return out;
+    }();
+    return table[terrain];
+}
+} // namespace
+
 void Game::addTileCommands(int tile, std::vector<Command> &out) const {
-    for (int type = ImprovementTypes::FARM;
-         type < ImprovementTypes::IMPROVEMENT_TYPE_SIZE; type++) {
-        if (canBuild(currentPlayer, tile,
-                     static_cast<ImprovementTypes::ImprovementType>(type))) {
+    // nothing is ever built on unexplored tiles or inside other players'
+    // borders, so most tiles stop here
+    int owner = tileOwner(tile);
+    if (!explored(currentPlayer, tile) ||
+        (owner >= 0 && owner != currentPlayer)) {
+        return;
+    }
+    const Player &player = players[currentPlayer];
+    for (ImprovementTypes::ImprovementType type :
+         buildableOn(tiles[tile].terrain)) {
+        const ImprovementData &data = improvementInfo(type);
+        // cheap checks first; canBuild has the final say
+        if ((owner < 0 && !data.freelance) || !player.hasTech(data.tech) ||
+            player.stars < data.cost) {
+            continue;
+        }
+        if (canBuild(currentPlayer, tile, type)) {
             out.push_back({BUILD, tile, -1, type});
         }
     }
