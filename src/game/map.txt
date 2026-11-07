@@ -1,15 +1,15 @@
-14 0
-F F F F F F F W F F F F F F
-F F F F F F F W F F F F F F
-F F T F F F F W F F F F F F
-F F F F F F F W F F F F F F
-F F F F F F W O F F F F F F
-F F F F M W O O F F F F F F
-F F W W W O O O F F F F F F
-W W O O O O O O F F F F F F
-F F F F F F F F F F F F F F
-F F F F F F F F F F F F F F
-F F F F F F F F F F F F F F
-F F F F F F F F F F F F F F
-F F F F F F F F F F F F F F
-F F F F F F F F F F F F F F
+14 1
+FL F  T  F  Tg F  F  M  F  T  F  F  T  FL
+F  Ff F  Fc F  T  Tg F  F  F  Mm F  F  F
+T  F  Fc Tg F  F  W  W  F  T  F  FV Ff F
+F  Ff F  F0 F  Wh W  O  W  F  Fc F  F  T
+Tg F  T  F  Ff F  W  O  W  T  F  F  Tg F
+F  M  F  F  F  T  F  W  Wh F  F  M  F  F
+F  Mm F  FV F  F  F  F  F  F  T  F  Fc F
+F  Tg F  F  T  F  F  F  F  T  F  FV F  F
+F  F  Fc F  F  M  F  Ws W  F  F  F  T  F
+T  F  F  T  W  W  W  O  W  F  Ff F  F  F
+F  FV F  F  Wh O  O  Ws W  T  F1 Ff Tg F
+F  Ff T  F  W  W  W  W  F  F  Fc F  F  T
+F  F  F  Mm F  T  F  F  T  F  F  Mm F  F
+FL T  F  F  F  F  T  F  F  F  Tg F  F  FL

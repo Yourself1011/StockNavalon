@@ -1,29 +1,248 @@
 #pragma once
 
+#include "city.h"
+#include "command.h"
+#include "data/improvementData.h"
+#include "data/techData.h"
+#include "data/tribeData.h"
+#include "data/unitData.h"
 #include "map.h"
 #include "player.h"
-#include <string>
+#include "tile.h"
+#include "unit.h"
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
+namespace WinConditions {
+enum WinCondition { MIGHT, DOMINATION };
+} // namespace WinConditions
+
+struct GameSettings {
+    WinConditions::WinCondition winCondition = WinConditions::MIGHT;
+    // seeds Game::rng
+    std::uint64_t seed = 0;
+};
+
+// The whole game state. Everything refers to everything else by index, so a
+// Game is a plain value: copy it to branch a search.
+//
+// Bots only need legalCommands() and apply(). The rest is public so tests and
+// tools can inspect and set up positions.
 class Game {
   public:
-    Map map;
-    // never resized after construction: units and tiles hold Player pointers
+    int size;
+    MapTypes::MapType mapType;
+    GameSettings settings;
+    // index y * size + x
+    std::vector<Tile> tiles;
+    // dead units stay in place with alive = false, and their slot is reused
+    std::vector<Unit> units;
+    std::vector<City> cities;
     std::vector<Player> players;
-    int currentPlayerIdx = 0;
-    int turnNumber = 1;
+    int currentPlayer = 0;
+    // the first round is turn 0
+    int turn = 0;
+    int winner = -1;
+    // how many steps an Explorer takes
+    static constexpr int EXPLORER_STEPS = 12;
+    // random number state, part of the game so copies stay deterministic
+    std::uint64_t rng;
 
-    Game(int size, MapTypes::MapType mapType, int numPlayers);
-    Game(const std::string &mapFile, int numPlayers);
+    Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
+         GameSettings settings = {});
 
-    // tiles, units and players all point back into the game
-    Game(const Game &) = delete;
-    Game &operator=(const Game &) = delete;
+    // ---- geometry (game.cc) ----
+    int index(int x, int y) const { return y * size + x; }
+    int tileX(int tile) const { return tile % size; }
+    int tileY(int tile) const { return tile / size; }
+    bool inBounds(int x, int y) const {
+        return x >= 0 && y >= 0 && x < size && y < size;
+    }
+    // diagonal steps count the same as straight ones
+    int distance(int a, int b) const;
 
-    Player &currentPlayer();
+    // calls f(tile) for every tile within radius of tile, excluding tile
+    template <typename F> void forEachInRadius(int tile, int radius, F f) const {
+        int cx = tileX(tile), cy = tileY(tile);
+        for (int y = std::max(cy - radius, 0);
+             y <= std::min(cy + radius, size - 1); y++) {
+            for (int x = std::max(cx - radius, 0);
+                 x <= std::min(cx + radius, size - 1); x++) {
+                if (x != cx || y != cy) {
+                    f(index(x, y));
+                }
+            }
+        }
+    }
+    template <typename F> void forEachNeighbour(int tile, F f) const {
+        forEachInRadius(tile, 1, f);
+    }
 
-    void endTurnAndAdvance();
+    // ---- queries (game.cc) ----
+    // the player whose borders contain the tile, -1 if none
+    int tileOwner(int tile) const;
+    // the alive unit on the tile, or nullptr
+    const Unit *unitAt(int tile) const;
+    Unit *unitAt(int tile);
+    int cityAt(int tile) const;
+    int cityCount(int player) const;
+    bool besieged(int city) const;
+    // units supported by the city, toward its cap of level + 1
+    int unitCount(int city) const;
+    int techCost(int player, TechTypes::TechType tech) const;
+    // owns the parent or a child; ignores the price
+    bool canResearch(int player, TechTypes::TechType tech) const;
+    int income(int player) const;
+    int cityIncome(int city) const;
+    int marketIncome(int tile) const;
+    bool gameOver() const { return winner >= 0; }
+    // uniform in [0, n)
+    int randomInt(int n);
+
+    // ---- commands (game.cc) ----
+    // every legal command for the current player, except Resign, which is
+    // always legal and left out so random play never picks it
+    std::vector<Command> legalCommands() const;
+    bool isLegal(const Command &command) const;
+    // throws std::invalid_argument if the command isn't legal
+    void apply(const Command &command);
+    // for callers that took the command from legalCommands()
+    void applyUnchecked(const Command &command);
+
+    // ---- units (movement.cc) ----
+    // tiles a Move can end on, including embarking onto a Port
+    std::vector<int> moveTargets(int unit) const;
+    // land tiles a boat can Disembark onto
+    std::vector<int> disembarkTargets(int unit) const;
+    bool canEnterTerrain(const Unit &unit, int tile) const;
+    // counts as a road for the unit's owner: a road, bridge or city, outside
+    // enemy borders
+    bool isRoadFor(int tile, int player) const;
+    bool nextToEnemy(int tile, int player) const;
+    // the unit must be alive, the tile free; returns the unit's index
+    int spawnUnit(int player, UnitTypes::UnitType type, int tile, int home);
+
+    // ---- combat (combat.cc) ----
+    struct AttackResult {
+        // x10, like HP
+        int damage, retaliation;
+    };
+    // what a normal attack would deal, before range and skill checks
+    AttackResult previewAttack(const Unit &attacker,
+                               const Unit &defender) const;
+    double defenceBonus(const Unit &unit) const;
+    std::vector<int> attackTargets(int unit) const;
+
+    // ---- cities (cities.cc) ----
+    void addPopulation(int city, int amount);
+    int healAmount(const Unit &unit) const;
+    // creates a city on the tile and claims its borders; returns its index
+    int foundCity(int tile, int owner);
+    // recomputes every player's capital connections
+    void updateAllConnections();
+    void updateConnections(int player);
+    // cities whose road/port network reaches the player's capital
+    std::vector<bool> connectedCities(int player) const;
+
+    // ---- fog of war (fog.cc) ----
+    // at most this many players, one explored bit each
+    static constexpr int MAX_PLAYERS = 32;
+    bool explored(int player, int tile) const {
+        return tiles[tile].exploredBy(player);
+    }
+    // the player can see the unit: its tile is explored and it isn't hidden
+    // from them
+    bool canSee(int player, const Unit &unit) const;
+    // 2 for Scout units and units on mountains, otherwise 1
+    int sightRange(const Unit &unit) const;
+    // resources only show once the tech that uses them is researchable or
+    // owned
+    bool resourceVisible(int player, ResourceTypes::ResourceType resource) const;
+    // an enemy hidden unit is next to the tile; the game shows the player a
+    // warning but not where it is
+    bool hiddenEnemyNear(int player, int tile) const;
+    // explores the tile for the player; finding a lighthouse gives the
+    // capital a population
+    void reveal(int player, int tile);
+    void revealAround(int player, int tile, int radius);
+    void revealForUnit(int unit);
+
+    // ---- score and meeting tribes (score.cc) ----
+    // GAME.md section 3
+    int score(int player) const;
+    int unitScore(const Unit &unit) const;
+    int templeLevel(int tile) const;
+    // the stars for meeting a tribe with this score
+    static int meetingBonus(int score);
+    // meets every tribe the player can now see; called after every command
+    void checkMeetings();
+
+    // ---- ruins (ruins.cc) ----
+    enum RuinReward { RUIN_TECH, RUIN_STARS, RUIN_POPULATION, RUIN_EXPLORER,
+                      RUIN_UNIT, RUIN_REWARD_SIZE };
+    // the rewards whose conditions hold for this unit on this ruin
+    std::vector<RuinReward> ruinRewards(int unit) const;
+    void giveRuinReward(int unit, RuinReward reward);
+
+    // ---- building (build.cc) ----
+    bool canBuild(int player, int tile,
+                  ImprovementTypes::ImprovementType type) const;
+    bool canDestroy(int player, int tile) const;
 
   private:
-    void createPlayers(int numPlayers);
+    // game.cc
+    void addUnitCommands(int unit, std::vector<Command> &out) const;
+    void addCityCommands(int city, std::vector<Command> &out) const;
+    void addTileCommands(int tile, std::vector<Command> &out) const;
+    void addResearchCommands(std::vector<Command> &out) const;
+    // the current player's first city with a reward to choose, -1 if none
+    int pendingRewardCity() const;
+    void startTurn();
+    void endTurn();
+    void research(TechTypes::TechType tech);
+    void applyCommand(const Command &command);
+
+    // movement.cc
+    void reachable(int unit, std::vector<int> *moves,
+                   std::vector<int> *disembarks) const;
+    void moveUnit(int unit, int to);
+    void disembark(int unit, int to);
+    // puts the unit on the tile and applies Stomp
+    void placeUnit(int unit, int to);
+    void stomp(int unit);
+    void killUnit(int unit);
+
+    // combat.cc
+    void attack(int unit, int target);
+    void convert(int unit, int target);
+    void infiltrate(int unit, int target);
+    // damage x10 from a source that isn't retaliated; credits the kill
+    void splashDamage(int attacker, int target, int amount);
+
+    // cities.cc
+    void capture(int unit);
+    void train(int city, UnitTypes::UnitType type);
+    void chooseReward(int city, CityRewards::CityReward reward);
+    void claimBorders(int city, int radius);
+    void spawnGiant(int city);
+    // moves the unit off its tile for a new unit (a Giant, or a ruin's
+    // reward), or destroys it if no tile fits. owner is the new unit's owner.
+    void pushUnit(int unit, int owner);
+    void eliminate(int player);
+    void checkGameEnd();
+
+    // ruins.cc
+    void examineRuins(int unit);
+
+    // fog.cc
+    void revealTerritory(int city);
+    // the Explorer: 12 automatic steps toward unexplored tiles
+    void runExplorer(int player, int start);
+
+    // build.cc
+    void build(int tile, ImprovementTypes::ImprovementType type);
+    void destroy(int tile);
+    void refreshProducer(int tile);
+    void refreshProducersAround(int tile);
 };

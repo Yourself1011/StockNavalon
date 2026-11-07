@@ -1,0 +1,337 @@
+#include "game.h"
+#include <cmath>
+#include <numbers>
+
+using namespace CityRewards;
+
+std::array<CityReward, 2> CityRewards::rewardsForLevel(int level) {
+    switch (level) {
+    case 2:
+        return {WORKSHOP, EXPLORER};
+    case 3:
+        return {CITYWALL, RESOURCES};
+    case 4:
+        return {POPULATIONGROWTH, BORDERGROWTH};
+    default:
+        return {PARK, SUPERUNIT};
+    }
+}
+
+void Game::addPopulation(int city, int amount) {
+    City &c = cities[city];
+    c.population += amount;
+    // level n -> n + 1 needs n + 1 population; leftovers carry over
+    while (c.population >= c.level + 1) {
+        c.population -= c.level + 1;
+        c.level++;
+        c.pendingRewards++;
+    }
+}
+
+int Game::healAmount(const Unit &unit) const {
+    return tileOwner(unit.tile) == unit.owner ? 40 : 20;
+}
+
+void Game::claimBorders(int city, int radius) {
+    int centre = cities[city].tile;
+    tiles[centre].territory = city;
+    forEachInRadius(centre, radius, [&](int t) {
+        if (tiles[t].territory < 0) {
+            tiles[t].territory = city;
+        }
+    });
+    // everything inside your borders is always revealed
+    revealTerritory(city);
+}
+
+int Game::foundCity(int tile, int owner) {
+    int city = static_cast<int>(cities.size());
+    cities.push_back({.tile = tile, .owner = owner});
+    tiles[tile].building = ImprovementTypes::CITY;
+    tiles[tile].resource = ResourceTypes::NONE;
+    claimBorders(city, 1);
+    return city;
+}
+
+// ---- connections ----
+
+std::vector<bool> Game::connectedCities(int player) const {
+    std::vector<bool> connected(cities.size(), false);
+    int capital = players[player].capital;
+    if (capital < 0 || cities[capital].owner != player) {
+        return connected;
+    }
+
+    auto ownPort = [&](int t) {
+        return tiles[t].building == ImprovementTypes::PORT &&
+               tileOwner(t) == player;
+    };
+    auto ownCity = [&](int t) {
+        int city = cityAt(t);
+        return city >= 0 && cities[city].owner == player;
+    };
+    // part of the network: own cities and ports, and roads and bridges
+    // outside enemy borders
+    auto onNetwork = [&](int t) {
+        if (ownCity(t) || ownPort(t)) {
+            return true;
+        }
+        int owner = tileOwner(t);
+        return tiles[t].road && explored(player, t) &&
+               (owner < 0 || owner == player);
+    };
+    // no connection forms through tiles the player hasn't explored
+    auto waterRoute = [&](int t) {
+        int owner = tileOwner(t);
+        if (!explored(player, t) || (owner >= 0 && owner != player)) {
+            return false;
+        }
+        return tiles[t].terrain == TerrainTypes::WATER ||
+               (tiles[t].terrain == TerrainTypes::OCEAN &&
+                players[player].hasTech(TechTypes::NAVIGATION));
+    };
+
+    std::vector<char> seen(tiles.size(), 0);
+    std::vector<int> stack{cities[capital].tile};
+    seen[cities[capital].tile] = 1;
+    while (!stack.empty()) {
+        int from = stack.back();
+        stack.pop_back();
+        int city = cityAt(from);
+        if (city >= 0) {
+            connected[city] = true;
+        }
+
+        forEachNeighbour(from, [&](int n) {
+            if (!seen[n] && onNetwork(n)) {
+                seen[n] = 1;
+                stack.push_back(n);
+            }
+        });
+
+        if (!ownPort(from)) {
+            continue;
+        }
+        // a port reaches ports and cities at most 5 tiles away over water
+        std::vector<int> depth(tiles.size(), -1), frontier{from};
+        depth[from] = 0;
+        for (std::size_t i = 0; i < frontier.size(); i++) {
+            int at = frontier[i];
+            if (depth[at] == 5) {
+                continue;
+            }
+            forEachNeighbour(at, [&](int n) {
+                if (depth[n] >= 0) {
+                    return;
+                }
+                depth[n] = depth[at] + 1;
+                if (ownPort(n) || ownCity(n)) {
+                    if (!seen[n]) {
+                        seen[n] = 1;
+                        stack.push_back(n);
+                    }
+                } else if (waterRoute(n)) {
+                    frontier.push_back(n);
+                }
+            });
+        }
+    }
+    return connected;
+}
+
+void Game::updateConnections(int player) {
+    std::vector<bool> reached = connectedCities(player);
+    int capital = players[player].capital;
+    for (std::size_t i = 0; i < cities.size(); i++) {
+        City &city = cities[i];
+        int idx = static_cast<int>(i);
+        bool target = city.owner == player && idx != capital && reached[i];
+        bool current = city.connectedFor == player;
+        if (target == current) {
+            continue;
+        }
+        // the city and the capital each get a population, or lose it again.
+        // A captured capital still loses it.
+        int change = target ? 1 : -1;
+        city.connectedFor = target ? player : -1;
+        addPopulation(idx, change);
+        addPopulation(capital, change);
+    }
+}
+
+void Game::updateAllConnections() {
+    for (std::size_t i = 0; i < players.size(); i++) {
+        updateConnections(static_cast<int>(i));
+    }
+}
+
+// ---- capture and training ----
+
+void Game::capture(int unitIdx) {
+    Unit &unit = units[unitIdx];
+    int tile = unit.tile;
+    int owner = unit.owner;
+    unit.canMove = unit.canAttack = unit.canAct = false;
+    // capturing reveals a hidden unit until it moves again
+    unit.hidden = false;
+
+    int city;
+    if (tiles[tile].building == ImprovementTypes::VILLAGE) {
+        city = foundCity(tile, owner);
+    } else {
+        city = tiles[tile].territory;
+        cities[city].owner = owner;
+        revealTerritory(city);
+        cities[city].pendingRewards = 0;
+        // its units lose their home, and don't get it back if it's retaken
+        for (Unit &u : units) {
+            if (u.alive && u.home == city) {
+                u.home = -1;
+            }
+        }
+    }
+    if (!unit.has(Abilities::INDEPENDENT)) {
+        unit.home = city;
+    }
+    updateAllConnections();
+    checkGameEnd();
+}
+
+void Game::train(int city, UnitTypes::UnitType type) {
+    players[currentPlayer].stars -= unitInfo(type).cost;
+    spawnUnit(currentPlayer, type, cities[city].tile, city);
+}
+
+// ---- level-up rewards ----
+
+void Game::chooseReward(int city, CityReward reward) {
+    City &c = cities[city];
+    c.pendingRewards--;
+    switch (reward) {
+    case WORKSHOP:
+        c.workshop = true;
+        break;
+    case EXPLORER:
+        runExplorer(c.owner, c.tile);
+        break;
+    case CITYWALL:
+        c.wall = true;
+        break;
+    case RESOURCES:
+        players[c.owner].stars += 5;
+        break;
+    case POPULATIONGROWTH:
+        addPopulation(city, 3);
+        break;
+    case BORDERGROWTH:
+        c.borderGrown = true;
+        claimBorders(city, 2);
+        break;
+    case PARK:
+        c.parks++;
+        break;
+    case SUPERUNIT:
+        spawnGiant(city);
+        break;
+    default:
+        break;
+    }
+}
+
+void Game::spawnGiant(int city) {
+    int tile = cities[city].tile;
+    if (tiles[tile].unit >= 0) {
+        pushUnit(tiles[tile].unit, cities[city].owner);
+    }
+    spawnUnit(cities[city].owner, UnitTypes::GIANT, tile, city);
+}
+
+void Game::pushUnit(int unitIdx, int owner) {
+    Unit &unit = units[unitIdx];
+    int x = tileX(unit.tile), y = tileY(unit.tile);
+
+    // a unit that never moved goes toward the centre; a friendly one onward
+    // in the direction it was moving; an enemy one backward
+    int dx = unit.lastDx, dy = unit.lastDy;
+    if (dx == 0 && dy == 0) {
+        double centre = (size - 1) / 2.0;
+        dx = (centre > x) - (centre < x);
+        dy = (centre > y) - (centre < y);
+        if (dx == 0 && dy == 0) {
+            dy = -1;
+        }
+    } else if (unit.owner != owner) {
+        dx = -dx;
+        dy = -dy;
+    }
+
+    // y grows downward, so flip it to measure angles counter-clockwise
+    double primary = std::atan2(-dy, dx);
+    for (int radius = 1; radius < size; radius++) {
+        std::vector<std::pair<double, int>> ring;
+        forEachInRadius(unit.tile, radius, [&](int t) {
+            if (distance(t, unit.tile) != radius) {
+                return;
+            }
+            double angle = std::atan2(-(tileY(t) - y), tileX(t) - x) - primary;
+            angle = std::remainder(angle, 2 * std::numbers::pi);
+            // the nearest angle first; counter-clockwise before clockwise
+            double key = std::abs(angle) * 2 + (angle < -1e-9 ? 1e-6 : 0);
+            ring.emplace_back(key, t);
+        });
+        std::sort(ring.begin(), ring.end());
+        for (auto [key, t] : ring) {
+            if (tiles[t].unit < 0 && canEnterTerrain(unit, t)) {
+                placeUnit(unitIdx, t);
+                return;
+            }
+        }
+    }
+    killUnit(unitIdx);
+}
+
+// ---- end of game ----
+
+void Game::eliminate(int player) {
+    players[player].alive = false;
+    for (std::size_t i = 0; i < units.size(); i++) {
+        if (units[i].alive && units[i].owner == player) {
+            killUnit(static_cast<int>(i));
+        }
+    }
+}
+
+void Game::checkGameEnd() {
+    for (std::size_t i = 0; i < players.size(); i++) {
+        if (players[i].alive && cityCount(static_cast<int>(i)) == 0) {
+            eliminate(static_cast<int>(i));
+        }
+    }
+
+    int alive = 0, last = -1;
+    for (std::size_t i = 0; i < players.size(); i++) {
+        if (players[i].alive) {
+            alive++;
+            last = static_cast<int>(i);
+        }
+    }
+    if (alive == 1) {
+        winner = last;
+        return;
+    }
+
+    if (settings.winCondition == WinConditions::MIGHT) {
+        // holding as many capitals as there are players
+        for (std::size_t i = 0; i < players.size(); i++) {
+            auto held = std::count_if(
+                cities.begin(), cities.end(), [&](const City &c) {
+                    return c.capitalOf >= 0 && c.owner == static_cast<int>(i);
+                });
+            if (players[i].alive &&
+                held == static_cast<long>(players.size())) {
+                winner = static_cast<int>(i);
+                return;
+            }
+        }
+    }
+}

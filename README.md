@@ -10,18 +10,36 @@ make dev    # dev build with sanitizers -> build/dev/final_program
 ## Run
 
 ```bash
-./build/release/final_program   # or ./build/dev/final_program
+./build/release/final_program [map file | lakes] [tribe...] [--seed N] [--size N]
+./build/release/final_program src/game/map.txt Imperius Bardur
+./build/release/final_program lakes Imperius Bardur --seed 7
+```
+
+`lakes` generates a Lakes map (14x14 unless `--size` says otherwise) instead of loading a file.
+
+The map defaults to `src/game/map.txt`, and every player defaults to Imperius. The map is drawn with emojis; add `--ascii` for the old letter view if your terminal shows them badly. The map only shows what the current player has explored; add `--reveal` to see everything. The map file format is described in `src/game/map.h`.
+
+## Test
+
+```bash
+make test        # release build
+make test MODE=dev   # with sanitizers
 ```
 
 ## CLI Commands
 
+| Cmd | Args  | Description                                   |
+| --- | ----- | --------------------------------------------- |
+| `l` |       | List the current player's legal commands      |
+| `c` | `n`   | Apply legal command number `n` from `l`       |
+| `e` |       | End turn                                      |
+| `i` | `x y` | Inspect a tile and its unit                   |
+| `s` |       | Show the current player's stars, techs, cities |
+| `p` |       | Print the map                                 |
+| `k` |       | Show the key for the emoji map                |
+| `q` |       | Quit                                          |
 
-| Cmd | Args                  | Description                                            |
-| --- | --------------------- | ------------------------------------------------------ |
-| `l` | `x y`                 | List valid moves and attacks for a unit at (x, y)      |
-| `m` | `fromX fromY toX toY` | Move a unit from one tile to another                   |
-| `a` | `fromX fromY toX toY` | Attack a unit at the target tile                       |
-| `i` | `x y`                 | Inspect a unit's stats (health, attack, defense, etc.) |
-| `e` |                       | End turn                                               |
+## Docs
 
-
+- `src/game/GAME.md`: the rules spec
+- `src/game/ENGINE.md`: what's implemented, what isn't yet, and the assumptions made

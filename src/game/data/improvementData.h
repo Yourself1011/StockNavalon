@@ -1,92 +1,81 @@
 #pragma once
 
-#include "tile.h"
+#include "data/techData.h"
+#include "data/terrain.h"
+#include <array>
 #include <bitset>
-#include <string>
-#include <unordered_map>
-
-class Player;
+#include <string_view>
 
 namespace ImprovementTypes {
 enum ImprovementType {
     NONE,
+    // map features, never built
     CITY,
+    VILLAGE,
     RUIN,
-    ROAD,
-    CUSTOMSHOUSE,
+    LIGHTHOUSE,
+    // buildings, which stay on their tile
     FARM,
-    WINDMILL,
-    FISHING,
-    PORT,
-    HUNTING,
-    CLEARFOREST,
-    BURNFOREST,
+    MINE,
     LUMBERHUT,
+    WINDMILL,
     SAWMILL,
-    GROWFOREST,
-    HARVESTFRUIT,
-    WHALEHUNTING,
+    FORGE,
+    MARKET,
+    PORT,
     TEMPLE,
     FORESTTEMPLE,
-    WATERTEMPLE,
     MOUNTAINTEMPLE,
-    MINE,
-    FORGE,
-    ALTEROFPEACE,
-    EMPERORSTOMB,
-    EYEOFGOD,
-    GATEOFPOWER,
-    GRANDBAZAAR,
-    PARKOFFORTUNE,
-    TOWEROFWISDOM,
-    ENCHANTANIMAL,
-    ENCHANTWHALE,
-    SANCTUARY,
-    OUTPOST,
-    ICEBANK,
-    ICETEMPLE,
-    POLARISCLIMATE,
-    FUNGI,
-    ALGAE,
-    MYCELIUM,
-    BURNSPORES,
-    CLATHRUS,
-    HIDDENSANCTUARY,
-    HARVESTSPORES,
-    NULLBUILDING,
-    CULTIVATE,
-    STARFISHING,
-    LIGHTHOUSE,
+    WATERTEMPLE,
+    // actions, which change the tile and leave nothing behind
+    HARVESTFRUIT,
+    HUNTING,
+    FISHING,
+    CLEARFOREST,
+    BURNFOREST,
+    GROWFOREST,
+    ROAD,
     BRIDGE,
-    AQUAFARM,
-    MARKET,
-    ATOLL,
-    CANAL,
-    FERTILIZE,
-    LANDFILL,
-    JETTY,
-    DESTROY,
     IMPROVEMENT_TYPE_SIZE
 };
 } // namespace ImprovementTypes
 
-struct ImprovementData {
-    ImprovementTypes::ImprovementType type = ImprovementTypes::NONE;
-    std::string displayName = "";
-    bool isBuilding = false, global = false, unique = false,
-         uniqueToCity = false;
-    int cost = 0, population = 0, maxLevel = 0, growthRate = 0, growthScore = 0;
-    // an empty bitset means there is no requirement
-    std::bitset<TerrainTypes::TERRAIN_TYPE_SIZE> terrainRequirements;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> adjacencyRequirements;
-    std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE> adjacencyImprovements;
-    ResourceTypes::ResourceType resourceRequirement = ResourceTypes::NONE;
+using ImprovementSet = std::bitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>;
 
-    // run on the tile when the improvement is made, by the player making it
-    void (*createEffect)(Tile &tile, Player &player) = nullptr;
+// GAME.md section 6
+struct ImprovementData {
+    ImprovementTypes::ImprovementType type;
+    std::string_view name;
+    // two characters, for the map display; empty for actions
+    std::string_view id;
+    bool isBuilding;
+    int cost;
+    // population given to the tile's city; for Windmill, Sawmill and Forge,
+    // population per level
+    int population;
+    TechTypes::TechType tech;
+    TerrainSet terrain;
+    ResourceTypes::ResourceType resource;
+    // at least one neighbouring tile must have one of these. For Windmill,
+    // Sawmill and Forge each such neighbour is also one level.
+    ImprovementSet adjacency;
+    // one per city
+    bool limited;
+    // can be built on tiles outside your borders
+    bool freelance;
 };
 
-extern const std::unordered_map<ImprovementTypes::ImprovementType,
-                                ImprovementData>
-    ImprovementMap;
+extern const std::array<ImprovementData, ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
+    improvementData;
 
+inline const ImprovementData &
+improvementInfo(ImprovementTypes::ImprovementType type) {
+    return improvementData[type];
+}
+
+// Windmill, Sawmill and Forge: buildings that level up with their neighbours
+bool isProducer(ImprovementTypes::ImprovementType type);
+
+// the highest level of Windmill, Sawmill, Forge and Market
+constexpr int MAX_BUILDING_LEVEL = 8;
+constexpr int MAX_TEMPLE_LEVEL = 5;

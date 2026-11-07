@@ -37,10 +37,10 @@ Polytopia is a turn-based strategy game played on a square grid. Players gain st
 
 - **During the turn:** any number of actions in any order, as long as the player can afford them.
 - **End turn:** the player ends their turn explicitly. Every unit that could still use an ability heals automatically, as if it had used Recover (section 12) (game).
-- **Capturing:** a unit can only capture a village or city if it _started_ its turn on that tile. So every capture takes at least 2 turns.
+- **Capturing and examining ruins:** a unit can only capture a village or city, or examine a ruin, if it _started_ its turn on that tile. So each takes at least 2 turns.
 - **Actions that end a unit's turn** (bengreff): embarking, disembarking, capturing, examining a ruin, Recover, Heal Others.
 - **Units without their tech:** units can come from ruins, city rewards, the starting unit or conversion without the player owning their tech. They work normally (bengreff).
-- **Meeting a tribe:** the first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (wiki). This is why the engine has to track score (section 3).
+- **Meeting a tribe** means seeing one of its units or one of its cities; a tile inside its borders alone doesn't count (game). The first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (wiki). This is why the engine has to track score (section 3).
 
 Sources: <https://polytopia.fandom.com/wiki/Game_Modes>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md> (rules doc only)
 
@@ -50,7 +50,7 @@ The real game has one command per kind of action. The engine should use the same
 
 | Group            | Commands                                                                                                                              |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Units            | Move, Attack (includes Mind Bender conversion), Recover, Heal Others, Promote, Disband, Stay, Disembark, Upgrade (boat), Hide (Cloak) |
+| Units            | Move, Attack (includes Mind Bender conversion and Infiltrate), Recover, Heal Others, Promote, Disband, Stay, Disembark, Upgrade (boat) |
 | Tiles and cities | Build (every improvement, including road, bridge, port and the forest actions), Destroy, Harvest (starfish), Capture, Examine Ruins   |
 | Economy          | Train, Research, City Reward (choose a level-up reward)                                                                               |
 | Diplomacy        | Peace Treaty (propose), Peace Request Response, Break Peace, Establish Embassy, Destroy Embassy                                       |
@@ -254,7 +254,7 @@ The owner chooses one reward each time the city levels up:
 - **Which city a unit belongs to** (wiki):
   - A unit that captures a village or city moves over to that city.
   - A unit from a ruin belongs to the exploring unit's city, but doesn't count toward its cap.
-  - A converted unit counts toward the Mind Bender's city, even past the cap. While over the cap, the city can't train units.
+  - A converted unit counts toward the converting player's capital (or a random city if they have no capital), even past the cap. While over the cap, the city can't train units.
   - When a city is captured, the units it trained lose their home city. They don't count again if the city is retaken.
 
 ### Siege
@@ -263,7 +263,7 @@ The owner chooses one reward each time the city levels up:
 
 ### Giant placement
 
-When a Giant spawns on a city tile that already has a unit on it, that unit is pushed off:
+When a Giant spawns on a city tile that already has a unit on it, that unit is pushed off. A ruin's reward unit pushes the examining unit off its ruin the same way (game):
 
 - A new unit is pushed toward the centre of the map.
 - A friendly unit is pushed onward in the direction it was moving.
@@ -336,10 +336,10 @@ Sources: <https://polytopia.fandom.com/wiki/List_of_Units>, each unit's page, <h
 | Surprise    | Its attacks get no retaliation                                                                                                                                                                                                                                                                             |
 | Static      | Can never become a veteran                                                                                                                                                                                                                                                                                 |
 | Independent | Uses no population and belongs to no city                                                                                                                                                                                                                                                                  |
-| Hide        | The unit becomes invisible to enemies, either by moving or with an explicit Hide action (bengreff). It ignores zone of control and can move through enemy units. An enemy unit moving onto its exact tile reveals it; enemy units next to it see a warning (an eye symbol) but not the unit itself (game). |
+| Hide        | The unit becomes invisible to enemies when it moves; there is no Hide action (game). The move that hides a visible unit ends its attack for the turn, even with Dash (game). It ignores zone of control and can move through enemy units and enemy cities, but can't end a move on an enemy city (game). It stays hidden on an unclaimed village; capturing the village reveals it until it next moves (game). An enemy unit moving onto its exact tile reveals it, and that enemy keeps its move (game). Enemy units next to it see a warning (an eye symbol) but not the unit itself (game). |
 | Creep       | Ignores terrain movement penalties except mountains. Does **not** ignore zone of control (wiki).                                                                                                                                                                                                           |
 | Scout       | Sees 2 tiles instead of 1                                                                                                                                                                                                                                                                                  |
-| Infiltrate  | Only targets adjacent enemy cities. The unit is used up and spawns as many Daggers as the city's level (max 5) inside that city's borders. Pirates spawn on water tiles.                                                                                                                                   |
+| Infiltrate  | Only targets adjacent enemy cities, never unclaimed villages (game). The unit is used up and spawns as many Daggers as the city's level (max 5) inside that city's borders. Pirates spawn on water tiles. |
 | Carry       | Carries one land unit. Moving onto land next to water lets it off, which ends the turn (section 10).                                                                                                                                                                                                       |
 | Water       | Can only move on water                                                                                                                                                                                                                                                                                     |
 | Stomp       | Every time it moves, including disembarking, every adjacent enemy takes splash damage (section 11) (game). Assumed to be half of what the unit's attack on that enemy would deal, not rounded.                                                                                                             |
@@ -433,20 +433,25 @@ Sources: <https://polytopia.fandom.com/wiki/Units>, <https://polytopia.fandom.co
 
 ## 13. Ruins and explorers
 
-- **Ruins:** a unit standing on a ruin can examine it. Examining is an action and ends the unit's turn (game).
+- **Ruins:** a unit standing on a ruin can examine it, but only if it started its turn there, not on the turn it arrives (game). Examining is an action and ends the unit's turn (game).
 - **Rewards** are picked uniformly at random from those whose conditions hold (game):
   - a free tech (only if some tech is left to research)
   - 10 stars
   - +3 population in the capital
   - an Explorer (only if some tile in the 5×5 around the ruin is still unexplored)
-  - on land, a veteran Swordsman; on water, a veteran Rammer carrying a Warrior
+  - on land, a veteran Swordsman; on water, a veteran Rammer carrying a Warrior. It appears on the ruin and pushes the examining unit off by the Giant placement rules (section 7) (game).
 - The full conditions are listed at <https://polytopia.fandom.com/wiki/Ruin>.
 
-- **Explorer:**
-  - It moves itself 12 times (15 before Feb 2026), each time towards the best-scoring tile still in fog. Ties are broken at random.
-  - It can backtrack.
-  - It can't enter water until the player has Fishing, or ocean until Sailing.
-  - It disappears afterwards.
+- **Explorer** (wiki, version 115):
+  - It moves itself 12 times (15 before Feb 2026), one step each time, then disappears.
+  - It can enter the same terrain the player's units can: mountains with Climbing, shallow water with Fishing, ocean with Sailing (game). The wiki's Climbing, Sailing and Navigation is out of date.
+  - It can step onto tiles with other units on them, including enemies.
+  - Before every step it scores tiles again. Lower is better:
+    - A tile it could stand on scores by the fog tiles standing there would clear (its 3×3), counting at most 4: 143 for 4 or more, 153 for 3, 163 for 2, 173 for 1. If a lighthouse is among that fog, 110, 120, 130 and 140 instead. Fog cleared by sight from a mountain doesn't count.
+    - A breadth-first search then spreads scores 3 steps outward, +100 a step, keeping the lowest score per tile. So the closest fog always wins, and the amount cleared breaks ties between equally close options. In all it looks 4 steps ahead.
+    - Tiles it has already walked over get a small penalty, so it avoids backtracking when it can.
+  - It steps to the neighbour with the lowest score. Neighbours with no score (no fog within reach) count as equal, apart from the backtracking penalty. Ties are broken at random.
+  - If it has no neighbour it can enter, it disappears.
 
 Sources: <https://polytopia.fandom.com/wiki/Ruin>, <https://polytopia.fandom.com/wiki/Explorer>
 
@@ -713,9 +718,15 @@ The details below aren't public. The engine uses these defaults for now. They'll
 | Climate regions | Each capital grows its region outward one tile per round, all capitals at once, with ties broken at random, until every tile has a region. |
 | Capping resource modifiers | Per tile, each resource's chance is (its rate ÷ the terrain's share) × the tribe modifier. If a terrain's chances add up to more than 1, scale them down to add up to 1, so no tile is empty. |
 | Kickoo's water modifier | No effect, apart from the 2 fish water tiles at its capital on Drylands. |
+| Who gets the meeting bonus | Only the player who sees the other tribe. The other tribe meets them when it sees one of theirs. |
 | Archipelago water ruins | At most a third, like Lakes and Pangea. |
 | Where starting resources go | Random tiles next to the capital, with the terrain changed to fit the resource if needed (e.g. fish needs water). |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10. |
+| Where a capital goes in its domain | A random tile at least a tile in from the domain's sides and 2 from the map edge. |
+| How lakes are shaped | Grown from random seeds away from other water, 4 to 12 tiles at a time along straight neighbours, until the target share is reached. Redone if a capital can't reach 2 villages over land. |
+| How far suburbs are | 3 to 4 tiles from their capital, placed round-robin between capitals. |
+| Fish on ocean | 50% on ocean next to a village, 25% two tiles away. |
+| Ocean ruins "at least 2 tiles from any village" | At least 3 tiles away (2 tiles between). |
 
 Sources: <https://polytopia.fandom.com/wiki/Map_Generation> (full page), <https://youtu.be/fJ562xzAIVs>, <https://github.com/HenBOMB/Polyfish>, <https://github.com/QuasiStellar/Polytopia-Map-Generator>, <https://github.com/usemsedge/PolytopiaBoardRenderer>
 
@@ -764,6 +775,11 @@ Each item, with the section it's from:
   - Healing uses up the turn, but upgrading does not
 - [x] What reveals a hidden unit? (§9)
   - An opponent unit moving on to the exact tile that the hidden unit is on (however, opponents will see an eye symbol next to their unit if a hidden unit is next to it)
+  - The moving unit keeps its move. There is no Hide action: units hide by moving
+  - A Cloak stays hidden on an unclaimed village until it captures it, then is visible until it moves. It can pass through enemy cities but not end on one. Villages can't be infiltrated
+  - The move that hides a visible Cloak ends its attack for the turn (no Dash)
+- [x] Explorer terrain techs (§13)
+  - The same as units: Climbing, Fishing, Sailing
 - [x] Stomp damage amount (§9)
   - Same as splash damage
 
@@ -820,6 +836,7 @@ Each item, with the section it's from:
 
 - [ ] Where starting resources are placed (§17; low priority)
   - Tribe modifiers and starting resources: settled by the data file
+  - Default: random tiles next to the capital (section 18)
 - [x] Map-generation terrain percentages (§18)
   - Wiki Map Generation page
 - [ ] Map generation: climate-region method, how the fairest map is picked, how resource modifiers are capped, Kickoo's water modifier (§18)

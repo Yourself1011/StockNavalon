@@ -1,186 +1,79 @@
 #include "data/unitData.h"
 #include "utils.h"
 
-namespace Units {
-const UnitData warrior = {
-    .type = UnitTypes::WARRIOR,
-    .trainable = true,
-    .cost = 2,
-    .maxHealth = 10,
-    .defence = 2,
-    .movement = 1,
-    .range = 1,
-    .attack = 2,
-    .id = "wa",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::DASH, Abilities::FORTIFY, Abilities::LAND})};
-const UnitData rider = {.type = UnitTypes::RIDER,
-                        .trainable = true,
-                        .cost = 3,
-                        .maxHealth = 10,
-                        .defence = 1,
-                        .movement = 2,
-                        .range = 1,
-                        .attack = 2,
-                        .id = "ri",
-                        .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                            {Abilities::DASH, Abilities::ESCAPE,
-                             Abilities::FORTIFY, Abilities::LAND})};
-const UnitData knight = {.type = UnitTypes::KNIGHT,
-                         .trainable = true,
-                         .cost = 8,
-                         .maxHealth = 10,
-                         .defence = 1,
-                         .movement = 3,
-                         .range = 1,
-                         .attack = 3.5,
-                         .id = "kn",
-                         .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                             {Abilities::DASH, Abilities::PERSIST,
-                              Abilities::FORTIFY, Abilities::LAND})};
-const UnitData defender = {.type = UnitTypes::DEFENDER,
-                           .trainable = true,
-                           .cost = 3,
-                           .maxHealth = 15,
-                           .defence = 3,
-                           .movement = 1,
-                           .range = 1,
-                           .attack = 1,
-                           .id = "de",
-                           .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                               {Abilities::FORTIFY, Abilities::LAND})};
-const UnitData cloak = {
-    .type = UnitTypes::CLOAK,
-    .trainable = true,
-    .cost = 3,
-    .maxHealth = 5,
-    .defence = 0.5,
-    .movement = 2,
-    .range = 1,
-    .attack = 1,
-    .id = "cl",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::HIDE, Abilities::CREEP, Abilities::INFILTRATE,
-         Abilities::DASH, Abilities::SCOUT, Abilities::STIFF,
-         Abilities::LAND})};
-const UnitData mindBender = {.type = UnitTypes::MINDBENDER,
-                             .trainable = true,
-                             .cost = 5,
-                             .maxHealth = 10,
-                             .defence = 1,
-                             .movement = 1,
-                             .range = 1,
-                             .attack = 0,
-                             .id = "mb",
-                             .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                                 {Abilities::HEAL, Abilities::CONVERT,
-                                  Abilities::STIFF, Abilities::LAND})};
-const UnitData swordsman = {.type = UnitTypes::SWORDSMAN,
-                            .trainable = true,
-                            .cost = 5,
-                            .maxHealth = 15,
-                            .defence = 3,
-                            .movement = 1,
-                            .range = 1,
-                            .attack = 3,
-                            .id = "sw",
-                            .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                                {Abilities::DASH, Abilities::LAND})};
-const UnitData raft = {.type = UnitTypes::RAFT,
-                       .trainable = false,
-                       .cost = 0,
-                       .maxHealth = 10,
-                       .defence = 1,
-                       .movement = 2,
-                       .range = 2,
-                       .attack = 0,
-                       .id = "rf",
-                       .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                           {Abilities::CARRY, Abilities::STATIC,
-                            Abilities::STIFF, Abilities::WATER})};
-const UnitData rammer = {.type = UnitTypes::RAMMER,
-                         .trainable = false,
-                         .cost = 5,
-                         .maxHealth = 10,
-                         .defence = 3,
-                         .movement = 3,
-                         .range = 1,
-                         .attack = 3,
-                         .id = "rm",
-                         .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                             {Abilities::DASH, Abilities::CARRY,
-                              Abilities::STATIC, Abilities::WATER})};
-const UnitData scout = {
-    .type = UnitTypes::SCOUT,
-    .trainable = false,
-    .cost = 5,
-    .maxHealth = 10,
-    .defence = 3,
-    .movement = 3,
-    .range = 1,
-    .attack = 3,
-    .id = "sc",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::DASH, Abilities::CARRY, Abilities::SCOUT, Abilities::STATIC,
-         Abilities::WATER})};
-const UnitData bomber = {
-    .type = UnitTypes::BOMBER,
-    .trainable = false,
-    .cost = 15,
-    .maxHealth = 10,
-    .defence = 2,
-    .movement = 2,
-    .range = 3,
-    .attack = 3,
-    .id = "bo",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::CARRY, Abilities::SPLASH, Abilities::STIFF,
-         Abilities::STATIC, Abilities::WATER})};
-const UnitData catapult = {.type = UnitTypes::CATAPULT,
-                           .trainable = true,
-                           .cost = 8,
-                           .maxHealth = 10,
-                           .defence = 0,
-                           .movement = 1,
-                           .range = 3,
-                           .attack = 4,
-                           .id = "ca",
-                           .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                               {Abilities::STIFF, Abilities::LAND})};
-const UnitData archer = {
-    .type = UnitTypes::ARCHER,
-    .trainable = true,
-    .cost = 3,
-    .maxHealth = 10,
-    .defence = 1,
-    .movement = 1,
-    .range = 2,
-    .attack = 2,
-    .id = "ar",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::DASH, Abilities::FORTIFY, Abilities::LAND})};
-const UnitData giant = {.type = UnitTypes::GIANT,
-                        .trainable = false,
-                        .cost = 10,
-                        .maxHealth = 40,
-                        .defence = 4,
-                        .movement = 1,
-                        .range = 1,
-                        .attack = 5,
-                        .id = "gi",
-                        .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-                            {Abilities::STATIC, Abilities::LAND})};
-const UnitData dagger = {
-    .type = UnitTypes::DAGGER,
-    .trainable = false,
-    .cost = 2,
-    .maxHealth = 10,
-    .defence = 2,
-    .movement = 1,
-    .range = 1,
-    .attack = 2,
-    .id = "da",
-    .abilities = makeBitset<Abilities::ABILITY_SIZE>(
-        {Abilities::DASH, Abilities::SURPRISE, Abilities::INDEPENDENT,
-         Abilities::STATIC, Abilities::LAND})};
-} // namespace Units
+namespace {
+using namespace UnitTypes;
+using namespace Abilities;
+using TechTypes::TechType;
+
+UnitData unit(UnitType type, std::string_view name, std::string_view id,
+              int cost, int maxHp, int attack, int defence, int movement,
+              int range, std::initializer_list<int> abilities, TechType tech,
+              bool trainable) {
+    return {type,     name,  id,
+            cost,     maxHp, attack,
+            defence,  movement, range,
+            makeBitset<ABILITY_SIZE>(abilities), tech, trainable};
+}
+} // namespace
+
+const std::array<UnitData, UNIT_TYPE_SIZE> unitData = {
+    unit(WARRIOR, "warrior", "wa", 2, 100, 20, 20, 1, 1, {DASH, FORTIFY},
+         TechTypes::BASIC, true),
+    unit(RIDER, "rider", "ri", 3, 100, 20, 10, 2, 1, {DASH, ESCAPE, FORTIFY},
+         TechTypes::RIDING, true),
+    unit(ARCHER, "archer", "ar", 3, 100, 20, 10, 1, 2, {DASH, FORTIFY},
+         TechTypes::ARCHERY, true),
+    unit(DEFENDER, "defender", "de", 3, 150, 10, 30, 1, 1, {FORTIFY},
+         TechTypes::STRATEGY, true),
+    unit(SWORDSMAN, "swordsman", "sw", 5, 150, 30, 30, 1, 1, {DASH},
+         TechTypes::SMITHERY, true),
+    unit(MINDBENDER, "mind bender", "mb", 5, 100, 0, 10, 1, 1,
+         {HEAL, CONVERT, STIFF}, TechTypes::PHILOSOPHY, true),
+    unit(CATAPULT, "catapult", "ca", 8, 100, 40, 0, 1, 3, {STIFF},
+         TechTypes::MATHEMATICS, true),
+    unit(KNIGHT, "knight", "kn", 8, 100, 35, 10, 3, 1,
+         {DASH, PERSIST, FORTIFY}, TechTypes::CHIVALRY, true),
+    unit(CLOAK, "cloak", "cl", 8, 50, 20, 5, 2, 1,
+         {HIDE, INFILTRATE, DASH, Abilities::SCOUT, CREEP, STIFF, STATIC},
+         TechTypes::DIPLOMACY, true),
+    unit(DAGGER, "dagger", "da", 2, 100, 20, 20, 1, 1,
+         {DASH, SURPRISE, INDEPENDENT, STATIC}, TechTypes::BASIC, false),
+    unit(GIANT, "giant", "gi", 10, 400, 50, 40, 1, 1, {STATIC},
+         TechTypes::BASIC, false),
+
+    unit(RAFT, "raft", "rf", 0, 0, 0, 10, 2, 2, {WATER, CARRY, STIFF, STATIC},
+         TechTypes::FISHING, false),
+    unit(UnitTypes::SCOUT, "scout", "sc", 5, 0, 20, 10, 3, 2,
+         {WATER, DASH, CARRY, Abilities::SCOUT, STATIC}, TechTypes::SAILING, false),
+    unit(RAMMER, "rammer", "rm", 5, 0, 30, 30, 3, 1,
+         {WATER, DASH, CARRY, STATIC}, TechTypes::RAMMING, false),
+    unit(BOMBER, "bomber", "bo", 15, 0, 30, 20, 2, 3,
+         {WATER, CARRY, SPLASH, STIFF, STATIC}, TechTypes::NAVIGATION, false),
+    unit(JUGGERNAUT, "juggernaut", "ju", 0, 0, 40, 40, 2, 1,
+         {WATER, CARRY, STIFF, STOMP, STATIC}, TechTypes::FISHING, false),
+    unit(DINGHY, "dinghy", "dy", 0, 0, 20, 5, 2, 1,
+         {WATER, CARRY, HIDE, INFILTRATE, DASH, Abilities::SCOUT, STIFF, STATIC},
+         TechTypes::FISHING, false),
+    // a Pirate spawned on water has no passenger and uses its own 15 HP
+    unit(PIRATE, "pirate", "pi", 0, 150, 20, 20, 2, 1,
+         {WATER, CARRY, DASH, SURPRISE, INDEPENDENT, STATIC},
+         TechTypes::FISHING, false),
+};
+
+UnitTypes::UnitType boatFor(UnitTypes::UnitType passenger) {
+    switch (passenger) {
+    case GIANT:
+        return JUGGERNAUT;
+    case CLOAK:
+        return DINGHY;
+    case DAGGER:
+        return PIRATE;
+    default:
+        return RAFT;
+    }
+}
+
+bool isRaftFamily(UnitTypes::UnitType type) {
+    return type == RAFT || type == UnitTypes::SCOUT || type == RAMMER || type == BOMBER;
+}

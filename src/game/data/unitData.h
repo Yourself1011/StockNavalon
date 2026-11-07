@@ -1,108 +1,88 @@
-
 #pragma once
 
+#include "data/techData.h"
+#include <array>
 #include <bitset>
-#include <string>
+#include <string_view>
 
 namespace Abilities {
-
+// GAME.md section 9
 enum Ability {
     DASH,
     ESCAPE,
-    SCOUT,
-    SNEAK,
-    HIDE,
-    BUILD,
     PERSIST,
-    CONVERT,
-    HEAL,
-    SWIM,
-    CARRY,
-    GROW,
-    FLY,
-    SPLASH,
-    DECAY,
-    NAVIGATE,
-    CRUSH,
-    FREEZE,
-    FREEZEAREA,
-    AUTOFREEZE,
-    SKATE,
     FORTIFY,
-    CREEP,
-    BOOST,
-    INDEPENDENT,
-    POISON,
-    EAT,
-    UNIQUE,
-    EXPLODE,
-    SURPRISE,
-    AGENT,
-    INFILTRATE,
-    DETECT,
-    INTERCEPT,
+    HEAL,
+    CONVERT,
+    SPLASH,
     STIFF,
-    PROTECT,
-    STOMP,
-    AUTOHEAL,
+    SURPRISE,
     STATIC,
-    DIVE,
-    TENTACLES,
-    AUTOFLOOD,
-    DRENCH,
-    AMPHIBIOUS,
+    INDEPENDENT,
+    HIDE,
+    CREEP,
+    SCOUT,
+    INFILTRATE,
+    CARRY,
     WATER,
-    LAND,
+    STOMP,
     ABILITY_SIZE
 };
-}
+} // namespace Abilities
 
 namespace UnitTypes {
 enum UnitType {
     WARRIOR,
     RIDER,
-    KNIGHT,
-    DEFENDER,
-    CLOAK,
-    MINDBENDER,
-    SWORDSMAN,
-    RAFT,
-    RAMMER,
-    SCOUT,
-    BOMBER,
-    CATAPULT,
     ARCHER,
-    GIANT,
+    DEFENDER,
+    SWORDSMAN,
+    MINDBENDER,
+    CATAPULT,
+    KNIGHT,
+    CLOAK,
     DAGGER,
+    GIANT,
+    // boats; SCOUT is the boat, not the Scout skill
+    RAFT,
+    SCOUT,
+    RAMMER,
+    BOMBER,
+    JUGGERNAUT,
+    DINGHY,
+    PIRATE,
     UNIT_TYPE_SIZE
 };
-}
+} // namespace UnitTypes
 
+using AbilitySet = std::bitset<Abilities::ABILITY_SIZE>;
+
+// GAME.md section 8. HP, attack and defence are stored x10 so every value is
+// an exact integer.
 struct UnitData {
     UnitTypes::UnitType type;
-    bool trainable = false;
-    int cost = 0, maxHealth = 0;
-    double defence = 0;
-    int movement = 0, range = 0;
-    double attack = 0;
-    std::string id;
-    std::bitset<Abilities::ABILITY_SIZE> abilities;
+    std::string_view name;
+    // two characters, for the map display
+    std::string_view id;
+    // for boats made by upgrading a Raft, the upgrade price
+    int cost;
+    // 0 for boats, which take their passenger's HP
+    int maxHp;
+    int attack, defence;
+    int movement, range;
+    AbilitySet abilities;
+    // the tech needed to train, or to upgrade a Raft into, this unit
+    TechTypes::TechType tech;
+    bool trainable;
 };
 
-namespace Units {
-extern const UnitData warrior;
-extern const UnitData rider;
-extern const UnitData knight;
-extern const UnitData defender;
-extern const UnitData cloak;
-extern const UnitData mindBender;
-extern const UnitData swordsman;
-extern const UnitData raft;
-extern const UnitData rammer;
-extern const UnitData scout;
-extern const UnitData bomber;
-extern const UnitData catapult;
-extern const UnitData archer;
-extern const UnitData giant;
-extern const UnitData dagger;
-} // namespace Units
+extern const std::array<UnitData, UnitTypes::UNIT_TYPE_SIZE> unitData;
+
+inline const UnitData &unitInfo(UnitTypes::UnitType type) {
+    return unitData[type];
+}
+
+// the boat a land unit becomes when it moves onto a Port
+UnitTypes::UnitType boatFor(UnitTypes::UnitType passenger);
+// boats a Raft can be upgraded into, and change between
+bool isRaftFamily(UnitTypes::UnitType type);

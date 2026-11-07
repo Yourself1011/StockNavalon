@@ -1,320 +1,181 @@
 #include "data/improvementData.h"
-#include "improvement.h"
-#include "player.h"
-#include "tile.h"
 #include "utils.h"
 
-const std::unordered_map<ImprovementTypes::ImprovementType, ImprovementData>
-    ImprovementMap = {
-        {ImprovementTypes::CITY,
-         {.type = ImprovementTypes::CITY,
-          .displayName = "ci",
-          .isBuilding = true,
-          .cost = 0}},
+namespace {
+using namespace ImprovementTypes;
+using namespace TerrainTypes;
+using ResourceTypes::ResourceType;
+using TechTypes::TechType;
 
-        {ImprovementTypes::RUIN,
-         {.type = ImprovementTypes::RUIN,
-          .displayName = "ru",
-          .isBuilding = true,
-          .cost = 0}},
-
-        {ImprovementTypes::ROAD,
-         {.type = ImprovementTypes::ROAD,
-          .displayName = "ro",
-          .global = true,
-          .cost = 3,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::FOREST})}},
-
-        {ImprovementTypes::FARM,
-         {.type = ImprovementTypes::FARM,
-          .displayName = "fa",
-          .isBuilding = true,
-          .cost = 5,
-          .population = 2,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD}),
-          .resourceRequirement = ResourceTypes::CROP}},
-
-        {ImprovementTypes::WINDMILL,
-         {
-             .type = ImprovementTypes::WINDMILL,
-             .displayName = "wm",
-             .isBuilding = true,
-             .uniqueToCity = true,
-             .cost = 5,
-             .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-                 {TerrainTypes::FIELD}),
-             .adjacencyRequirements =
-                 makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                     {ImprovementTypes::FARM}),
-             .adjacencyImprovements =
-                 makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                     {ImprovementTypes::FARM}),
-         }},
-
-        {ImprovementTypes::FISHING,
-         {.type = ImprovementTypes::FISHING,
-          .isBuilding = false,
-          .cost = 2,
-          .population = 1,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::WATER, TerrainTypes::OCEAN}),
-          .resourceRequirement = ResourceTypes::FISH,
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::NONE;
-              }}},
-
-        {ImprovementTypes::PORT,
-         {.type = ImprovementTypes::PORT,
-          .displayName = "po",
-          .isBuilding = true,
-          .cost = 7,
-          .population = 1,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::WATER})}},
-
-        {ImprovementTypes::HUNTING,
-         {.type = ImprovementTypes::HUNTING,
-          .isBuilding = false,
-          .cost = 2,
-          .population = 1,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FOREST}),
-          .resourceRequirement = ResourceTypes::GAME,
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::NONE;
-              }}},
-
-        {ImprovementTypes::CLEARFOREST,
-         {.type = ImprovementTypes::CLEARFOREST,
-          .isBuilding = false,
-          .cost = 0,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FOREST}),
-          .createEffect =
-              [](Tile &tile, Player &player) {
-                  tile.resource = ResourceTypes::NONE;
-                  tile.terrainType = TerrainTypes::FIELD;
-                  player.stars += 1;
-              }}},
-
-        {ImprovementTypes::BURNFOREST,
-         {.type = ImprovementTypes::BURNFOREST,
-          .isBuilding = false,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FOREST}),
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::CROP;
-                  tile.terrainType = TerrainTypes::FIELD;
-              }}},
-
-        {ImprovementTypes::LUMBERHUT,
-         {.type = ImprovementTypes::LUMBERHUT,
-          .displayName = "lh",
-          .isBuilding = true,
-          .cost = 3,
-          .population = 1,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FOREST})}},
-
-        {ImprovementTypes::SAWMILL,
-         {.type = ImprovementTypes::SAWMILL,
-          .displayName = "sm",
-          .isBuilding = true,
-          .uniqueToCity = true,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::FOREST}),
-          .adjacencyRequirements =
-              makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                  {ImprovementTypes::LUMBERHUT}),
-          .adjacencyImprovements =
-              makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                  {ImprovementTypes::LUMBERHUT})}},
-
-        {ImprovementTypes::GROWFOREST,
-         {.type = ImprovementTypes::GROWFOREST,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD}),
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::NONE;
-                  tile.terrainType = TerrainTypes::FOREST;
-              }}},
-
-        {ImprovementTypes::HARVESTFRUIT,
-         {.type = ImprovementTypes::HARVESTFRUIT,
-          .cost = 2,
-          .population = 1,
-          .resourceRequirement = ResourceTypes::FRUIT,
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::NONE;
-              }}},
-
-        {ImprovementTypes::TEMPLE,
-         {.type = ImprovementTypes::TEMPLE,
-          .displayName = "tm",
-          .isBuilding = true,
-          .cost = 20,
-          .population = 1,
-          .maxLevel = 3,
-          .growthRate = 3,
-          .growthScore = 100,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD})}},
-
-        {ImprovementTypes::FORESTTEMPLE,
-         {.type = ImprovementTypes::FORESTTEMPLE,
-          .displayName = "ft",
-          .isBuilding = true,
-          .cost = 20,
-          .population = 1,
-          .maxLevel = 3,
-          .growthRate = 3,
-          .growthScore = 100,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FOREST})}},
-
-        {ImprovementTypes::WATERTEMPLE,
-         {.type = ImprovementTypes::WATERTEMPLE,
-          .displayName = "wt",
-          .isBuilding = true,
-          .cost = 20,
-          .population = 1,
-          .maxLevel = 3,
-          .growthRate = 3,
-          .growthScore = 100,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::WATER})}},
-
-        {ImprovementTypes::MOUNTAINTEMPLE,
-         {.type = ImprovementTypes::MOUNTAINTEMPLE,
-          .displayName = "mt",
-          .isBuilding = true,
-          .cost = 20,
-          .population = 1,
-          .maxLevel = 3,
-          .growthRate = 3,
-          .growthScore = 100,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::MOUNTAIN})}},
-
-        {ImprovementTypes::MINE,
-         {.type = ImprovementTypes::MINE,
-          .displayName = "mi",
-          .isBuilding = true,
-          .cost = 5,
-          .population = 2,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::MOUNTAIN}),
-          .resourceRequirement = ResourceTypes::METAL}},
-
-        {ImprovementTypes::FORGE,
-         {.type = ImprovementTypes::FORGE,
-          .displayName = "fo",
-          .isBuilding = true,
-          .uniqueToCity = true,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::MOUNTAIN}),
-          .adjacencyRequirements =
-              makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                  {ImprovementTypes::MINE}),
-          .adjacencyImprovements =
-              makeBitset<ImprovementTypes::IMPROVEMENT_TYPE_SIZE>(
-                  {ImprovementTypes::MINE})}},
-
-        {ImprovementTypes::ALTEROFPEACE,
-         {.type = ImprovementTypes::ALTEROFPEACE,
-          .displayName = "ap",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::EMPERORSTOMB,
-         {.type = ImprovementTypes::EMPERORSTOMB,
-          .displayName = "et",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::EYEOFGOD,
-         {.type = ImprovementTypes::EYEOFGOD,
-          .displayName = "eg",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::GATEOFPOWER,
-         {.type = ImprovementTypes::GATEOFPOWER,
-          .displayName = "gp",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::GRANDBAZAAR,
-         {.type = ImprovementTypes::GRANDBAZAAR,
-          .displayName = "gb",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::TOWEROFWISDOM,
-         {.type = ImprovementTypes::TOWEROFWISDOM,
-          .displayName = "tw",
-          .isBuilding = true,
-          .unique = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        // TODO: make this work
-        {ImprovementTypes::STARFISHING,
-         {.type = ImprovementTypes::STARFISHING,
-          .resourceRequirement = ResourceTypes::STARFISH,
-          .createEffect =
-              [](Tile &tile, Player &) {
-                  tile.resource = ResourceTypes::NONE;
-              }}},
-
-        {ImprovementTypes::LIGHTHOUSE,
-         {.type = ImprovementTypes::LIGHTHOUSE,
-          .displayName = "li",
-          .isBuilding = true,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD, TerrainTypes::WATER})}},
-
-        {ImprovementTypes::BRIDGE,
-         {.type = ImprovementTypes::BRIDGE,
-          .displayName = "br",
-          .isBuilding = true,
-          .global = true,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::WATER})}},
-
-        {ImprovementTypes::MARKET,
-         {.type = ImprovementTypes::MARKET,
-          .displayName = "ma",
-          .isBuilding = true,
-          .uniqueToCity = true,
-          .cost = 5,
-          .terrainRequirements = makeBitset<TerrainTypes::TERRAIN_TYPE_SIZE>(
-              {TerrainTypes::FIELD})}},
-
-        {ImprovementTypes::DESTROY,
-         {.type = ImprovementTypes::DESTROY,
-          .createEffect = [](Tile &tile,
-                             Player &) { tile.improvement.reset(); }}},
+struct Args {
+    std::string_view id;
+    bool isBuilding = false;
+    int cost = 0, population = 0;
+    TechType tech = TechTypes::BASIC;
+    std::initializer_list<int> terrain;
+    ResourceType resource = ResourceTypes::NONE;
+    std::initializer_list<int> adjacency;
+    bool limited = false, freelance = false;
 };
+
+ImprovementData improvement(ImprovementType type, std::string_view name,
+                            const Args &args) {
+    return {type,
+            name,
+            args.id,
+            args.isBuilding,
+            args.cost,
+            args.population,
+            args.tech,
+            makeBitset<TERRAIN_TYPE_SIZE>(args.terrain),
+            args.resource,
+            makeBitset<IMPROVEMENT_TYPE_SIZE>(args.adjacency),
+            args.limited,
+            args.freelance};
+}
+} // namespace
+
+const std::array<ImprovementData, IMPROVEMENT_TYPE_SIZE> improvementData = {
+    improvement(NONE, "none", {}),
+    improvement(CITY, "city", {.id = "ci", .isBuilding = true}),
+    improvement(VILLAGE, "village", {.id = "vi", .isBuilding = true}),
+    improvement(RUIN, "ruin", {.id = "ru", .isBuilding = true}),
+    improvement(LIGHTHOUSE, "lighthouse", {.id = "li", .isBuilding = true}),
+
+    improvement(FARM, "farm",
+                {.id = "fa",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .population = 2,
+                 .tech = TechTypes::FARMING,
+                 .terrain = {FIELD},
+                 .resource = ResourceTypes::CROP}),
+    improvement(MINE, "mine",
+                {.id = "mi",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .population = 2,
+                 .tech = TechTypes::MINING,
+                 .terrain = {MOUNTAIN},
+                 .resource = ResourceTypes::METAL}),
+    improvement(LUMBERHUT, "lumber hut",
+                {.id = "lh",
+                 .isBuilding = true,
+                 .cost = 3,
+                 .population = 1,
+                 .tech = TechTypes::FORESTRY,
+                 .terrain = {FOREST}}),
+    improvement(WINDMILL, "windmill",
+                {.id = "wm",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .population = 1,
+                 .tech = TechTypes::CONSTRUCTION,
+                 .terrain = {FIELD},
+                 .adjacency = {FARM},
+                 .limited = true}),
+    improvement(SAWMILL, "sawmill",
+                {.id = "sm",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .population = 1,
+                 .tech = TechTypes::MATHEMATICS,
+                 .terrain = {FIELD},
+                 .adjacency = {LUMBERHUT},
+                 .limited = true}),
+    improvement(FORGE, "forge",
+                {.id = "fo",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .population = 2,
+                 .tech = TechTypes::SMITHERY,
+                 .terrain = {FIELD, FOREST},
+                 .adjacency = {MINE},
+                 .limited = true}),
+    improvement(MARKET, "market",
+                {.id = "ma",
+                 .isBuilding = true,
+                 .cost = 5,
+                 .tech = TechTypes::TRADE,
+                 .terrain = {FIELD},
+                 .adjacency = {WINDMILL, SAWMILL, FORGE},
+                 .limited = true}),
+    improvement(PORT, "port",
+                {.id = "po",
+                 .isBuilding = true,
+                 .cost = 7,
+                 .population = 1,
+                 .tech = TechTypes::FISHING,
+                 .terrain = {WATER}}),
+    improvement(TEMPLE, "temple",
+                {.id = "te",
+                 .isBuilding = true,
+                 .cost = 20,
+                 .population = 1,
+                 .tech = TechTypes::FREESPIRIT,
+                 .terrain = {FIELD}}),
+    improvement(FORESTTEMPLE, "forest temple",
+                {.id = "ft",
+                 .isBuilding = true,
+                 .cost = 15,
+                 .population = 1,
+                 .tech = TechTypes::SPIRITUALISM,
+                 .terrain = {FOREST}}),
+    improvement(MOUNTAINTEMPLE, "mountain temple",
+                {.id = "mt",
+                 .isBuilding = true,
+                 .cost = 20,
+                 .population = 1,
+                 .tech = TechTypes::MEDITATION,
+                 .terrain = {MOUNTAIN}}),
+    improvement(WATERTEMPLE, "water temple",
+                {.id = "wt",
+                 .isBuilding = true,
+                 .cost = 20,
+                 .population = 1,
+                 .tech = TechTypes::AQUATISM,
+                 .terrain = {WATER, OCEAN}}),
+
+    improvement(HARVESTFRUIT, "harvest fruit",
+                {.cost = 2,
+                 .population = 1,
+                 .tech = TechTypes::ORGANIZATION,
+                 .terrain = {FIELD},
+                 .resource = ResourceTypes::FRUIT}),
+    improvement(HUNTING, "hunting",
+                {.cost = 2,
+                 .population = 1,
+                 .tech = TechTypes::HUNTING,
+                 .terrain = {FOREST},
+                 .resource = ResourceTypes::GAME}),
+    improvement(FISHING, "fishing",
+                {.cost = 2,
+                 .population = 1,
+                 .tech = TechTypes::FISHING,
+                 .terrain = {WATER, OCEAN},
+                 .resource = ResourceTypes::FISH}),
+    improvement(CLEARFOREST, "clear forest",
+                {.tech = TechTypes::FORESTRY, .terrain = {FOREST}}),
+    improvement(BURNFOREST, "burn forest",
+                {.cost = 3,
+                 .tech = TechTypes::CONSTRUCTION,
+                 .terrain = {FOREST}}),
+    improvement(GROWFOREST, "grow forest",
+                {.cost = 5,
+                 .tech = TechTypes::SPIRITUALISM,
+                 .terrain = {FIELD}}),
+    improvement(ROAD, "road",
+                {.cost = 3,
+                 .tech = TechTypes::ROADS,
+                 .terrain = {FIELD, FOREST},
+                 .freelance = true}),
+    improvement(BRIDGE, "bridge",
+                {.cost = 5,
+                 .tech = TechTypes::ROADS,
+                 .terrain = {WATER},
+                 .freelance = true}),
+};
+
+bool isProducer(ImprovementTypes::ImprovementType type) {
+    return type == WINDMILL || type == SAWMILL || type == FORGE;
+}

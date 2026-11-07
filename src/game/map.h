@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tile.h"
+#include <istream>
 #include <string>
 #include <vector>
 
@@ -16,19 +17,23 @@ enum MapType {
 };
 } // namespace MapTypes
 
-class Map {
-    MapTypes::MapType mapType;
+// A map before the game starts: terrain, resources and features, plus the
+// capital tile of each player in seat order.
+struct MapData {
+    int size = 0;
+    MapTypes::MapType type = MapTypes::LAKES;
+    // index y * size + x
     std::vector<Tile> tiles;
-
-  public:
-    Game *game;
-    int size;
-    Map(Game *game, int size, MapTypes::MapType mapType);
-    Map(Game *game, const std::string &fileName);
-
-    bool inBounds(int x, int y) const;
-    // throws std::out_of_range if (x, y) is off the map
-    Tile *at(int x, int y);
-    const Tile *at(int x, int y) const;
-    void print() const;
+    std::vector<int> capitals;
 };
+
+// Map file format: "<size> <mapType>" followed by size * size tokens, row by
+// row from the top. Each token is a terrain character (F field, T forest,
+// M mountain, W shallow water, O ocean) followed by any of:
+//   f c g m h s  fruit, crop, game, metal, fish, starfish
+//   V R L        village, ruin, lighthouse
+//   0-9          the capital of that player
+//   =            road (a bridge on shallow water)
+// e.g. "Tg" is a forest with game, "F0" player 0's capital.
+MapData parseMap(std::istream &in);
+MapData loadMap(const std::string &fileName);

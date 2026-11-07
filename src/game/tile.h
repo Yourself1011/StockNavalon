@@ -1,56 +1,30 @@
 #pragma once
 
-#include <array>
-#include <memory>
+#include "data/improvementData.h"
+#include "data/terrain.h"
+#include <cstdint>
 
-class Unit;
-class Player;
-class Improvement;
-class Game;
-struct ImprovementData;
-struct UnitData;
-
-namespace TerrainTypes {
-enum TerrainType { FIELD, FOREST, MOUNTAIN, WATER, OCEAN, TERRAIN_TYPE_SIZE };
-
-const std::array<char, TERRAIN_TYPE_SIZE> terrainChars = {'F', 'T', 'M', 'W',
-                                                          'O'};
-} // namespace TerrainTypes
-
-namespace ResourceTypes {
-enum ResourceType {
-    NONE,
-    GAME,
-    CROP,
-    FISH,
-    WHALE,
-    METAL,
-    FRUIT,
-    SPORES,
-    STARFISH,
-    AQUACROP,
-    RESOURCE_TYPE_SIZE
-};
-} // namespace ResourceTypes
-
-class Tile {
-  public:
-    int x, y;
-    Game *game;
-    Unit *unit = nullptr; // owned by the unit's player
-    Player *owner = nullptr;
-    Tile *city = nullptr; // the city tile whose borders contain this tile
-    TerrainTypes::TerrainType terrainType;
+// Plain value: everything else is referred to by index, so a Game can be
+// copied as a whole.
+struct Tile {
+    TerrainTypes::TerrainType terrain = TerrainTypes::FIELD;
     ResourceTypes::ResourceType resource = ResourceTypes::NONE;
-    std::unique_ptr<Improvement> improvement;
-    bool hasRoad = false;
+    // a map feature or a building, never an action
+    ImprovementTypes::ImprovementType building = ImprovementTypes::NONE;
+    // Windmill, Sawmill and Forge level
+    int level = 0;
+    // the turn a temple was built, for its level
+    int builtTurn = 0;
+    // road or bridge
+    bool road = false;
+    // index into Game::units, -1 if empty
+    int unit = -1;
+    // index into Game::cities of the city whose borders contain this tile, -1
+    // if none. A city's own tile is inside its borders.
+    int territory = -1;
+    // bit p is set once player p has explored the tile. Explored tiles stay
+    // explored and show their live contents.
+    std::uint32_t explored = 0;
 
-    Tile(Game *game, int x, int y, TerrainTypes::TerrainType terrainType);
-    // defined in tile.cc, where Improvement is a complete type
-    ~Tile();
-    Tile(Tile &&) noexcept;
-    Tile &operator=(Tile &&) noexcept;
-
-    void improve(Player &player, const ImprovementData &improvementData);
-    Unit &spawnUnit(Player &player, const UnitData &unitData);
+    bool exploredBy(int player) const { return explored >> player & 1; }
 };

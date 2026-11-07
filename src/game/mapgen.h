@@ -1,0 +1,38 @@
+#pragma once
+
+#include "data/tribeData.h"
+#include "map.h"
+#include <cstdint>
+#include <vector>
+
+// GAME.md section 18. Only Lakes is implemented so far.
+struct MapGenSettings {
+    // Tiny 11, Small 14, Normal 16, Large 18, Huge 20, Massive 30
+    int size = 14;
+    MapTypes::MapType type = MapTypes::LAKES;
+    // one per player, in seat order; climate regions use their modifiers
+    std::vector<TribeTypes::Tribe> tribes;
+    std::uint64_t seed = 0;
+
+    // Defaults until verified (GAME.md section 18), all tunable.
+    // candidate maps; the fairest is kept
+    int candidates = 10;
+    double minWater = 0.25, maxWater = 0.30;
+    double preTerrainDensity = 0.3;
+    int suburbsPerCapital = 2;
+    // suburbs go this far from their capital
+    int minSuburbDistance = 3, maxSuburbDistance = 4;
+    // capitals stay at least this far from the map edge (0 is the edge)
+    int capitalEdgeDistance = 2;
+    // ruins; -1 uses the map size table
+    int ruins = -1;
+    // lakes are grown this many tiles at a time
+    int minLake = 4, maxLake = 12;
+    // fish chance on ocean next to a village, and two tiles from one
+    double oceanFishInner = 0.5, oceanFishOuter = 0.25;
+};
+
+int ruinCountForSize(int size);
+
+// throws std::invalid_argument for map types that aren't implemented yet
+MapData generateMap(const MapGenSettings &settings);

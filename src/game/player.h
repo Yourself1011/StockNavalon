@@ -1,36 +1,21 @@
 #pragma once
 
-#include "tech.h"
-#include <bitset>
-#include <memory>
-#include <vector>
+#include "data/techData.h"
+#include "data/tribeData.h"
+#include <cstdint>
 
-class Unit;
-class Improvement;
-
-class Player {
-  public:
-    int idx;
-    int stars = 5, score = 0;
+struct Player {
+    TribeTypes::Tribe tribe;
+    int stars = 0;
+    TechSet techs;
+    // index into Game::cities of this player's original capital
+    int capital = -1;
     bool alive = true;
-    std::bitset<TechTypes::TECH_TYPE_SIZE> techs;
-    std::bitset<TechTypes::TECH_TYPE_SIZE> buyableTechs;
-    std::vector<std::unique_ptr<Unit>> units;
-    std::vector<Improvement *> cities; // owned by their tiles
+    int lighthousesFound = 0;
+    // bit q is set once this player has met player q
+    std::uint32_t met = 0;
 
-    explicit Player(int idx);
-    // defined in player.cc, where Unit is a complete type
-    ~Player();
-    Player(Player &&) noexcept;
-    Player &operator=(Player &&) noexcept;
+    bool hasMet(int player) const { return met >> player & 1; }
 
-    void startTurn();
-
-    Unit &addUnit(std::unique_ptr<Unit> unit);
-    // destroys the unit
-    void removeUnit(const Unit *unit);
-
-    int techCost(TechTypes::TechTypes tech) const;
-    bool canBuyTech(TechTypes::TechTypes tech) const;
-    void buyTech(TechTypes::TechTypes tech);
+    bool hasTech(TechTypes::TechType tech) const { return techs.test(tech); }
 };

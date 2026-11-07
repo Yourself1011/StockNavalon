@@ -1,193 +1,353 @@
-#include "data/improvementData.h"
 #include "game.h"
-#include "player.h"
-#include "tech.h"
-#include "unit.h"
-#include "utils.h"
+#include "mapgen.h"
+#include "view.h"
 #include <algorithm>
+#include <cctype>
+#include <array>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
 
-bool containsTile(const std::vector<Tile *> &tiles, int x, int y) {
-    return std::any_of(tiles.begin(), tiles.end(), [x, y](const Tile *tile) {
-        return tile->x == x && tile->y == y;
-    });
+std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return s;
 }
 
-void printTiles(const std::string &label, const std::vector<Tile *> &tiles) {
-    std::cout << label << ": ";
-    for (const Tile *tile : tiles) {
-        std::cout << "(" << tile->x << "," << tile->y << ") ";
+TribeTypes::Tribe parseTribe(const std::string &name) {
+    for (const TribeData &tribe : tribeData) {
+        if (lower(std::string{tribe.name}) == lower(name)) {
+            return tribe.tribe;
+        }
+    }
+    throw std::invalid_argument("Unknown tribe " + name);
+}
+
+// Two lines per row. Top: terrain, then the unit and its owner. Bottom: the
+// building or resource, then the owner of the tile. Unexplored tiles are
+// dots.
+void printMapAscii(const PlayerView &view) {
+    std::cout << "   ";
+    for (int x = 0; x < view.size; x++) {
+        std::cout << (x < 10 ? " " : "") << x << "   ";
     }
     std::cout << '\n';
+    for (int y = 0; y < view.size; y++) {
+        std::string top = (y < 10 ? " " : "") + std::to_string(y) + ' ';
+        std::string bottom = "   ";
+        for (int x = 0; x < view.size; x++) {
+            const PlayerView::TileView &t = view.tiles[y * view.size + x];
+            if (!t.explored) {
+                top += ".... ";
+                bottom += ".... ";
+                continue;
+            }
+            top += TerrainTypes::terrainChars[t.terrain];
+            if (t.unit >= 0) {
+                const PlayerView::UnitView &unit = view.units[t.unit];
+                top += std::string{unitInfo(unit.type).id} +
+                       static_cast<char>('0' + unit.owner);
+            } else {
+                top += "   ";
+            }
+            top += ' ';
+
+            if (t.building != ImprovementTypes::NONE) {
+                bottom += improvementInfo(t.building).id;
+            } else if (t.road) {
+                bottom += "==";
+            } else {
+                bottom += ' ';
+                bottom += ResourceTypes::resourceChars[t.resource];
+            }
+            bottom += t.owner < 0 ? ' ' : static_cast<char>('0' + t.owner);
+            bottom += "  ";
+        }
+        std::cout << top << '\n' << bottom << '\n';
+    }
 }
 
-// returns the current player's unit on (x, y), or nullptr after printing why
-Unit *ownUnitAt(Game &game, int x, int y) {
-    Unit *unit = game.map.at(x, y)->unit;
-    if (unit == nullptr) {
-        std::cout << "No unit on that tile\n";
-        return nullptr;
-    }
-    if (unit->player->idx != game.currentPlayerIdx) {
-        std::cout << "Not your unit\n";
-        return nullptr;
-    }
-    return unit;
+// Emoji view. Each tile is a square of 2 x 2 emoji slots (4 columns, 2 rows):
+//   top:    building or terrain, then resource or road
+//   bottom: the unit, then its HP
+// Tiles alternate between two shades so they stay distinct; inside a player's
+// borders the shades are that player's colour. A unit and its HP sit on its
+// owner's brighter colour.
+namespace Emoji {
+using namespace std::string_view_literals;
+
+const std::array<std::string_view, TerrainTypes::TERRAIN_TYPE_SIZE> terrain = {
+    "  "sv, "🌲"sv, "🗻"sv, "🟦"sv, "🌊"sv};
+
+const std::array<std::string_view, ResourceTypes::RESOURCE_TYPE_SIZE>
+    resources = {""sv, "🍒"sv, "🌾"sv, "🦌"sv, "💎"sv, "🐟"sv, "⭐"sv};
+
+// indexed by ImprovementType; actions are never on a tile
+const std::array<std::string_view, ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
+    buildings = {""sv,   "🏠"sv, "⛺"sv, "🗿"sv, "🗼"sv, "🚜"sv, "🔨"sv,
+                 "🪓"sv, "🌀"sv, "🪚"sv, "🔥"sv, "💰"sv, "⚓"sv, "🛕"sv,
+                 "🛕"sv, "🛕"sv, "🛕"sv, ""sv,   ""sv,   ""sv,   ""sv,
+                 ""sv,   ""sv,   ""sv,   ""sv};
+
+const std::array<std::string_view, UnitTypes::UNIT_TYPE_SIZE> units = {
+    "🤺"sv, "🏇"sv, "🏹"sv, "🪖"sv, "💂"sv, "🧙"sv, "🎯"sv, "🐴"sv, "🥷"sv,
+    "🔪"sv, "👹"sv, "🛶"sv, "⛵"sv, "🚤"sv, "🚢"sv, "🐋"sv, "🛟"sv, "🦜"sv};
+
+// 256-colour backgrounds: two alternating shades for neutral tiles and for
+// each player's borders, and a bright one for each player's units
+const std::array<int, 2> neutralColours = {235, 238};
+const std::array<std::array<int, 2>, 6> borderColours = {
+    {{52, 88}, {17, 18}, {58, 94}, {53, 89}, {23, 24}, {22, 28}}};
+const std::array<int, 6> unitColours = {160, 27, 136, 127, 37, 34};
+
+std::string background(int colour, std::string_view text) {
+    return "\033[48;5;" + std::to_string(colour) + "m" + std::string{text} +
+           "\033[0m";
 }
 
-void printUnit(const Unit &unit) {
-    std::cout << "Player " << unit.player->idx << "'s " << unit.type
-              << "\nHealth: " << unit.health << "/" << unit.maxHealth
-              << "\nAttack: " << unit.attack << "\nDefence: " << unit.defence;
-    if (unit.getDefenceBonus() != 1) {
-        std::cout << "(" << unit.getDefenceBonus() << ")";
+// unexplored tiles: a dim cloud texture on near-black
+const std::string fog = "\033[48;5;233;38;5;237m░░░░\033[0m";
+} // namespace Emoji
+
+void printMap(const PlayerView &view) {
+    std::cout << "   ";
+    for (int x = 0; x < view.size; x++) {
+        std::cout << (x < 10 ? "  " : " ") << x << ' ';
     }
-    std::cout << "\nMovement: " << unit.movement << "\nRange: " << unit.range;
-    if (!unit.abilities.test(Abilities::STATIC)) {
-        std::cout << "\n" << unit.kills << "/3 to become a veteran";
+    std::cout << '\n';
+
+    for (int y = 0; y < view.size; y++) {
+        std::string top = (y < 10 ? " " : "") + std::to_string(y) + ' ';
+        std::string bottom = "   ";
+        for (int x = 0; x < view.size; x++) {
+            const PlayerView::TileView &t = view.tiles[y * view.size + x];
+            int shade = (x + y) % 2;
+            if (!t.explored) {
+                top += Emoji::fog;
+                bottom += Emoji::fog;
+                continue;
+            }
+            int colour = t.owner < 0 ? Emoji::neutralColours[shade]
+                                     : Emoji::borderColours[t.owner % 6][shade];
+
+            std::string_view base = Emoji::terrain[t.terrain];
+            if (t.city >= 0 && view.cities[t.city].capitalOf >= 0) {
+                base = "🏰";
+            } else if (t.building != ImprovementTypes::NONE) {
+                base = Emoji::buildings[t.building];
+            }
+            std::string_view extra = "  ";
+            if (t.unit >= 0 && view.units[t.unit].hiddenEnemyNear) {
+                extra = "👀";
+            } else if (t.resource != ResourceTypes::NONE) {
+                extra = Emoji::resources[t.resource];
+            } else if (t.road && t.building != ImprovementTypes::CITY) {
+                extra = TerrainTypes::isWater(t.terrain) ? "🌉" : "🟫";
+            }
+            top += Emoji::background(colour, std::string{base} +
+                                                 std::string{extra});
+
+            if (t.unit >= 0) {
+                const PlayerView::UnitView &unit = view.units[t.unit];
+                // whole HP, rounded up like the in-game map
+                int hp = (unit.hp + 9) / 10;
+                std::string hpText = (hp < 10 ? " " : "") + std::to_string(hp);
+                bottom += Emoji::background(Emoji::unitColours[unit.owner % 6],
+                                            std::string{Emoji::units[unit.type]} +
+                                                hpText);
+            } else {
+                bottom += Emoji::background(colour, "    ");
+            }
+        }
+        std::cout << top << '\n' << bottom << '\n';
     }
-    std::cout << "\n" << (unit.canMove ? "Can move" : "Cannot move") << "\n"
-              << (unit.canAttack ? "Can attack" : "Cannot attack") << "\n"
-              << (unit.canUseAbility ? "Can use ability" : "Cannot use ability")
-              << '\n';
 }
 
-// runs one command; returns false once input is exhausted
-bool runCommand(Game &game) {
-    Player &currentPlayer = game.currentPlayer();
-    std::string cmd;
-    if (!(std::cin >> cmd)) {
-        return false;
+void printKey() {
+    std::cout << "Terrain:   (blank) field  🌲 forest  🗻 mountain  🟦 shallow "
+                 "water  🌊 ocean\n"
+                 "Resources: 🍒 fruit  🌾 crop  🦌 game  💎 metal  🐟 fish  ⭐ "
+                 "starfish\n"
+                 "Places:    🏰 capital  🏠 city  ⛺ village  🗿 ruin  🗼 "
+                 "lighthouse  🟫 road  🌉 bridge\n"
+                 "Buildings: 🚜 farm  🔨 mine  🪓 lumber hut  🌀 windmill  🪚 "
+                 "sawmill  🔥 forge  💰 market  ⚓ port  🛕 temple\n"
+                 "Units:     🤺 warrior  🏇 rider  🏹 archer  🪖 defender  💂 "
+                 "swordsman  🧙 mind bender  🎯 catapult\n"
+                 "           🐴 knight  🥷 cloak  🔪 dagger  👹 giant\n"
+                 "Boats:     🛶 raft  ⛵ scout  🚤 rammer  🚢 bomber  🐋 "
+                 "juggernaut  🛟 dinghy  🦜 pirate\n"
+                 "Tiles:     top row: building or terrain, then resource or "
+                 "road; bottom row: unit, then its HP\n"
+                 "Colours:   a tile's tint shows whose borders it's in, a "
+                 "unit's background its owner\n"
+                 "Fog:       "
+              << Emoji::fog
+              << " unexplored  👀 a hidden enemy is next to this unit\n";
+    for (int player = 0; player < 2; player++) {
+        std::cout << "           player " << player << ": "
+                  << Emoji::background(Emoji::borderColours[player][0], "borders")
+                  << ' '
+                  << Emoji::background(Emoji::unitColours[player], "units")
+                  << '\n';
     }
+}
 
-    if (cmd == "e") {
-        game.endTurnAndAdvance();
-    } else if (cmd == "lt") {
-        std::cout << "Unlocked Techs:\n";
-        for (const Tech *tech :
-             BitsetIndex{currentPlayer.techs, TechDataAccessor{}}) {
-            std::cout << tech->type << '\n';
+void printStatus(const Game &game) {
+    const Player &player = game.players[game.currentPlayer];
+    std::cout << "Turn " << game.turn << ", player " << game.currentPlayer
+              << " (" << tribeData[player.tribe].name << ")\n"
+              << "Stars: " << player.stars << " (+"
+              << game.income(game.currentPlayer) << "), score "
+              << game.score(game.currentPlayer) << "\nTechs:";
+    for (const TechData &tech : techData) {
+        if (tech.type != TechTypes::BASIC && player.hasTech(tech.type)) {
+            std::cout << ' ' << tech.name;
         }
-        std::cout << "\nUnlockable Techs:\n";
-        for (const Tech *tech :
-             BitsetIndex{currentPlayer.buyableTechs, TechDataAccessor{}}) {
-            std::cout << tech->type << '\n';
-        }
-    } else if (cmd == "t") {
-        int buy;
-        if (!(std::cin >> buy)) {
-            return false;
-        }
-        if (buy < 0 || buy >= TechTypes::TECH_TYPE_SIZE) {
-            std::cout << "No such tech\n";
-            return true;
-        }
-        auto tech = static_cast<TechTypes::TechTypes>(buy);
-        if (!currentPlayer.buyableTechs.test(tech)) {
-            std::cout << "Not buyable\n";
-        } else if (!currentPlayer.canBuyTech(tech)) {
-            std::cout << "Too expensive\n";
-        } else {
-            currentPlayer.buyTech(tech);
-            std::cout << "Success\n";
-        }
-    } else if (cmd == "l") {
-        int x, y;
-        if (!(std::cin >> x >> y)) {
-            return false;
-        }
-        Unit *unit = ownUnitAt(game, x, y);
-        if (unit == nullptr) {
-            return true;
-        }
-        if (unit->canMove) {
-            printTiles("Valid Moves", unit->validMoves());
-        }
-        if (unit->canAttack) {
-            printTiles("Valid Attacks", unit->validAttacks());
-        }
-    } else if (cmd == "m") {
-        int fromx, fromy, tox, toy;
-        if (!(std::cin >> fromx >> fromy >> tox >> toy)) {
-            return false;
-        }
-        Unit *unit = ownUnitAt(game, fromx, fromy);
-        if (unit == nullptr) {
-            return true;
-        }
-        if (!unit->canMove) {
-            std::cout << "Unit out of moves this turn\n";
-        } else if (!containsTile(unit->validMoves(), tox, toy)) {
-            std::cout << "Invalid move\n";
-        } else {
-            unit->move(game.map.at(tox, toy));
-        }
-    } else if (cmd == "a") {
-        int fromx, fromy, tox, toy;
-        if (!(std::cin >> fromx >> fromy >> tox >> toy)) {
-            return false;
-        }
-        Unit *attacker = ownUnitAt(game, fromx, fromy);
-        if (attacker == nullptr) {
-            return true;
-        }
-        Unit *defender = game.map.at(tox, toy)->unit;
-        if (defender == nullptr) {
-            std::cout << "No defender on that tile\n";
-        } else if (!attacker->canAttack) {
-            std::cout << "Unit out of moves this turn\n";
-        } else if (!containsTile(attacker->validAttacks(), tox, toy)) {
-            std::cout << "Invalid attack\n";
-        } else {
-            attacker->attackUnit(defender);
-        }
-    } else if (cmd == "i") {
-        int x, y;
-        if (!(std::cin >> x >> y)) {
-            return false;
-        }
-        const Unit *unit = game.map.at(x, y)->unit;
-        if (unit == nullptr) {
-            std::cout << "No unit on that tile\n";
-        } else {
-            printUnit(*unit);
-        }
-    } else {
-        std::cout << "Unknown command\n";
     }
-    return true;
+    std::cout << '\n';
+    for (const City &city : game.cities) {
+        if (city.owner == game.currentPlayer) {
+            std::cout << "City (" << game.tileX(city.tile) << ","
+                      << game.tileY(city.tile) << ") level " << city.level
+                      << ", population " << city.population << "/"
+                      << city.level + 1 << '\n';
+        }
+    }
+}
+
+void printTile(const Game &game, int tile) {
+    const Tile &t = game.tiles[tile];
+    std::cout << "Terrain " << TerrainTypes::terrainChars[t.terrain]
+              << ", building " << improvementInfo(t.building).name
+              << (t.road ? ", road" : "") << ", owner "
+              << game.tileOwner(tile) << '\n';
+    if (const Unit *unit = game.unitAt(tile)) {
+        std::cout << "Player " << unit->owner << "'s " << unit->data().name;
+        if (unit->passenger != unit->type) {
+            std::cout << " carrying a " << unitInfo(unit->passenger).name;
+        }
+        std::cout << "\nHP " << unit->hp / 10.0 << "/" << unit->maxHp / 10.0
+                  << ", attack " << unit->data().attack / 10.0 << ", defence "
+                  << unit->data().defence / 10.0 << " (x"
+                  << game.defenceBonus(*unit) << "), kills " << unit->kills
+                  << (unit->veteran ? ", veteran" : "")
+                  << "\nCan move: " << unit->canMove
+                  << ", can attack: " << unit->canAttack
+                  << ", can act: " << unit->canAct << '\n';
+    }
 }
 
 } // namespace
 
-int main() {
-    Game game("./src/game/map.txt", 2);
-
-    game.map.at(1, 1)->spawnUnit(game.players.at(0), Units::rider);
-    game.map.at(4, 1)->spawnUnit(game.players.at(1), Units::warrior);
-    game.map.at(1, 2)->improve(game.players.at(0),
-                               ImprovementMap.at(ImprovementTypes::CITY));
-
-    game.currentPlayer().startTurn();
-
-    while (true) {
-        std::cout << "Player " << game.currentPlayerIdx << "'s turn (Round "
-                  << game.turnNumber << ")\n"
-                  << "Stars: " << game.currentPlayer().stars << '\n';
-        game.map.print();
-        std::cout << std::flush;
-
-        try {
-            if (!runCommand(game)) {
-                return 0;
+int main(int argc, char **argv) {
+    // --ascii switches to the letter map, --reveal turns fog off, --seed and
+    // --size set up a generated map; the rest is positional
+    bool ascii = false, reveal = false;
+    MapGenSettings generate;
+    std::vector<std::string> args;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--ascii") {
+            ascii = true;
+        } else if (arg == "--reveal") {
+            reveal = true;
+        } else if ((arg == "--seed" || arg == "--size") && i + 1 < argc) {
+            unsigned long long value = std::stoull(argv[++i]);
+            if (arg == "--seed") {
+                generate.seed = value;
+            } else {
+                generate.size = static_cast<int>(value);
             }
-        } catch (const std::out_of_range &e) {
+        } else {
+            args.push_back(argv[i]);
+        }
+    }
+    std::string mapFile = args.empty() ? "./src/game/map.txt" : args[0];
+    std::vector<TribeTypes::Tribe> tribes;
+    for (std::size_t i = 1; i < args.size(); i++) {
+        tribes.push_back(parseTribe(args[i]));
+    }
+
+    // "lakes" generates a map; anything else is a map file
+    MapData map;
+    if (mapFile == "lakes") {
+        if (tribes.empty()) {
+            tribes = {TribeTypes::IMPERIUS, TribeTypes::BARDUR};
+        }
+        generate.tribes = tribes;
+        map = generateMap(generate);
+    } else {
+        map = loadMap(mapFile);
+    }
+    if (tribes.empty()) {
+        tribes.assign(map.capitals.size(), TribeTypes::IMPERIUS);
+    }
+    Game game(map, tribes);
+    // the current player's view, so hot-seat players only see their own
+    auto show = [&] {
+        PlayerView view = makeView(game, game.currentPlayer, reveal);
+        ascii ? printMapAscii(view) : printMap(view);
+    };
+
+    printStatus(game);
+    show();
+    std::string cmd;
+    while (!game.gameOver() && std::cout << "> " << std::flush &&
+           std::cin >> cmd) {
+        try {
+            std::vector<Command> legal = game.legalCommands();
+            if (cmd == "l") {
+                for (std::size_t i = 0; i < legal.size(); i++) {
+                    std::cout << i << ": " << toString(game, legal[i])
+                              << '\n';
+                }
+            } else if (cmd == "c" || cmd == "e") {
+                Command command{CommandTypes::ENDTURN};
+                if (cmd == "c") {
+                    std::size_t n;
+                    if (!(std::cin >> n)) {
+                        break;
+                    }
+                    if (n >= legal.size()) {
+                        std::cout << "No such command\n";
+                        continue;
+                    }
+                    command = legal[n];
+                }
+                game.apply(command);
+                printStatus(game);
+                show();
+            } else if (cmd == "i") {
+                int x, y;
+                if (!(std::cin >> x >> y)) {
+                    break;
+                }
+                if (!game.inBounds(x, y)) {
+                    std::cout << "Off the map\n";
+                    continue;
+                }
+                printTile(game, game.index(x, y));
+            } else if (cmd == "s") {
+                printStatus(game);
+            } else if (cmd == "p") {
+                show();
+            } else if (cmd == "k") {
+                printKey();
+            } else if (cmd == "q") {
+                return 0;
+            } else {
+                std::cout << "Unknown command\n";
+            }
+        } catch (const std::exception &e) {
             std::cout << e.what() << '\n';
         }
+    }
+    if (game.gameOver()) {
+        std::cout << "Player " << game.winner << " wins\n";
     }
 }

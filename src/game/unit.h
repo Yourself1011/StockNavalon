@@ -1,38 +1,38 @@
 #pragma once
 
 #include "data/unitData.h"
-#include <bitset>
-#include <string>
-#include <vector>
 
-class Tile;
-class Player;
-class Game;
-
-class Unit {
-  public:
-    Game *game;
-    Player *player;
-    Tile *tile, *home;
+struct Unit {
+    // for a boat, the boat type
     UnitTypes::UnitType type;
-    bool trainable;
-    int cost, maxHealth, defence, movement, range;
-    int kills = 0, promotionLevel = 3;
-    double attack, health;
-    std::string id;
-    std::bitset<Abilities::ABILITY_SIZE> abilities;
-    bool canAttack = false, canMove = false, canUseAbility = false;
+    // for a boat, the land unit it carries; otherwise the same as type
+    UnitTypes::UnitType passenger;
+    int owner;
+    // index into Game::tiles
+    int tile;
+    // x10, like UnitData
+    int hp, maxHp;
+    // index into Game::cities of the city supporting this unit, -1 if none
+    int home = -1;
+    // a unit from a ruin belongs to a city but doesn't count toward its cap
+    bool freeOfCap = false;
+    // the player whose score this unit counts for. Converting a unit doesn't
+    // change any score, so it stays with whoever first had it.
+    int scoreOwner;
+    int kills = 0;
+    bool veteran = false;
+    bool alive = true;
+    // invisible to enemies (the Hide skill)
+    bool hidden = false;
+    // canAct: no move or attack yet this turn, so abilities (Recover,
+    // Capture, ...) are still allowed
+    bool canMove = false, canAttack = false, canAct = false;
+    // direction of the last step, for Giant pushes
+    int lastDx = 0, lastDy = 0;
 
-    Unit *leader = nullptr, *follower = nullptr; // only for centipedes
-
-    Unit(Game *game, Player *player, Tile *tile, const UnitData &data);
-
-    void move(Tile *to);
-    std::vector<Tile *> validMoves() const;
-    // may destroy this unit and/or the defender
-    void attackUnit(Unit *defender);
-    std::vector<Tile *> validAttacks() const;
-    double getDefenceBonus() const;
-    // destroys this unit; do not use it afterwards
-    void die();
+    const UnitData &data() const { return unitInfo(type); }
+    bool has(Abilities::Ability ability) const {
+        return data().abilities.test(ability);
+    }
+    bool isNaval() const { return has(Abilities::WATER); }
 };

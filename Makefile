@@ -17,10 +17,15 @@ OBJS := $(SRCS:%=$(BUILD_DIR)/%.o)
 
 # String substitution (suffix version without %).
 # As an example, ./build/hello.cpp.o turns into ./build/hello.cpp.d
-DEPS := $(OBJS:.o=.d)
+DEPS = $(OBJS:.o=.d) $(TEST_OBJS:.o=.d)
+
+# Tests link every source except main.cc with the files in ./tests
+TEST_EXEC := run_tests
+TEST_SRCS := $(filter-out %/main.cc,$(SRCS)) $(shell find ./tests -name '*.cc')
+TEST_OBJS := $(TEST_SRCS:%=$(BUILD_DIR)/%.o)
 
 # Headers are included relative to src/game, e.g. "data/unitData.h"
-INC_FLAGS := -I./src/game
+INC_FLAGS := -I./src/game -I./third_party
 
 # The -MMD and -MP flags together generate Makefiles for us!
 # These files will have .d instead of .o as the output.
@@ -45,9 +50,17 @@ all: $(BUILD_DIR)/$(TARGET_EXEC)
 dev:
 	$(MAKE) MODE=dev
 
+# `make test` builds and runs the tests, in either mode
+.PHONY: test
+test: $(BUILD_DIR)/$(TEST_EXEC)
+	$(BUILD_DIR)/$(TEST_EXEC)
+
 # The final build step.
 $(BUILD_DIR)/$(TARGET_EXEC): $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/$(TEST_EXEC): $(TEST_OBJS)
+	$(CXX) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
 # Build step for C++ source
 $(BUILD_DIR)/%.cc.o: %.cc

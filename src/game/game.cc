@@ -1,28 +1,517 @@
 #include "game.h"
-#include "unit.h"
+#include <cstdlib>
+#include <stdexcept>
 
-Game::Game(int size, MapTypes::MapType mapType, int numPlayers)
-    : map{this, size, mapType} {
-    createPlayers(numPlayers);
+using namespace CommandTypes;
+
+Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
+           GameSettings settings)
+    : size{map.size}, mapType{map.type}, settings{settings}, tiles{map.tiles},
+      rng{settings.seed} {
+    if (tribes.size() > MAX_PLAYERS) {
+        throw std::invalid_argument("Too many players");
+    }
+    if (tribes.size() != map.capitals.size()) {
+        throw std::invalid_argument("Map has " +
+                                    std::to_string(map.capitals.size()) +
+                                    " capitals but " +
+                                    std::to_string(tribes.size()) +
+                                    " tribes were given");
+    }
+
+    for (std::size_t i = 0; i < tribes.size(); i++) {
+        const TribeData &tribe = tribeData[tribes[i]];
+        Player &player = players.emplace_back();
+        player.tribe = tribe.tribe;
+        player.stars = tribe.startStars;
+        player.techs.set(TechTypes::BASIC);
+        player.techs.set(tribe.startTech);
+    }
+
+    for (std::size_t i = 0; i < tribes.size(); i++) {
+        const TribeData &tribe = tribeData[tribes[i]];
+        int player = static_cast<int>(i);
+        int tile = map.capitals[i];
+        int city = foundCity(tile, player);
+        cities[city].capitalOf = player;
+        cities[city].level = tribe.capitalLevel;
+        players[i].capital = city;
+        spawnUnit(player, tribe.startUnit, tile, city);
+
+        // the 5x5 around the capital starts explored, except a lighthouse,
+        // which still has to be found
+        tiles[tile].explored |= std::uint32_t{1} << player;
+        forEachInRadius(tile, 2, [&](int t) {
+            if (tiles[t].building != ImprovementTypes::LIGHTHOUSE) {
+                tiles[t].explored |= std::uint32_t{1} << player;
+            }
+        });
+    }
+
+    updateAllConnections();
+    checkMeetings();
+    startTurn();
 }
 
-Game::Game(const std::string &mapFile, int numPlayers) : map{this, mapFile} {
-    createPlayers(numPlayers);
+int Game::distance(int a, int b) const {
+    return std::max(std::abs(tileX(a) - tileX(b)),
+                    std::abs(tileY(a) - tileY(b)));
 }
 
-void Game::createPlayers(int numPlayers) {
-    players.reserve(numPlayers);
-    for (int i = 0; i < numPlayers; i++) {
-        players.emplace_back(i);
+int Game::tileOwner(int tile) const {
+    int city = tiles[tile].territory;
+    return city < 0 ? -1 : cities[city].owner;
+}
+
+const Unit *Game::unitAt(int tile) const {
+    int unit = tiles[tile].unit;
+    return unit < 0 ? nullptr : &units[unit];
+}
+
+Unit *Game::unitAt(int tile) {
+    int unit = tiles[tile].unit;
+    return unit < 0 ? nullptr : &units[unit];
+}
+
+int Game::cityAt(int tile) const {
+    return tiles[tile].building == ImprovementTypes::CITY
+               ? tiles[tile].territory
+               : -1;
+}
+
+int Game::cityCount(int player) const {
+    return static_cast<int>(
+        std::count_if(cities.begin(), cities.end(),
+                      [player](const City &c) { return c.owner == player; }));
+}
+
+bool Game::besieged(int city) const {
+    const Unit *unit = unitAt(cities[city].tile);
+    return unit && unit->owner != cities[city].owner;
+}
+
+int Game::unitCount(int city) const {
+    return static_cast<int>(
+        std::count_if(units.begin(), units.end(), [city](const Unit &unit) {
+            return unit.alive && unit.home == city && !unit.freeOfCap &&
+                   !unit.has(Abilities::INDEPENDENT);
+        }));
+}
+
+int Game::techCost(int player, TechTypes::TechType tech) const {
+    int cost = techData[tech].tier * cityCount(player) + 4;
+    if (players[player].hasTech(TechTypes::PHILOSOPHY)) {
+        // Literacy: a third cheaper, rounded up
+        cost = (cost * 2 + 2) / 3;
+    }
+    return cost;
+}
+
+bool Game::canResearch(int player, TechTypes::TechType tech) const {
+    const Player &p = players[player];
+    if (tech == TechTypes::BASIC || p.hasTech(tech)) {
+        return false;
+    }
+    if (p.hasTech(techData[tech].parent)) {
+        return true;
+    }
+    // backwards research: owning a child also makes the parent researchable
+    return std::any_of(techData.begin(), techData.end(),
+                       [&](const TechData &child) {
+                           return child.parent == tech && child.type != tech &&
+                                  p.hasTech(child.type);
+                       });
+}
+
+int Game::marketIncome(int tile) const {
+    int total = 0;
+    int owner = tileOwner(tile);
+    forEachNeighbour(tile, [&](int n) {
+        if (isProducer(tiles[n].building) && tileOwner(n) == owner) {
+            total += tiles[n].level;
+        }
+    });
+    return std::min(total, MAX_BUILDING_LEVEL);
+}
+
+int Game::cityIncome(int city) const {
+    const City &c = cities[city];
+    if (besieged(city)) {
+        return 0;
+    }
+    int stars = c.level + c.workshop + c.parks;
+    if (players[c.owner].capital == city) {
+        stars += 1;
+    }
+    forEachInRadius(c.tile, 2, [&](int t) {
+        if (tiles[t].territory == city &&
+            tiles[t].building == ImprovementTypes::MARKET) {
+            stars += marketIncome(t);
+        }
+    });
+    // each point of negative population costs a star
+    return std::max(0, stars + std::min(0, c.population));
+}
+
+int Game::income(int player) const {
+    int total = 0;
+    for (std::size_t i = 0; i < cities.size(); i++) {
+        if (cities[i].owner == player) {
+            total += cityIncome(static_cast<int>(i));
+        }
+    }
+    return total;
+}
+
+int Game::randomInt(int n) {
+    // splitmix64
+    std::uint64_t z = (rng += 0x9e3779b97f4a7c15);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+    z ^= z >> 31;
+    return static_cast<int>(z % static_cast<std::uint64_t>(n));
+}
+
+// ---- turns ----
+
+void Game::startTurn() {
+    Player &player = players[currentPlayer];
+    // the starting stars are the first turn's stars
+    if (turn > 0) {
+        player.stars += income(currentPlayer);
+    }
+    for (Unit &unit : units) {
+        if (unit.alive && unit.owner == currentPlayer) {
+            unit.canMove = unit.canAttack = unit.canAct = true;
+        }
     }
 }
 
-Player &Game::currentPlayer() { return players.at(currentPlayerIdx); }
-
-void Game::endTurnAndAdvance() {
-    currentPlayerIdx = (currentPlayerIdx + 1) % players.size();
-    if (currentPlayerIdx == 0) {
-        turnNumber++;
+void Game::endTurn() {
+    // units that could still use an ability recover automatically
+    for (Unit &unit : units) {
+        if (unit.alive && unit.owner == currentPlayer && unit.canAct) {
+            unit.hp = std::min(unit.maxHp, unit.hp + healAmount(unit));
+        }
     }
-    currentPlayer().startTurn();
+
+    int count = static_cast<int>(players.size());
+    do {
+        currentPlayer = (currentPlayer + 1) % count;
+        if (currentPlayer == 0) {
+            turn++;
+        }
+    } while (!players[currentPlayer].alive);
+    startTurn();
+}
+
+void Game::research(TechTypes::TechType tech) {
+    Player &player = players[currentPlayer];
+    player.stars -= techCost(currentPlayer, tech);
+    player.techs.set(tech);
+}
+
+// ---- legal commands ----
+
+int Game::pendingRewardCity() const {
+    for (std::size_t i = 0; i < cities.size(); i++) {
+        if (cities[i].owner == currentPlayer && cities[i].pendingRewards > 0) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
+    const Unit &unit = units[unitIdx];
+    const Player &player = players[unit.owner];
+    const Tile &tile = tiles[unit.tile];
+    int from = unit.tile;
+
+    if (unit.canMove) {
+        std::vector<int> moves, disembarks;
+        reachable(unitIdx, &moves, unit.isNaval() ? &disembarks : nullptr);
+        for (int to : moves) {
+            out.push_back({MOVE, from, to});
+        }
+        for (int to : disembarks) {
+            out.push_back({DISEMBARK, from, to});
+        }
+    }
+    if (unit.canAttack) {
+        for (int to : attackTargets(unitIdx)) {
+            out.push_back({ATTACK, from, to});
+        }
+    }
+    if (unit.canAct && unit.hp < unit.maxHp) {
+        out.push_back({RECOVER, from});
+    }
+    if (unit.canAct && unit.has(Abilities::HEAL)) {
+        bool anyHurt = false;
+        forEachNeighbour(from, [&](int n) {
+            const Unit *other = unitAt(n);
+            anyHurt |= other && other->owner == unit.owner &&
+                       other->hp < other->maxHp;
+        });
+        if (anyHurt) {
+            out.push_back({HEALOTHERS, from});
+        }
+    }
+    if (unit.kills >= 3 && !unit.veteran && !unit.has(Abilities::STATIC)) {
+        out.push_back({PROMOTE, from});
+    }
+    if (player.hasTech(TechTypes::FREESPIRIT)) {
+        out.push_back({DISBAND, from});
+    }
+    if (isRaftFamily(unit.type) && tileOwner(from) == unit.owner) {
+        for (UnitTypes::UnitType boat :
+             {UnitTypes::SCOUT, UnitTypes::RAMMER, UnitTypes::BOMBER}) {
+            int price = std::max(0, unitInfo(boat).cost - unit.data().cost);
+            if (boat != unit.type && player.hasTech(unitInfo(boat).tech) &&
+                player.stars >= price) {
+                out.push_back({UPGRADE, from, -1, boat});
+            }
+        }
+    }
+    if (unit.canAct && !unit.isNaval()) {
+        bool village = tile.building == ImprovementTypes::VILLAGE;
+        bool enemyCity = tile.building == ImprovementTypes::CITY &&
+                         tileOwner(from) != unit.owner;
+        if (village || enemyCity) {
+            out.push_back({CAPTURE, from});
+        }
+    }
+    // like capturing, only a unit that started its turn on the ruin
+    if (unit.canAct && tile.building == ImprovementTypes::RUIN) {
+        out.push_back({EXAMINERUINS, from});
+    }
+    if (unit.isNaval() && tile.resource == ResourceTypes::STARFISH &&
+        player.hasTech(TechTypes::NAVIGATION)) {
+        out.push_back({HARVEST, from});
+    }
+}
+
+void Game::addCityCommands(int city, std::vector<Command> &out) const {
+    const City &c = cities[city];
+    const Player &player = players[c.owner];
+    if (besieged(city) || tiles[c.tile].unit >= 0 ||
+        unitCount(city) >= c.level + 1) {
+        return;
+    }
+    for (const UnitData &data : unitData) {
+        if (data.trainable && player.hasTech(data.tech) &&
+            player.stars >= data.cost) {
+            out.push_back({TRAIN, c.tile, -1, data.type});
+        }
+    }
+}
+
+void Game::addTileCommands(int tile, std::vector<Command> &out) const {
+    for (int type = ImprovementTypes::FARM;
+         type < ImprovementTypes::IMPROVEMENT_TYPE_SIZE; type++) {
+        if (canBuild(currentPlayer, tile,
+                     static_cast<ImprovementTypes::ImprovementType>(type))) {
+            out.push_back({BUILD, tile, -1, type});
+        }
+    }
+    if (canDestroy(currentPlayer, tile)) {
+        out.push_back({DESTROY, tile});
+    }
+}
+
+void Game::addResearchCommands(std::vector<Command> &out) const {
+    for (const TechData &tech : techData) {
+        if (canResearch(currentPlayer, tech.type) &&
+            players[currentPlayer].stars >= techCost(currentPlayer, tech.type)) {
+            out.push_back({RESEARCH, -1, -1, tech.type});
+        }
+    }
+}
+
+std::vector<Command> Game::legalCommands() const {
+    std::vector<Command> out;
+    if (gameOver()) {
+        return out;
+    }
+
+    // a level-up reward has to be chosen before anything else
+    int rewardCity = pendingRewardCity();
+    if (rewardCity >= 0) {
+        const City &city = cities[rewardCity];
+        int level = city.level - city.pendingRewards + 1;
+        for (CityRewards::CityReward reward :
+             CityRewards::rewardsForLevel(level)) {
+            out.push_back({CITYREWARD, city.tile, -1, reward});
+        }
+        return out;
+    }
+
+    addResearchCommands(out);
+    for (std::size_t i = 0; i < cities.size(); i++) {
+        if (cities[i].owner == currentPlayer) {
+            addCityCommands(static_cast<int>(i), out);
+        }
+    }
+    for (std::size_t i = 0; i < units.size(); i++) {
+        if (units[i].alive && units[i].owner == currentPlayer) {
+            addUnitCommands(static_cast<int>(i), out);
+        }
+    }
+    for (int tile = 0; tile < size * size; tile++) {
+        addTileCommands(tile, out);
+    }
+    out.push_back({ENDTURN});
+    return out;
+}
+
+bool Game::isLegal(const Command &command) const {
+    if (gameOver()) {
+        return false;
+    }
+    if (command.type == RESIGN) {
+        return true;
+    }
+
+    // only the commands that could match are generated
+    std::vector<Command> candidates;
+    bool validTile =
+        command.from >= 0 && command.from < static_cast<int>(tiles.size());
+    if (pendingRewardCity() >= 0 || command.type == CITYREWARD) {
+        candidates = legalCommands();
+    } else if (command.type == ENDTURN) {
+        return true;
+    } else if (command.type == RESEARCH) {
+        addResearchCommands(candidates);
+    } else if (!validTile) {
+        return false;
+    } else if (command.type == TRAIN) {
+        int city = cityAt(command.from);
+        if (city >= 0 && cities[city].owner == currentPlayer) {
+            addCityCommands(city, candidates);
+        }
+    } else if (command.type == BUILD || command.type == DESTROY) {
+        addTileCommands(command.from, candidates);
+    } else {
+        const Unit *unit = unitAt(command.from);
+        if (unit && unit->owner == currentPlayer) {
+            addUnitCommands(tiles[command.from].unit, candidates);
+        }
+    }
+    return std::find(candidates.begin(), candidates.end(), command) !=
+           candidates.end();
+}
+
+void Game::apply(const Command &command) {
+    if (!isLegal(command)) {
+        throw std::invalid_argument("Illegal command: " +
+                                    toString(*this, command));
+    }
+    applyUnchecked(command);
+}
+
+void Game::applyUnchecked(const Command &command) {
+    applyCommand(command);
+    if (!gameOver()) {
+        checkMeetings();
+    }
+}
+
+void Game::applyCommand(const Command &command) {
+    Player &player = players[currentPlayer];
+    int unit = command.from >= 0 ? tiles[command.from].unit : -1;
+
+    switch (command.type) {
+    case MOVE:
+        moveUnit(unit, command.to);
+        break;
+    case DISEMBARK:
+        disembark(unit, command.to);
+        break;
+    case ATTACK:
+        attack(unit, command.to);
+        break;
+    case RECOVER: {
+        Unit &u = units[unit];
+        u.hp = std::min(u.maxHp, u.hp + healAmount(u));
+        u.canMove = u.canAttack = u.canAct = false;
+        break;
+    }
+    case HEALOTHERS: {
+        Unit &u = units[unit];
+        forEachNeighbour(u.tile, [&](int n) {
+            Unit *other = unitAt(n);
+            if (other && other->owner == u.owner) {
+                other->hp = std::min(other->maxHp, other->hp + 40);
+            }
+        });
+        u.canMove = u.canAttack = u.canAct = false;
+        break;
+    }
+    case PROMOTE: {
+        Unit &u = units[unit];
+        u.veteran = true;
+        u.maxHp += 50;
+        u.hp = u.maxHp;
+        break;
+    }
+    case DISBAND: {
+        Unit &u = units[unit];
+        int cost = unitInfo(u.passenger).cost;
+        if (u.isNaval()) {
+            cost += u.data().cost;
+        }
+        player.stars += cost / 2;
+        killUnit(unit);
+        break;
+    }
+    case UPGRADE: {
+        Unit &u = units[unit];
+        auto boat = static_cast<UnitTypes::UnitType>(command.arg);
+        player.stars -= std::max(0, unitInfo(boat).cost - u.data().cost);
+        u.type = boat;
+        revealForUnit(unit);
+        break;
+    }
+    case BUILD:
+        build(command.from,
+              static_cast<ImprovementTypes::ImprovementType>(command.arg));
+        break;
+    case DESTROY:
+        destroy(command.from);
+        break;
+    case HARVEST:
+        player.stars += 8;
+        tiles[command.from].resource = ResourceTypes::NONE;
+        break;
+    case CAPTURE:
+        capture(unit);
+        break;
+    case EXAMINERUINS:
+        examineRuins(unit);
+        break;
+    case TRAIN:
+        train(cityAt(command.from),
+              static_cast<UnitTypes::UnitType>(command.arg));
+        break;
+    case RESEARCH:
+        research(static_cast<TechTypes::TechType>(command.arg));
+        break;
+    case CITYREWARD:
+        chooseReward(cityAt(command.from),
+                     static_cast<CityRewards::CityReward>(command.arg));
+        break;
+    case ENDTURN:
+        endTurn();
+        break;
+    case RESIGN:
+        eliminate(currentPlayer);
+        checkGameEnd();
+        if (!gameOver()) {
+            endTurn();
+        }
+        break;
+    default:
+        throw std::invalid_argument("Command not implemented yet: " +
+                                    toString(*this, command));
+    }
 }
