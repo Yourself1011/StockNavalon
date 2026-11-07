@@ -201,26 +201,56 @@ void printKey() {
     }
 }
 
+// the current player's own state, from their view
 void printStatus(const Game &game) {
-    const Player &player = game.players[game.currentPlayer];
-    std::cout << "Turn " << game.turn << ", player " << game.currentPlayer
-              << " (" << tribeData[player.tribe].name << ")\n"
-              << "Stars: " << player.stars << " (+"
-              << game.income(game.currentPlayer) << "), score "
-              << game.score(game.currentPlayer) << "\nTechs:";
+    const PlayerView view = makeView(game, game.currentPlayer);
+    std::cout << "Turn " << view.turn << ", player " << view.player << " ("
+              << tribeData[view.tribes[view.player]].name << ")\n"
+              << "Stars: " << view.stars << " (+" << view.income
+              << "), score " << view.scores[view.player] << "\nTechs:";
     for (const TechData &tech : techData) {
-        if (tech.type != TechTypes::BASIC && player.hasTech(tech.type)) {
+        if (tech.type != TechTypes::BASIC && view.techs.test(tech.type)) {
             std::cout << ' ' << tech.name;
         }
     }
     std::cout << '\n';
-    for (const City &city : game.cities) {
-        if (city.owner == game.currentPlayer) {
-            std::cout << "City (" << game.tileX(city.tile) << ","
-                      << game.tileY(city.tile) << ") level " << city.level
+    for (const PlayerView::CityView &city : view.cities) {
+        if (city.owner == view.player) {
+            std::cout << "City (" << city.tile % view.size << ","
+                      << city.tile / view.size << ") level " << city.level
                       << ", population " << city.population << "/"
                       << city.level + 1 << '\n';
         }
+    }
+
+    // tasks: done (and whether the monument is built), with progress
+    std::cout << "Tasks: kills " << view.kills << "/10, lighthouses "
+              << view.lighthousesFound << "/4";
+    if (view.techs.test(TechTypes::MEDITATION)) {
+        std::cout << ", peaceful turns " << view.peacefulTurns << "/5";
+    }
+    for (int task = 0; task < TaskTypes::TASK_SIZE; task++) {
+        if (view.tasksDone.test(task)) {
+            std::cout << "; " << TaskTypes::taskNames[task] << " done"
+                      << (view.monumentsBuilt.test(task) ? " (built)" : "");
+        }
+    }
+    std::cout << '\n';
+
+    // diplomacy with each tribe met
+    for (std::size_t i = 0; i < view.relations.size(); i++) {
+        if (static_cast<int>(i) == view.player || !view.met[i]) {
+            continue;
+        }
+        const PlayerView::Relation &r = view.relations[i];
+        std::cout << "Player " << i << " (" << tribeData[view.tribes[i]].name
+                  << "): score " << view.scores[i]
+                  << (view.alive[i] ? "" : ", eliminated")
+                  << (r.peace ? ", at peace" : "")
+                  << (r.theyAsked ? ", asks for peace" : "")
+                  << (r.weAsked ? ", asked for peace" : "")
+                  << (r.ourEmbassy ? ", our embassy there" : "")
+                  << (r.theirEmbassy ? ", their embassy here" : "") << '\n';
     }
 }
 

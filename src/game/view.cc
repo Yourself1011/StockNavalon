@@ -19,7 +19,26 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         view.alive.push_back(p.alive);
         view.met.push_back(game.players[player].hasMet(other));
         view.scores.push_back(known ? game.score(other) : -1);
+
+        // only what this player is part of
+        PlayerView::Relation relation;
+        if (other != player) {
+            const Player &me = game.players[player];
+            std::uint32_t bit = std::uint32_t{1} << other;
+            relation.peace = game.atPeace(player, other);
+            relation.theyAsked = me.peaceRequests & bit;
+            relation.weAsked = p.peaceRequests >> player & 1;
+            relation.ourEmbassy = me.hasEmbassyWith(other);
+            relation.theirEmbassy = p.hasEmbassyWith(player);
+        }
+        view.relations.push_back(relation);
     }
+    const Player &me = game.players[player];
+    view.tasksDone = me.tasksDone;
+    view.monumentsBuilt = me.monumentsBuilt;
+    view.kills = me.kills;
+    view.peacefulTurns = me.peacefulTurns;
+    view.lighthousesFound = me.lighthousesFound;
 
     view.tiles.resize(game.tiles.size());
     for (std::size_t i = 0; i < game.tiles.size(); i++) {

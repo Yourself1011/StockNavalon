@@ -57,6 +57,26 @@ struct PlayerView {
     std::vector<bool> met;
     // the player's own score and those of tribes they've met; -1 otherwise
     std::vector<int> scores;
+
+    // the player's own tasks (GAME.md section 14): done ones unlock their
+    // monument, which can be built once
+    TaskSet tasksDone, monumentsBuilt;
+    // progress: enemy units killed (Killer), turns in a row without an
+    // attack since Meditation (Pacifist), lighthouses found (Explorer)
+    int kills, peacefulTurns, lighthousesFound;
+
+    // the player's diplomacy, one entry per player (false for themselves)
+    struct Relation {
+        bool peace = false;
+        // a peace request from them, waiting for this player's answer
+        bool theyAsked = false;
+        // a peace request from this player, waiting for theirs
+        bool weAsked = false;
+        // this player's embassy in their capital, and theirs in this
+        // player's capital
+        bool ourEmbassy = false, theirEmbassy = false;
+    };
+    std::vector<Relation> relations;
     // index y * size + x
     std::vector<TileView> tiles;
     std::vector<UnitView> units;

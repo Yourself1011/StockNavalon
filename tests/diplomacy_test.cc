@@ -1,5 +1,6 @@
 #include "doctest/doctest.h"
 #include "helpers.h"
+#include "view.h"
 
 using namespace CommandTypes;
 using namespace UnitTypes;
@@ -185,4 +186,36 @@ TEST_CASE("a shared neutral road only gives new connections to the first "
         game.updateAllConnections();
         CHECK(game.cities[city].connectedFor == 1);
     }
+}
+
+TEST_CASE("the player view has the player's tasks and diplomacy") {
+    Game game = makeGame(bigMap());
+    Player &me = game.players[0];
+    me.techs.set(TechTypes::STRATEGY);
+    me.techs.set(TechTypes::DIPLOMACY);
+    me.kills = 3;
+    me.tasksDone.set(TaskTypes::KILLER);
+    game.apply({PEACETREATY, -1, -1, 1});
+    game.apply({ESTABLISHEMBASSY, -1, -1, 1});
+
+    PlayerView mine = makeView(game, 0);
+    CHECK(mine.kills == 3);
+    CHECK(mine.tasksDone.test(TaskTypes::KILLER));
+    CHECK_FALSE(mine.monumentsBuilt.test(TaskTypes::KILLER));
+    CHECK(mine.relations[1].weAsked);
+    CHECK_FALSE(mine.relations[1].theyAsked);
+    CHECK(mine.relations[1].ourEmbassy);
+    CHECK_FALSE(mine.relations[1].peace);
+
+    PlayerView theirs = makeView(game, 1);
+    CHECK(theirs.relations[0].theyAsked);
+    CHECK(theirs.relations[0].theirEmbassy);
+    // their own tasks, not player 0's
+    CHECK(theirs.kills == 0);
+    CHECK_FALSE(theirs.tasksDone.test(TaskTypes::KILLER));
+
+    game.apply({ENDTURN});
+    game.apply({PEACEREQUESTRESPONSE, -1, -1, 1});
+    CHECK(makeView(game, 0).relations[1].peace);
+    CHECK(makeView(game, 1).relations[0].peace);
 }
