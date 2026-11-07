@@ -17,6 +17,12 @@ make dev    # dev build with sanitizers -> build/dev/final_program
 
 `lakes` generates a Lakes map (14x14 unless `--size` says otherwise) instead of loading a file.
 
+`--bot N` makes seat N a random bot (repeat it for more bots). It plays its whole turn as soon as yours ends. Its commands are only listed with `--reveal`, since they'd give away what's in the fog. With every seat a bot, the game plays itself (stopping after 300 turns) and shows the final map.
+
+```bash
+./build/release/final_program lakes Imperius Bardur --bot 1 --seed 7
+```
+
 The map defaults to `src/game/map.txt`, and every player defaults to Imperius. The map is drawn with emojis; add `--ascii` for the old letter view if your terminal shows them badly. The map only shows what the current player has explored; add `--reveal` to see everything. The map file format is described in `src/game/map.h`.
 
 ## Test

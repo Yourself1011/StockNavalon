@@ -1,3 +1,4 @@
+#include "bots/randomBot.h"
 #include "game.h"
 #include "mapgen.h"
 #include "view.h"
@@ -220,13 +221,19 @@ void printStatus(const Game &game) {
     }
 }
 
-void printTile(const Game &game, int tile) {
+// what the viewer knows about the tile, unless everything is shown
+void printTile(const Game &game, int tile, int viewer, bool everything) {
+    if (!everything && !game.explored(viewer, tile)) {
+        std::cout << "Unexplored\n";
+        return;
+    }
     const Tile &t = game.tiles[tile];
     std::cout << "Terrain " << TerrainTypes::terrainChars[t.terrain]
               << ", building " << improvementInfo(t.building).name
               << (t.road ? ", road" : "") << ", owner "
               << game.tileOwner(tile) << '\n';
-    if (const Unit *unit = game.unitAt(tile)) {
+    const Unit *unit = game.unitAt(tile);
+    if (unit && (everything || game.canSee(viewer, *unit))) {
         std::cout << "Player " << unit->owner << "'s " << unit->data().name;
         if (unit->passenger != unit->type) {
             std::cout << " carrying a " << unitInfo(unit->passenger).name;
@@ -236,9 +243,12 @@ void printTile(const Game &game, int tile) {
                   << unit->data().defence / 10.0 << " (x"
                   << game.defenceBonus(*unit) << "), kills " << unit->kills
                   << (unit->veteran ? ", veteran" : "")
-                  << "\nCan move: " << unit->canMove
-                  << ", can attack: " << unit->canAttack
-                  << ", can act: " << unit->canAct << '\n';
+                  << '\n';
+        if (everything || unit->owner == viewer) {
+            std::cout << "Can move: " << unit->canMove
+                      << ", can attack: " << unit->canAttack
+                      << ", can act: " << unit->canAct << '\n';
+        }
     }
 }
 
@@ -246,8 +256,10 @@ void printTile(const Game &game, int tile) {
 
 int main(int argc, char **argv) {
     // --ascii switches to the letter map, --reveal turns fog off, --seed and
-    // --size set up a generated map; the rest is positional
+    // --size set up a generated map, --bot N makes seat N a random bot; the
+    // rest is positional
     bool ascii = false, reveal = false;
+    std::vector<int> botSeats;
     MapGenSettings generate;
     std::vector<std::string> args;
     for (int i = 1; i < argc; i++) {
@@ -256,6 +268,8 @@ int main(int argc, char **argv) {
             ascii = true;
         } else if (arg == "--reveal") {
             reveal = true;
+        } else if (arg == "--bot" && i + 1 < argc) {
+            botSeats.push_back(std::stoi(argv[++i]));
         } else if ((arg == "--seed" || arg == "--size") && i + 1 < argc) {
             unsigned long long value = std::stoull(argv[++i]);
             if (arg == "--seed") {
@@ -287,13 +301,63 @@ int main(int argc, char **argv) {
     if (tribes.empty()) {
         tribes.assign(map.capitals.size(), TribeTypes::IMPERIUS);
     }
-    Game game(map, tribes);
-    // the current player's view, so hot-seat players only see their own
+    Game game(map, tribes, {.seed = generate.seed});
+    for (int seat : botSeats) {
+        if (seat < 0 || seat >= static_cast<int>(tribes.size())) {
+            std::cerr << "No seat " << seat << " for a bot\n";
+            return 1;
+        }
+    }
+    std::vector<char> isBot(tribes.size(), 0);
+    for (int seat : botSeats) {
+        isBot[seat] = 1;
+    }
+    bool allBots = std::all_of(isBot.begin(), isBot.end(),
+                               [](char bot) { return bot; });
+    RandomBot bot(generate.seed);
+
+    // the current player's view, so hot-seat players only see their own.
+    // With only bots playing, everything is shown.
     auto show = [&] {
-        PlayerView view = makeView(game, game.currentPlayer, reveal);
+        PlayerView view =
+            makeView(game, game.currentPlayer, reveal || allBots);
         ascii ? printMapAscii(view) : printMap(view);
     };
+    // plays every bot turn until a person's turn or the end of the game.
+    // A bot's commands are only listed with --reveal, since they'd give away
+    // what's in the fog.
+    // random games can go on forever, so bot-only games stop at a turn limit
+    constexpr int BOT_GAME_TURNS = 300;
+    auto runBots = [&] {
+        bool played = false;
+        while (!game.gameOver() && isBot[game.currentPlayer] &&
+               game.turn < BOT_GAME_TURNS) {
+            int player = game.currentPlayer;
+            std::vector<Command> commands = bot.playTurn(game);
+            std::cout << "Player " << player << " (bot) played "
+                      << commands.size() << " commands\n";
+            if (reveal || allBots) {
+                for (const Command &command : commands) {
+                    std::cout << "  " << toString(game, command) << '\n';
+                }
+            }
+            played = true;
+        }
+        return played;
+    };
 
+    if (allBots) {
+        runBots();
+        show();
+        if (game.gameOver()) {
+            std::cout << "Player " << game.winner << " wins on turn "
+                      << game.turn << '\n';
+        } else {
+            std::cout << "No winner after " << BOT_GAME_TURNS << " turns\n";
+        }
+        return 0;
+    }
+    runBots();
     printStatus(game);
     show();
     std::string cmd;
@@ -320,8 +384,11 @@ int main(int argc, char **argv) {
                     command = legal[n];
                 }
                 game.apply(command);
-                printStatus(game);
-                show();
+                runBots();
+                if (!game.gameOver()) {
+                    printStatus(game);
+                    show();
+                }
             } else if (cmd == "i") {
                 int x, y;
                 if (!(std::cin >> x >> y)) {
@@ -331,7 +398,7 @@ int main(int argc, char **argv) {
                     std::cout << "Off the map\n";
                     continue;
                 }
-                printTile(game, game.index(x, y));
+                printTile(game, game.index(x, y), game.currentPlayer, reveal);
             } else if (cmd == "s") {
                 printStatus(game);
             } else if (cmd == "p") {
