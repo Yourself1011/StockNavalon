@@ -13,12 +13,10 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     for (std::size_t i = 0; i < game.players.size(); i++) {
         const Player &p = game.players[i];
         int other = static_cast<int>(i);
-        bool known = everything || other == player ||
-                     game.players[player].hasMet(other);
         view.tribes.push_back(p.tribe);
         view.alive.push_back(p.alive);
         view.met.push_back(game.players[player].hasMet(other));
-        view.scores.push_back(known ? game.score(other) : -1);
+        view.scores.push_back(game.score(other));
 
         // only what this player is part of
         PlayerView::Relation relation;

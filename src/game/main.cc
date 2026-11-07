@@ -237,14 +237,15 @@ void printStatus(const Game &game) {
     }
     std::cout << '\n';
 
-    // diplomacy with each tribe met
+    // every other player: their score (public), then diplomacy
     for (std::size_t i = 0; i < view.relations.size(); i++) {
-        if (static_cast<int>(i) == view.player || !view.met[i]) {
+        if (static_cast<int>(i) == view.player) {
             continue;
         }
         const PlayerView::Relation &r = view.relations[i];
         std::cout << "Player " << i << " (" << tribeData[view.tribes[i]].name
                   << "): score " << view.scores[i]
+                  << (view.met[i] ? "" : ", not met")
                   << (view.alive[i] ? "" : ", eliminated")
                   << (r.peace ? ", at peace" : "")
                   << (r.theyAsked ? ", asks for peace" : "")

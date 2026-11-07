@@ -91,8 +91,8 @@ PlayerView view = makeView(game, game.currentPlayer);
 A `PlayerView` has:
 - explored tiles with their live contents (unexplored ones have `explored == false` and nothing else filled in)
 - the units the player can see
-- its cities, stars, income, techs, tasks and diplomacy
-- the scores of tribes it has met
+- its cities, stars, income, techs, tasks and diplomacy (other tribes' stars and techs are hidden)
+- every player's score, since scores are public
 
 `makeView(game, player, true)` ignores fog, for debugging.
 

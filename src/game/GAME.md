@@ -514,6 +514,7 @@ Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/E
   - unexplored tiles
   - the player's stars
   - the player's techs. They aren't shown, though an opponent can infer some from the units and buildings they see (game).
+- **Always visible:** every player's score, including tribes not yet met (game).
 - Legal moves never act on tiles you haven't explored. For example, you can't build a road onto a fogged tile (bengreff).
 
 Sources: <https://polytopia.fandom.com/wiki/Fog_of_War>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md> (rules doc only)

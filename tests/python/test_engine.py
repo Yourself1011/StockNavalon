@@ -58,7 +58,9 @@ def test_the_view_hides_what_the_player_doesnt_know():
     assert explored == 25
     # the enemy capital is still in fog
     assert all(c.owner == 0 for c in view.cities)
-    assert view.scores[1] == -1
+    # scores are public, even for a tribe not yet met
+    assert view.scores == [game.score(0), game.score(1)]
+    assert not view.met[1]
     everything = sn.make_view(game, 0, everything=True)
     assert len(everything.cities) == 2
 

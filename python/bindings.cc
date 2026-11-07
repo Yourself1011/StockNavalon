@@ -372,7 +372,8 @@ void bindView(nb::module_ &m) {
         .def_ro("tribes", &PlayerView::tribes)
         .def_prop_ro("alive", [](const PlayerView &v) { return toVector(v.alive); })
         .def_prop_ro("met", [](const PlayerView &v) { return toVector(v.met); })
-        .def_ro("scores", &PlayerView::scores)
+        .def_ro("scores", &PlayerView::scores,
+                "Every player's score, met or not: scores are public.")
         .def_prop_ro("tasks_done",
                      [](const PlayerView &v) { return setBits(v.tasksDone); })
         .def_prop_ro("monuments_built",

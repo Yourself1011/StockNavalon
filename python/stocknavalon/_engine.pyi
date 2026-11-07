@@ -729,7 +729,8 @@ class PlayerView:
     def met(self) -> list[bool]: ...
 
     @property
-    def scores(self) -> list[int]: ...
+    def scores(self) -> list[int]:
+        """Every player's score, met or not: scores are public."""
 
     @property
     def tasks_done(self) -> list[int]: ...

@@ -199,6 +199,8 @@ TEST_CASE("the player view has the player's tasks and diplomacy") {
     game.apply({ESTABLISHEMBASSY, -1, -1, 1});
 
     PlayerView mine = makeView(game, 0);
+    // every player's score is public
+    CHECK(mine.scores == std::vector<int>{game.score(0), game.score(1)});
     CHECK(mine.kills == 3);
     CHECK(mine.tasksDone.test(TaskTypes::KILLER));
     CHECK_FALSE(mine.monumentsBuilt.test(TaskTypes::KILLER));

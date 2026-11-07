@@ -26,9 +26,10 @@ ctest --preset release -R python
 
 `.venv/bin/python -m pytest tests/python` also works, but it tests the pip-installed module.
 
-Type stubs (`python/stocknavalon/_engine.pyi`) give editors signatures and docstrings. Regenerate them after changing the bindings:
+Type stubs (`python/stocknavalon/_engine.pyi`) give editors signatures and docstrings. Regenerate them after changing the bindings. They're generated from the installed module, so reinstall first:
 
 ```bash
+uv pip install --python .venv/bin/python --no-build-isolation -e .
 .venv/bin/python -m nanobind.stubgen -m stocknavalon._engine -o python/stocknavalon/_engine.pyi
 ```
 
@@ -137,8 +138,8 @@ The state classes are read-only:
 
 What the player knows. `everything=True` ignores fog.
 
-- **Fields:** `player`, `size`, `turn`, `current_player`, `winner`, `stars`, `income`, `techs`.
-- **Per player:** `tribes`, `alive`, `met`, and `scores`. A score is -1 for a tribe not yet met.
+- **Fields:** `player`, `size`, `turn`, `current_player`, `winner`, `stars`, `income`, `techs`. These are the player's own; other tribes' stars and techs are hidden.
+- **Per player:** `tribes`, `alive`, `met`, and `scores`. Every player's score is public, met or not.
 - **Own tasks:** `tasks_done`, `monuments_built`, `kills`, `peaceful_turns`, `lighthouses_found`.
 - **`relations[p]`:** `peace`, `they_asked`, `we_asked`, `our_embassy`, `their_embassy`.
 - **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level`, `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.

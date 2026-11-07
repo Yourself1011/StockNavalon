@@ -55,7 +55,7 @@ struct PlayerView {
     std::vector<bool> alive;
     // tribes this player has met
     std::vector<bool> met;
-    // the player's own score and those of tribes they've met; -1 otherwise
+    // every player's score, met or not: scores are public
     std::vector<int> scores;
 
     // the player's own tasks (GAME.md section 14): done ones unlock their
