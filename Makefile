@@ -72,8 +72,21 @@ $(BUILD_DIR)/%.cc.o: %.cc
 clean:
 	rm -rf ./build
 
-compile_commands.json:
-	bear -- make
+# For clangd and other tools: every source and test file with the flags the
+# build uses. Regenerated whenever the Makefile or the file list changes.
+.PHONY: compile_commands
+compile_commands: compile_commands.json
+
+ALL_SRCS := $(sort $(SRCS) $(TEST_SRCS))
+compile_commands.json: Makefile $(ALL_SRCS)
+	@printf '[\n' > $@
+	@first=1; for f in $(ALL_SRCS); do \
+		[ $$first = 1 ] || printf ',\n' >> $@; first=0; \
+		printf '  {"directory": "%s", "file": "%s", "command": "$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c %s"}' \
+			"$(CURDIR)" "$$f" "$$f" >> $@; \
+	done
+	@printf '\n]\n' >> $@
+	@echo "wrote $@"
 
 # Include the .d makefiles. The - at the front suppresses the errors of missing
 # Makefiles. Initially, all the .d files will be missing, and we don't want those

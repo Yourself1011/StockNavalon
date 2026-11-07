@@ -87,7 +87,8 @@ int Game::cityCount(int player) const {
 
 bool Game::besieged(int city) const {
     const Unit *unit = unitAt(cities[city].tile);
-    return unit && unit->owner != cities[city].owner;
+    // an allied unit on the city doesn't stop it
+    return unit && hostile(unit->owner, cities[city].owner);
 }
 
 int Game::unitCount(int city) const {
@@ -160,7 +161,7 @@ int Game::income(int player) const {
             total += cityIncome(static_cast<int>(i));
         }
     }
-    return total;
+    return total + embassyIncome(player);
 }
 
 int Game::randomInt(int n) {
@@ -188,6 +189,14 @@ void Game::startTurn() {
 }
 
 void Game::endTurn() {
+    // Pacifist counts the turns without an attack since Meditation
+    Player &player = players[currentPlayer];
+    if (player.hasTech(TechTypes::MEDITATION)) {
+        player.peacefulTurns =
+            player.attackedThisTurn ? 0 : player.peacefulTurns + 1;
+    }
+    player.attackedThisTurn = false;
+
     // units that could still use an ability recover automatically
     for (Unit &unit : units) {
         if (unit.alive && unit.owner == currentPlayer && unit.canAct) {
@@ -209,6 +218,9 @@ void Game::research(TechTypes::TechType tech) {
     Player &player = players[currentPlayer];
     player.stars -= techCost(currentPlayer, tech);
     player.techs.set(tech);
+    if (tech == TechTypes::MEDITATION) {
+        player.peacefulTurns = 0;
+    }
 }
 
 // ---- legal commands ----
@@ -275,8 +287,9 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
     }
     if (unit.canAct && !unit.isNaval()) {
         bool village = tile.building == ImprovementTypes::VILLAGE;
+        // an ally's city can't be captured
         bool enemyCity = tile.building == ImprovementTypes::CITY &&
-                         tileOwner(from) != unit.owner;
+                         hostile(unit.owner, tileOwner(from));
         if (village || enemyCity) {
             out.push_back({CAPTURE, from});
         }
@@ -347,6 +360,7 @@ std::vector<Command> Game::legalCommands() const {
     }
 
     addResearchCommands(out);
+    addDiplomacyCommands(out);
     for (std::size_t i = 0; i < cities.size(); i++) {
         if (cities[i].owner == currentPlayer) {
             addCityCommands(static_cast<int>(i), out);
@@ -380,6 +394,9 @@ bool Game::isLegal(const Command &command) const {
         candidates = legalCommands();
     } else if (command.type == ENDTURN) {
         return true;
+    } else if (command.type >= PEACETREATY &&
+               command.type <= DESTROYEMBASSY) {
+        addDiplomacyCommands(candidates);
     } else if (command.type == RESEARCH) {
         addResearchCommands(candidates);
     } else if (!validTile) {
@@ -413,6 +430,7 @@ void Game::applyUnchecked(const Command &command) {
     applyCommand(command);
     if (!gameOver()) {
         checkMeetings();
+        updateTasks();
     }
 }
 
@@ -499,6 +517,13 @@ void Game::applyCommand(const Command &command) {
     case CITYREWARD:
         chooseReward(cityAt(command.from),
                      static_cast<CityRewards::CityReward>(command.arg));
+        break;
+    case PEACETREATY:
+    case PEACEREQUESTRESPONSE:
+    case BREAKPEACE:
+    case ESTABLISHEMBASSY:
+    case DESTROYEMBASSY:
+        applyDiplomacy(command);
         break;
     case ENDTURN:
         endTurn();

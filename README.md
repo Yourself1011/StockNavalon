@@ -10,12 +10,12 @@ make dev    # dev build with sanitizers -> build/dev/final_program
 ## Run
 
 ```bash
-./build/release/final_program [map file | lakes] [tribe...] [--seed N] [--size N]
+./build/release/final_program [map file | map type] [tribe...] [--seed N] [--size N]
 ./build/release/final_program src/game/map.txt Imperius Bardur
 ./build/release/final_program lakes Imperius Bardur --seed 7
 ```
 
-`lakes` generates a Lakes map (14x14 unless `--size` says otherwise) instead of loading a file.
+A map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `waterworld`) generates a map of that type (14x14 unless `--size` says otherwise) instead of loading a file.
 
 `--bot N` makes seat N a random bot (repeat it for more bots). It plays its whole turn as soon as yours ends. Its commands are only listed with `--reveal`, since they'd give away what's in the fog. With every seat a bot, the game plays itself (stopping after 300 turns) and shows the final map.
 
@@ -24,6 +24,14 @@ make dev    # dev build with sanitizers -> build/dev/final_program
 ```
 
 The map defaults to `src/game/map.txt`, and every player defaults to Imperius. The map is drawn with emojis; add `--ascii` for the old letter view if your terminal shows them badly. The map only shows what the current player has explored; add `--reveal` to see everything. The map file format is described in `src/game/map.h`.
+
+## Editor setup
+
+clangd (and other tools) read `compile_commands.json`, which isn't checked in. Generate it after cloning, and again whenever you add a source file:
+
+```bash
+make compile_commands.json
+```
 
 ## Test
 

@@ -33,6 +33,16 @@ ImprovementData improvement(ImprovementType type, std::string_view name,
             args.limited,
             args.freelance};
 }
+// free, +3 population, on field or shallow water; unlocked by a task, not a
+// tech. Built here so the terrain list outlives its use.
+ImprovementData monument(ImprovementType type, std::string_view name,
+                         std::string_view id) {
+    return improvement(type, name,
+                       {.id = id,
+                        .isBuilding = true,
+                        .population = 3,
+                        .terrain = {FIELD, WATER}});
+}
 } // namespace
 
 const std::array<ImprovementData, IMPROVEMENT_TYPE_SIZE> improvementData = {
@@ -136,6 +146,14 @@ const std::array<ImprovementData, IMPROVEMENT_TYPE_SIZE> improvementData = {
                  .tech = TechTypes::AQUATISM,
                  .terrain = {WATER, OCEAN}}),
 
+    monument(ALTAROFPEACE, "altar of peace", "ap"),
+    monument(EMPERORSTOMB, "emperor's tomb", "et"),
+    monument(EYEOFGOD, "eye of god", "eg"),
+    monument(GATEOFPOWER, "gate of power", "gp"),
+    monument(GRANDBAZAAR, "grand bazaar", "gb"),
+    monument(PARKOFFORTUNE, "park of fortune", "pf"),
+    monument(TOWEROFWISDOM, "tower of wisdom", "tw"),
+
     improvement(HARVESTFRUIT, "harvest fruit",
                 {.cost = 2,
                  .population = 1,
@@ -178,4 +196,12 @@ const std::array<ImprovementData, IMPROVEMENT_TYPE_SIZE> improvementData = {
 
 bool isProducer(ImprovementTypes::ImprovementType type) {
     return type == WINDMILL || type == SAWMILL || type == FORGE;
+}
+
+bool isTemple(ImprovementTypes::ImprovementType type) {
+    return type >= TEMPLE && type <= WATERTEMPLE;
+}
+
+bool isMonument(ImprovementTypes::ImprovementType type) {
+    return type >= ALTAROFPEACE && type <= TOWEROFWISDOM;
 }

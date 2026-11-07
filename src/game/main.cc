@@ -91,8 +91,11 @@ const std::array<std::string_view, ResourceTypes::RESOURCE_TYPE_SIZE>
 const std::array<std::string_view, ImprovementTypes::IMPROVEMENT_TYPE_SIZE>
     buildings = {""sv,   "🏠"sv, "⛺"sv, "🗿"sv, "🗼"sv, "🚜"sv, "🔨"sv,
                  "🪓"sv, "🌀"sv, "🪚"sv, "🔥"sv, "💰"sv, "⚓"sv, "🛕"sv,
-                 "🛕"sv, "🛕"sv, "🛕"sv, ""sv,   ""sv,   ""sv,   ""sv,
-                 ""sv,   ""sv,   ""sv,   ""sv};
+                 "🛕"sv, "🛕"sv, "🛕"sv,
+                 // monuments
+                 "🗽"sv, "🗽"sv, "🗽"sv, "🗽"sv, "🗽"sv, "🗽"sv, "🗽"sv,
+                 // actions, never on a tile
+                 ""sv, ""sv, ""sv, ""sv, ""sv, ""sv, ""sv, ""sv};
 
 const std::array<std::string_view, UnitTypes::UNIT_TYPE_SIZE> units = {
     "🤺"sv, "🏇"sv, "🏹"sv, "🪖"sv, "💂"sv, "🧙"sv, "🎯"sv, "🐴"sv, "🥷"sv,
@@ -176,7 +179,7 @@ void printKey() {
                  "Places:    🏰 capital  🏠 city  ⛺ village  🗿 ruin  🗼 "
                  "lighthouse  🟫 road  🌉 bridge\n"
                  "Buildings: 🚜 farm  🔨 mine  🪓 lumber hut  🌀 windmill  🪚 "
-                 "sawmill  🔥 forge  💰 market  ⚓ port  🛕 temple\n"
+                 "sawmill  🔥 forge  💰 market  ⚓ port  🛕 temple  🗽 monument\n"
                  "Units:     🤺 warrior  🏇 rider  🏹 archer  🪖 defender  💂 "
                  "swordsman  🧙 mind bender  🎯 catapult\n"
                  "           🐴 knight  🥷 cloak  🔪 dagger  👹 giant\n"
@@ -287,9 +290,16 @@ int main(int argc, char **argv) {
         tribes.push_back(parseTribe(args[i]));
     }
 
-    // "lakes" generates a map; anything else is a map file
+    // a map type's name generates a map; anything else is a map file
+    const std::array<std::string, MapTypes::MAP_TYPE_SIZE> typeNames = {
+        "drylands", "lakes", "pangea", "continents", "archipelago",
+        "waterworld"};
+    auto typeName =
+        std::find(typeNames.begin(), typeNames.end(), lower(mapFile));
     MapData map;
-    if (mapFile == "lakes") {
+    if (typeName != typeNames.end()) {
+        generate.type =
+            static_cast<MapTypes::MapType>(typeName - typeNames.begin());
         if (tribes.empty()) {
             tribes = {TribeTypes::IMPERIUS, TribeTypes::BARDUR};
         }

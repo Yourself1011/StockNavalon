@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-// GAME.md section 18. Only Lakes is implemented so far.
+// GAME.md section 18, every map type.
 struct MapGenSettings {
     // Tiny 11, Small 14, Normal 16, Large 18, Huge 20, Massive 30
     int size = 14;
@@ -14,11 +14,17 @@ struct MapGenSettings {
     std::vector<TribeTypes::Tribe> tribes;
     std::uint64_t seed = 0;
 
-    // Defaults until verified (GAME.md section 18), all tunable.
+    // Defaults until verified (GAME.md section 18), all tunable. A negative
+    // value means the map type's own default.
     // candidate maps; the fairest is kept
     int candidates = 10;
-    double minWater = 0.25, maxWater = 0.30;
-    double preTerrainDensity = 0.3;
+    // share of water tiles: Drylands 0, Lakes 25-30%, Pangea and Continents
+    // 45-55%, Archipelago 60-80%, Water World 90-100%
+    double minWater = -1, maxWater = -1;
+    // pre-terrain villages: Lakes and Archipelago 0.3, Water World 0.1,
+    // otherwise none
+    double preTerrainDensity = -1;
+    // Lakes and Archipelago only
     int suburbsPerCapital = 2;
     // suburbs go this far from their capital
     int minSuburbDistance = 3, maxSuburbDistance = 4;
@@ -34,5 +40,7 @@ struct MapGenSettings {
 
 int ruinCountForSize(int size);
 
-// throws std::invalid_argument for map types that aren't implemented yet
+// villages on 1-tile islands: Continents, Pangea and Water World
+int tinyIslandCountForSize(int size);
+
 MapData generateMap(const MapGenSettings &settings);

@@ -35,6 +35,16 @@ std::string toString(const Game &game, const Command &command) {
             out += " " + std::string{techData[command.arg].name};
         }
         break;
+    case PEACETREATY:
+    case BREAKPEACE:
+    case ESTABLISHEMBASSY:
+    case DESTROYEMBASSY:
+        out += " player " + std::to_string(command.arg);
+        break;
+    case PEACEREQUESTRESPONSE:
+        out += (command.arg % 2 ? ": accept player " : ": decline player ") +
+               std::to_string(command.arg / 2);
+        break;
     case CITYREWARD:
         if (command.arg >= 0 && command.arg < CityRewards::CITY_REWARD_SIZE) {
             out += " " + std::string{CityRewards::rewardNames[command.arg]};

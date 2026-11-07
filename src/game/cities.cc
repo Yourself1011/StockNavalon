@@ -55,7 +55,43 @@ int Game::foundCity(int tile, int owner) {
 
 // ---- connections ----
 
-std::vector<bool> Game::connectedCities(int player) const {
+std::vector<char> Game::sharedRoadsBlocked(int player) const {
+    std::vector<char> blocked(tiles.size(), 0), seen(tiles.size(), 0);
+    auto neutralRoad = [&](int t) {
+        return tiles[t].road && tiles[t].territory < 0;
+    };
+    for (int start = 0; start < size * size; start++) {
+        if (seen[start] || !neutralRoad(start)) {
+            continue;
+        }
+        // one network of neutral road tiles, and the players it touches
+        std::vector<int> component{start};
+        seen[start] = 1;
+        std::uint32_t touching = 0;
+        for (std::size_t i = 0; i < component.size(); i++) {
+            forEachNeighbour(component[i], [&](int n) {
+                int owner = tileOwner(n);
+                if (owner >= 0) {
+                    touching |= std::uint32_t{1} << owner;
+                }
+                if (!seen[n] && neutralRoad(n)) {
+                    seen[n] = 1;
+                    component.push_back(n);
+                }
+            });
+        }
+        bool shared = (touching & (touching - 1)) != 0;
+        bool first = (touching & -touching) == (std::uint32_t{1} << player);
+        if (shared && !first) {
+            for (int t : component) {
+                blocked[t] = 1;
+            }
+        }
+    }
+    return blocked;
+}
+
+std::vector<bool> Game::connectedCities(int player, bool newOnly) const {
     std::vector<bool> connected(cities.size(), false);
     int capital = players[player].capital;
     if (capital < 0 || cities[capital].owner != player) {
@@ -70,6 +106,10 @@ std::vector<bool> Game::connectedCities(int player) const {
         int city = cityAt(t);
         return city >= 0 && cities[city].owner == player;
     };
+    std::vector<char> blocked;
+    if (newOnly) {
+        blocked = sharedRoadsBlocked(player);
+    }
     // part of the network: own cities and ports, and roads and bridges
     // outside enemy borders
     auto onNetwork = [&](int t) {
@@ -78,12 +118,13 @@ std::vector<bool> Game::connectedCities(int player) const {
         }
         int owner = tileOwner(t);
         return tiles[t].road && explored(player, t) &&
-               (owner < 0 || owner == player);
+               (owner < 0 || !hostile(owner, player)) &&
+               !(newOnly && blocked[t]);
     };
     // no connection forms through tiles the player hasn't explored
     auto waterRoute = [&](int t) {
         int owner = tileOwner(t);
-        if (!explored(player, t) || (owner >= 0 && owner != player)) {
+        if (!explored(player, t) || (owner >= 0 && hostile(owner, player))) {
             return false;
         }
         return tiles[t].terrain == TerrainTypes::WATER ||
@@ -140,13 +181,17 @@ std::vector<bool> Game::connectedCities(int player) const {
 }
 
 void Game::updateConnections(int player) {
-    std::vector<bool> reached = connectedCities(player);
+    // connections that already exist may keep using shared neutral roads;
+    // new ones may not
+    std::vector<bool> kept = connectedCities(player);
+    std::vector<bool> fresh = connectedCities(player, true);
     int capital = players[player].capital;
     for (std::size_t i = 0; i < cities.size(); i++) {
         City &city = cities[i];
         int idx = static_cast<int>(i);
-        bool target = city.owner == player && idx != capital && reached[i];
         bool current = city.connectedFor == player;
+        bool reached = current ? kept[i] : fresh[i];
+        bool target = city.owner == player && idx != capital && reached;
         if (target == current) {
             continue;
         }
@@ -182,6 +227,13 @@ void Game::capture(int unitIdx) {
         city = tiles[tile].territory;
         cities[city].owner = owner;
         revealTerritory(city);
+        // embassies only stand in a capital its owner still holds
+        int capitalOf = cities[city].capitalOf;
+        if (capitalOf >= 0) {
+            for (Player &p : players) {
+                p.embassies &= ~(std::uint32_t{1} << capitalOf);
+            }
+        }
         cities[city].pendingRewards = 0;
         // its units lose their home, and don't get it back if it's retaken
         for (Unit &u : units) {
@@ -294,6 +346,7 @@ void Game::pushUnit(int unitIdx, int owner) {
 
 void Game::eliminate(int player) {
     players[player].alive = false;
+    clearDiplomacy(player);
     for (std::size_t i = 0; i < units.size(); i++) {
         if (units[i].alive && units[i].owner == player) {
             killUnit(static_cast<int>(i));

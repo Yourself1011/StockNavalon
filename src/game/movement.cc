@@ -33,21 +33,22 @@ bool Game::isRoadFor(int tile, int player) const {
     if (!t.road && t.building != ImprovementTypes::CITY) {
         return false;
     }
+    // a peace treaty opens the ally's roads
     int owner = tileOwner(tile);
-    return owner < 0 || owner == player;
+    return owner < 0 || !hostile(owner, player);
 }
 
 bool Game::nextToEnemy(int tile, int player) const {
     bool found = false;
     forEachNeighbour(tile, [&](int n) {
         const Unit *other = unitAt(n);
-        found |= other && other->owner != player && canSee(player, *other);
+        found |=
+            other && hostile(player, other->owner) && canSee(player, *other);
     });
     return found;
 }
 
-int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile,
-                    int home) {
+int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile, int home) {
     Unit unit{.type = type,
               .passenger = type,
               .owner = player,
@@ -101,9 +102,9 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
             // what the mover's owner sees on the tile: hidden enemies look
             // like empty ground
             const Unit *other = t.unit >= 0 ? &units[t.unit] : nullptr;
-            bool seenFriend = other && other->owner == unit.owner;
-            bool seenEnemy =
-                other && !seenFriend && canSee(unit.owner, *other);
+            // allies are passed through like friends
+            bool seenFriend = other && !hostile(unit.owner, other->owner);
+            bool seenEnemy = other && !seenFriend && canSee(unit.owner, *other);
             bool looksFree = !seenFriend && !seenEnemy;
 
             if (naval && !TerrainTypes::isWater(t.terrain)) {
@@ -114,7 +115,8 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
                 return;
             }
             bool embark = !naval && t.building == ImprovementTypes::PORT &&
-                          tileOwner(to) == unit.owner;
+                          tileOwner(to) >= 0 &&
+                          !hostile(tileOwner(to), unit.owner);
             if (!embark && !canEnterTerrain(unit, to)) {
                 return;
             }
@@ -124,8 +126,8 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
                 return;
             }
 
-            bool roadStep =
-                !naval && isRoadFor(from, unit.owner) && isRoadFor(to, unit.owner);
+            bool roadStep = !naval && isRoadFor(from, unit.owner) &&
+                            isRoadFor(to, unit.owner);
             int cost = roadStep ? 1 : 2;
             if (remaining < cost) {
                 return;
@@ -133,15 +135,16 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
             // Hide units can pass through an enemy city but not stop on it;
             // they infiltrate it instead
             int city = cityAt(to);
-            bool enemyCity = city >= 0 && cities[city].owner != unit.owner;
+            bool enemyCity =
+                city >= 0 && hostile(unit.owner, cities[city].owner);
             if (looksFree && !(hide && enemyCity)) {
                 destination[to] = 1;
             }
 
-            bool stop = embark || t.terrain == TerrainTypes::MOUNTAIN ||
-                        (t.terrain == TerrainTypes::FOREST && !roadStep &&
-                         !creep) ||
-                        (!ignoreZoc && nextToEnemy(to, unit.owner));
+            bool stop =
+                embark || t.terrain == TerrainTypes::MOUNTAIN ||
+                (t.terrain == TerrainTypes::FOREST && !roadStep && !creep) ||
+                (!ignoreZoc && nextToEnemy(to, unit.owner));
             int left = remaining - cost;
             if (!stop && left > best[to]) {
                 best[to] = left;

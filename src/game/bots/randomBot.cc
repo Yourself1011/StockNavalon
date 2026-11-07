@@ -24,8 +24,7 @@ std::vector<Command> RandomBot::playTurn(Game &game, int maxCommands) {
                               ? choose(game)
                               : Command{CommandTypes::ENDTURN};
         // a level-up reward has to be taken before the turn can end
-        if (command.type == CommandTypes::ENDTURN &&
-            !game.isLegal(command)) {
+        if (command.type == CommandTypes::ENDTURN && !game.isLegal(command)) {
             command = choose(game);
         }
         game.applyUnchecked(command);

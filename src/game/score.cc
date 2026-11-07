@@ -27,9 +27,10 @@ int Game::score(int player) const {
         }
         total += 20;
         ImprovementTypes::ImprovementType building = tiles[t].building;
-        if (building >= ImprovementTypes::TEMPLE &&
-            building <= ImprovementTypes::WATERTEMPLE) {
+        if (isTemple(building)) {
             total += 100 * templeLevel(t);
+        } else if (isMonument(building)) {
+            total += 400;
         }
     }
     for (const City &city : cities) {
@@ -82,6 +83,18 @@ void Game::checkMeetings() {
             const Unit *unit = unitAt(t);
             if (unit && canSee(p, *unit)) {
                 meet(unit->owner);
+            }
+        }
+    }
+
+    // Capital Vision: Diplomacy shows the capitals of tribes you've met
+    for (int p = 0; p < count; p++) {
+        if (!players[p].alive || !players[p].hasTech(TechTypes::DIPLOMACY)) {
+            continue;
+        }
+        for (int q = 0; q < count; q++) {
+            if (players[p].hasMet(q) && players[q].capital >= 0) {
+                reveal(p, cities[players[q].capital].tile);
             }
         }
     }

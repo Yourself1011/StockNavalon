@@ -27,6 +27,14 @@ enum ImprovementType {
     FORESTTEMPLE,
     MOUNTAINTEMPLE,
     WATERTEMPLE,
+    // monuments, one per completed task (GAME.md section 14)
+    ALTAROFPEACE,
+    EMPERORSTOMB,
+    EYEOFGOD,
+    GATEOFPOWER,
+    GRANDBAZAAR,
+    PARKOFFORTUNE,
+    TOWEROFWISDOM,
     // actions, which change the tile and leave nothing behind
     HARVESTFRUIT,
     HUNTING,
@@ -75,6 +83,8 @@ improvementInfo(ImprovementTypes::ImprovementType type) {
 
 // Windmill, Sawmill and Forge: buildings that level up with their neighbours
 bool isProducer(ImprovementTypes::ImprovementType type);
+bool isTemple(ImprovementTypes::ImprovementType type);
+bool isMonument(ImprovementTypes::ImprovementType type);
 
 // the highest level of Windmill, Sawmill, Forge and Market
 constexpr int MAX_BUILDING_LEVEL = 8;

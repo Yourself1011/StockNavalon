@@ -26,11 +26,18 @@ bool Game::canBuild(int player, int tile, ImprovementType type) const {
         return false;
     }
     const Unit *unit = unitAt(tile);
-    if (unit && unit->owner != player && canSee(player, *unit)) {
+    if (unit && hostile(player, unit->owner) && canSee(player, *unit)) {
         return false;
     }
     if (data.resource != ResourceTypes::NONE && t.resource != data.resource) {
         return false;
+    }
+    // a monument needs its task done, and is built once
+    if (isMonument(type)) {
+        int task = type - ALTAROFPEACE;
+        if (!p.tasksDone.test(task) || p.monumentsBuilt.test(task)) {
+            return false;
+        }
     }
 
     if (type == ROAD) {
@@ -72,7 +79,9 @@ bool Game::canDestroy(int player, int tile) const {
         tileOwner(tile) != player) {
         return false;
     }
-    return t.building == RUIN || (t.building >= FARM && t.building < HARVESTFRUIT);
+    // monuments can't be destroyed
+    return t.building == RUIN ||
+           (t.building >= FARM && t.building <= WATERTEMPLE);
 }
 
 void Game::refreshProducer(int tile) {
@@ -135,6 +144,9 @@ void Game::build(int tile, ImprovementType type) {
     }
 
     // a building
+    if (isMonument(type)) {
+        player.monumentsBuilt.set(type - ALTAROFPEACE);
+    }
     t.building = type;
     t.resource = ResourceTypes::NONE;
     t.level = 0;

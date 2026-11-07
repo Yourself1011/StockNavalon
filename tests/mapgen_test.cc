@@ -33,7 +33,26 @@ std::vector<int> settlements(const MapData &map) {
     return out;
 }
 
+// the land tiles reachable from the tile over land
+std::vector<char> landFrom(const MapData &map, int start) {
+    std::vector<char> seen(map.size * map.size, 0);
+    std::vector<int> stack{start};
+    seen[start] = 1;
+    while (!stack.empty()) {
+        int t = stack.back();
+        stack.pop_back();
+        forNeighbours(map, t, [&](int u) {
+            if (!seen[u] && isLand(map, u)) {
+                seen[u] = 1;
+                stack.push_back(u);
+            }
+        });
+    }
+    return seen;
+}
+
 void checkMap(const MapData &map, int players) {
+    MapTypes::MapType type = map.type;
     int n = map.size;
     REQUIRE(static_cast<int>(map.capitals.size()) == players);
     std::vector<int> towns = settlements(map);
@@ -54,8 +73,9 @@ void checkMap(const MapData &map, int players) {
     int water = 0;
     for (int t = 0; t < n * n; t++) {
         const Tile &tile = map.tiles[t];
-        // the outer ring is land
-        if (edgeDistance(map, t) == 0) {
+        // on Lakes and Drylands the outer ring is land
+        if ((type == MapTypes::LAKES || type == MapTypes::DRYLANDS) &&
+            edgeDistance(map, t) == 0) {
             CHECK(isLand(map, t));
         }
         // shallow water touches land, ocean doesn't
@@ -75,10 +95,30 @@ void checkMap(const MapData &map, int players) {
             CHECK(nearest <= 2);
         }
     }
-    // a little under the 25% target once starting resources turn some water
-    // back into land
-    CHECK(water >= n * n * 0.18);
-    CHECK(water <= n * n * 0.36);
+    // each type's range, with room for starting resources and forced land
+    double share = static_cast<double>(water) / (n * n);
+    switch (type) {
+    case MapTypes::DRYLANDS:
+        CHECK(share <= 0.1);
+        break;
+    case MapTypes::LAKES:
+        CHECK(share >= 0.18);
+        CHECK(share <= 0.36);
+        break;
+    case MapTypes::PANGEA:
+    case MapTypes::CONTINENTS:
+        CHECK(share >= 0.35);
+        CHECK(share <= 0.7);
+        break;
+    case MapTypes::ARCHIPELAGO:
+        CHECK(share >= 0.5);
+        CHECK(share <= 0.85);
+        break;
+    default:
+        // a crowded Tiny map has more forced land
+        CHECK(share >= (n <= 11 && players > 2 ? 0.7 : 0.8));
+        break;
+    }
 
     for (int corner : {0, n - 1, n * (n - 1), n * n - 1}) {
         CHECK(map.tiles[corner].building == ImprovementTypes::LIGHTHOUSE);
@@ -93,7 +133,10 @@ void checkMap(const MapData &map, int players) {
             starfish.push_back(t);
         }
     }
-    CHECK(static_cast<int>(ruins.size()) == ruinCountForSize(n));
+    CHECK(static_cast<int>(ruins.size()) <= ruinCountForSize(n));
+    if (type == MapTypes::LAKES || type == MapTypes::DRYLANDS) {
+        CHECK(static_cast<int>(ruins.size()) == ruinCountForSize(n));
+    }
     int waterRuins = 0;
     for (int r : ruins) {
         CHECK(map.tiles[r].terrain != TerrainTypes::WATER);
@@ -105,7 +148,9 @@ void checkMap(const MapData &map, int players) {
             CHECK((other == r || dist(map, r, other) >= 2));
         }
     }
-    CHECK(waterRuins <= ruinCountForSize(n) / 3);
+    if (type != MapTypes::WATERWORLD) {
+        CHECK(waterRuins <= ruinCountForSize(n) / 3);
+    }
     for (int f : starfish) {
         for (int v : towns) {
             CHECK(dist(map, f, v) >= 2);
@@ -115,44 +160,55 @@ void checkMap(const MapData &map, int players) {
         }
     }
 
-    // every capital reaches at least 2 villages over land, where there are 2
-    int need = std::min<int>(
-        2, static_cast<int>(towns.size() - map.capitals.size()));
-    for (int c : map.capitals) {
-        std::vector<char> seen(n * n, 0);
-        std::vector<int> stack{c};
-        seen[c] = 1;
-        int villages = 0;
-        while (!stack.empty()) {
-            int t = stack.back();
-            stack.pop_back();
-            villages += map.tiles[t].building == ImprovementTypes::VILLAGE;
-            forNeighbours(map, t, [&](int u) {
-                if (!seen[u] && isLand(map, u)) {
-                    seen[u] = 1;
-                    stack.push_back(u);
-                }
-            });
+    // Lakes: every capital reaches at least 2 villages over land, where
+    // there are 2
+    if (type == MapTypes::LAKES) {
+        int need = std::min<int>(
+            2, static_cast<int>(towns.size() - map.capitals.size()));
+        for (int c : map.capitals) {
+            std::vector<char> seen = landFrom(map, c);
+            int villages = 0;
+            for (int t = 0; t < n * n; t++) {
+                villages += seen[t] &&
+                            map.tiles[t].building == ImprovementTypes::VILLAGE;
+            }
+            CHECK(villages >= need);
         }
-        CHECK(villages >= need);
+    }
+    // Continents: capitals on different landmasses where possible
+    if (type == MapTypes::CONTINENTS && players == 2) {
+        CHECK_FALSE(landFrom(map, map.capitals[0])[map.capitals[1]]);
+    }
+    // Pangea: the capitals share the one big landmass
+    if (type == MapTypes::PANGEA) {
+        std::vector<char> seen = landFrom(map, map.capitals[0]);
+        for (int c : map.capitals) {
+            CHECK(seen[c]);
+        }
     }
 }
 } // namespace
 
-TEST_CASE("generated Lakes maps follow GAME.md section 18") {
+TEST_CASE("generated maps follow GAME.md section 18") {
     using namespace TribeTypes;
     std::vector<std::vector<Tribe>> lineups = {
         {IMPERIUS, BARDUR}, {LUXIDOOR, KICKOO}, {XINXI, VENGIR},
         {OUMAJI, HOODRICK, ZEBASI}, {AIMO, QUETZALI, YADAKK, IMPERIUS}};
+    for (int type = 0; type < MapTypes::MAP_TYPE_SIZE; type++) {
     for (int size : {11, 14, 16}) {
         for (std::size_t l = 0; l < lineups.size(); l++) {
-            for (std::uint64_t seed = 0; seed < 4; seed++) {
+            for (std::uint64_t seed = 0; seed < 3; seed++) {
+                CAPTURE(type);
                 CAPTURE(size);
                 CAPTURE(l);
                 CAPTURE(seed);
-                MapGenSettings settings{.size = size,
-                                        .tribes = lineups[l],
-                                        .seed = seed};
+                MapGenSettings settings{
+                    .size = size,
+                    .type = static_cast<MapTypes::MapType>(type),
+                    .tribes = lineups[l],
+                    .seed = seed,
+                    // the fairness pick doesn't matter here, and is slow
+                    .candidates = 2};
                 MapData map = generateMap(settings);
                 checkMap(map, static_cast<int>(lineups[l].size()));
                 // and it makes a game
@@ -160,6 +216,7 @@ TEST_CASE("generated Lakes maps follow GAME.md section 18") {
                 CHECK(game.cities.size() == lineups[l].size());
             }
         }
+    }
     }
 }
 
@@ -197,8 +254,3 @@ TEST_CASE("tribes get their starting resources next to the capital") {
     CHECK(around(map.capitals[1], ResourceTypes::FISH) >= 2);
 }
 
-TEST_CASE("other map types aren't implemented yet") {
-    MapGenSettings settings{.type = MapTypes::PANGEA,
-                            .tribes = {TribeTypes::IMPERIUS}};
-    CHECK_THROWS_AS(generateMap(settings), std::invalid_argument);
-}

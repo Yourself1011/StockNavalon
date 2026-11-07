@@ -45,7 +45,7 @@ std::vector<int> Game::attackTargets(int unitIdx) const {
     if (unit.has(Abilities::INFILTRATE)) {
         forEachNeighbour(unit.tile, [&](int n) {
             int city = cityAt(n);
-            if (city >= 0 && cities[city].owner != unit.owner &&
+            if (city >= 0 && hostile(unit.owner, cities[city].owner) &&
                 explored(unit.owner, n)) {
                 targets.push_back(n);
             }
@@ -57,7 +57,8 @@ std::vector<int> Game::attackTargets(int unitIdx) const {
     }
     forEachInRadius(unit.tile, unit.data().range, [&](int n) {
         const Unit *other = unitAt(n);
-        if (other && other->owner != unit.owner && canSee(unit.owner, *other)) {
+        if (other && hostile(unit.owner, other->owner) &&
+            canSee(unit.owner, *other)) {
             targets.push_back(n);
         }
     });
@@ -70,9 +71,7 @@ void Game::splashDamage(int attackerIdx, int target, int amount) {
     unit.hp -= amount;
     if (unit.hp <= 0) {
         killUnit(target);
-        if (units[attackerIdx].alive) {
-            units[attackerIdx].kills++;
-        }
+        creditKill(attackerIdx);
     }
 }
 
@@ -81,7 +80,7 @@ void Game::stomp(int unitIdx) {
     std::vector<int> victims;
     forEachNeighbour(unit.tile, [&](int n) {
         const Unit *other = unitAt(n);
-        if (other && other->owner != unit.owner) {
+        if (other && hostile(unit.owner, other->owner)) {
             victims.push_back(tiles[n].unit);
         }
     });
@@ -104,6 +103,7 @@ void Game::attack(int unitIdx, int target) {
         return;
     }
     Unit &defender = units[defenderIdx];
+    onAttack(unit.owner, defender.owner);
 
     AttackResult result = previewAttack(unit, defender);
     unit.canAttack = false;
@@ -122,7 +122,7 @@ void Game::attack(int unitIdx, int target) {
         std::vector<int> splashed;
         forEachNeighbour(target, [&](int n) {
             const Unit *other = unitAt(n);
-            if (other && other->owner != unit.owner) {
+            if (other && hostile(unit.owner, other->owner)) {
                 splashed.push_back(tiles[n].unit);
             }
         });
@@ -133,7 +133,7 @@ void Game::attack(int unitIdx, int target) {
 
     if (defender.hp <= 0) {
         killUnit(defenderIdx);
-        unit.kills++;
+        creditKill(unitIdx);
         // melee attackers move into the tile, if they could stand there
         if (unit.data().range == 1 && canEnterTerrain(unit, target)) {
             placeUnit(unitIdx, target);
@@ -145,7 +145,7 @@ void Game::attack(int unitIdx, int target) {
         unit.hp -= result.retaliation;
         if (unit.hp <= 0) {
             killUnit(unitIdx);
-            defender.kills++;
+            creditKill(defenderIdx);
         }
     }
 }
@@ -153,6 +153,7 @@ void Game::attack(int unitIdx, int target) {
 void Game::convert(int unitIdx, int targetIdx) {
     Unit &unit = units[unitIdx];
     Unit &target = units[targetIdx];
+    onAttack(unit.owner, target.owner);
     target.owner = unit.owner;
     target.home = -1;
     // counts toward the capital, or a random city without one, even past its
@@ -184,6 +185,7 @@ void Game::convert(int unitIdx, int targetIdx) {
 void Game::infiltrate(int unitIdx, int target) {
     int owner = units[unitIdx].owner;
     int city = cityAt(target);
+    onAttack(owner, cities[city].owner);
     killUnit(unitIdx);
     int count = std::min(cities[city].level, 5);
 

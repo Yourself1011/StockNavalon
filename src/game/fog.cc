@@ -44,7 +44,7 @@ bool Game::hiddenEnemyNear(int player, int tile) const {
     bool found = false;
     forEachNeighbour(tile, [&](int n) {
         const Unit *other = unitAt(n);
-        found |= other && other->owner != player && other->hidden;
+        found |= other && hostile(player, other->owner) && other->hidden;
     });
     return found;
 }

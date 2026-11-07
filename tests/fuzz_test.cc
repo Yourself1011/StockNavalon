@@ -55,10 +55,13 @@ TEST_CASE("random games keep the state consistent") {
                                                   TribeTypes::TRIBE_SIZE);
         };
         std::vector<TribeTypes::Tribe> tribes = {tribe(), tribe()};
-        // a quarter on the fixed map, the rest on generated Lakes maps
-        MapData map = seed % 4 == 0
-                          ? fixed
-                          : generateMap({.tribes = tribes, .seed = seed});
+        // a quarter on the fixed map, the rest on generated maps of every
+        // type
+        auto type = static_cast<MapTypes::MapType>(seed % MapTypes::MAP_TYPE_SIZE);
+        MapData map =
+            seed % 4 == 0
+                ? fixed
+                : generateMap({.type = type, .tribes = tribes, .seed = seed});
         Game game(map, tribes, {.seed = seed});
         // rich games reach more of the rules
         bool rich = seed % 2 == 1;

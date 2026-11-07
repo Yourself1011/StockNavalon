@@ -142,8 +142,14 @@ class Game {
     // recomputes every player's capital connections
     void updateAllConnections();
     void updateConnections(int player);
-    // cities whose road/port network reaches the player's capital
-    std::vector<bool> connectedCities(int player) const;
+    // cities whose road/port network reaches the player's capital. With
+    // newOnly, shared neutral roads the player has no claim to are left out,
+    // since they can't form new connections.
+    std::vector<bool> connectedCities(int player, bool newOnly = false) const;
+    // neutral road tiles the player can't use for new connections: their
+    // network touches several players' borders and the player isn't first in
+    // seat order among them
+    std::vector<char> sharedRoadsBlocked(int player) const;
 
     // ---- fog of war (fog.cc) ----
     // at most this many players, one explored bit each
@@ -177,6 +183,22 @@ class Game {
     static int meetingBonus(int score);
     // meets every tribe the player can now see; called after every command
     void checkMeetings();
+
+    // ---- tasks and monuments (tasks.cc) ----
+    // whether the task's goal holds right now (GAME.md section 14)
+    bool taskMet(int player, TaskTypes::Task task) const;
+    // marks every task whose goal holds; called after every command
+    void updateTasks();
+
+    // ---- diplomacy (diplomacy.cc) ----
+    bool atPeace(int a, int b) const {
+        return a != b && a >= 0 && b >= 0 && (players[a].peace >> b & 1);
+    }
+    // different players without a peace treaty: they can attack each other,
+    // and only their units exert zone of control
+    bool hostile(int a, int b) const { return a != b && !atPeace(a, b); }
+    // stars a turn from embassies, built and hosted
+    int embassyIncome(int player) const;
 
     // ---- ruins (ruins.cc) ----
     enum RuinReward { RUIN_TECH, RUIN_STARS, RUIN_POPULATION, RUIN_EXPLORER,
@@ -234,6 +256,19 @@ class Game {
 
     // ruins.cc
     void examineRuins(int unit);
+
+    // tasks.cc
+    // a kill by the unit, for its veteran count and its owner's Killer task
+    void creditKill(int unit);
+    // an attack by one player on another: Pacifist starts over, and the
+    // embassies between them are destroyed
+    void onAttack(int attacker, int defender);
+
+    // diplomacy.cc
+    void addDiplomacyCommands(std::vector<Command> &out) const;
+    void applyDiplomacy(const Command &command);
+    // removes every diplomatic tie to the player
+    void clearDiplomacy(int player);
 
     // fog.cc
     void revealTerritory(int city);
