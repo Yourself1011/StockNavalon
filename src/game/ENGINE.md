@@ -16,6 +16,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `legalMoves.h`: `LegalMoves`, the current player's legal commands kept up to date one command at a time, for search. A node keeps one next to its `Game`. It finds what changed by comparing the states before and after, and regenerates only the unit and tile commands near the changes. It always matches `legalCommands()` as a set; the tests check that after every command on every map type.
 - `mapgen.h`: `generateMap(settings)`, every map type
 - `bots/randomBot.h`: a bot that plays random legal commands
+- `python/bindings.cc` (outside `src/`): the Python module `stocknavalon`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine as a static library for it.
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic
 - `data/`: unit, tech, improvement and tribe tables
 - `map.h`: the map file format

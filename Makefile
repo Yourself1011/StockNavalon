@@ -78,13 +78,21 @@ clean:
 compile_commands: compile_commands.json
 
 ALL_SRCS := $(sort $(SRCS) $(TEST_SRCS))
-compile_commands.json: Makefile $(ALL_SRCS)
+# The Python bindings need nanobind's and Python's headers, found through the
+# project venv when there is one (see README)
+VENV_PYTHON := .venv/bin/python
+BINDINGS_FLAGS := $(shell [ -x $(VENV_PYTHON) ] && $(VENV_PYTHON) -c "import nanobind, sysconfig; print('-I' + nanobind.include_dir(), '-I' + sysconfig.get_paths()['include'])" 2>/dev/null)
+compile_commands.json: Makefile $(ALL_SRCS) python/bindings.cc
 	@printf '[\n' > $@
 	@first=1; for f in $(ALL_SRCS); do \
 		[ $$first = 1 ] || printf ',\n' >> $@; first=0; \
 		printf '  {"directory": "%s", "file": "%s", "command": "$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c %s"}' \
 			"$(CURDIR)" "$$f" "$$f" >> $@; \
 	done
+	@if [ -n "$(BINDINGS_FLAGS)" ]; then \
+		printf ',\n  {"directory": "%s", "file": "python/bindings.cc", "command": "$(CXX) $(CPPFLAGS) $(BINDINGS_FLAGS) $(CXXFLAGS) -c python/bindings.cc"}' \
+			"$(CURDIR)" >> $@; \
+	fi
 	@printf '\n]\n' >> $@
 	@echo "wrote $@"
 

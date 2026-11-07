@@ -25,9 +25,41 @@ A map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `water
 
 The map defaults to `src/game/map.txt`, and every player defaults to Imperius. The map is drawn with emojis; add `--ascii` for the old letter view if your terminal shows them badly. The map only shows what the current player has explored; add `--reveal` to see everything. The map file format is described in `src/game/map.h`.
 
+## Python
+
+The engine is also a Python package, `stocknavalon`, built with nanobind and scikit-build-core. Set it up in a project venv (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python nanobind scikit-build-core pytest
+uv pip install --python .venv/bin/python --no-build-isolation -e .
+.venv/bin/python -m pytest tests/python
+```
+
+Rerun the last install after changing C++ code. Then:
+
+```python
+import stocknavalon as sn
+
+tribes = [sn.Tribe.IMPERIUS, sn.Tribe.BARDUR]
+game = sn.Game(sn.generate_map(tribes, seed=1), tribes, seed=1)
+game.apply(sn.Command(sn.CommandType.RESEARCH, arg=sn.TechType.RIDING))
+view = sn.make_view(game, 0)          # what player 0 knows
+results = sn.play_random_games(100, tribes)   # loops in C++
+```
+
+A call into the engine costs about as much as a game step (a full step from Python is about 14 µs, against 6 µs in C++), so loops over many games or positions belong in C++ as single calls.
+
+The engine also builds with plain CMake, which makes the CLI and the tests like the Makefile does:
+
+```bash
+cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake
+```
+
 ## Editor setup
 
-clangd (and other tools) read `compile_commands.json`, which isn't checked in. Generate it after cloning, and again whenever you add a source file:
+clangd (and other tools) read `compile_commands.json`, which isn't checked in. Generate it after cloning, and again whenever you add a source file. With the Python venv set up, it covers the bindings too:
 
 ```bash
 make compile_commands.json
