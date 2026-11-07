@@ -135,7 +135,12 @@ void bindEnums(nb::module_ &m) {
 #undef V
 
 void bindState(nb::module_ &m) {
-    nb::class_<Command>(m, "Command")
+    nb::class_<Command>(
+        m, "Command",
+        "One command, as the real game has them. from_tile and to_tile are "
+        "tile indices (y * size + x), -1 when unused; arg is a unit type, "
+        "improvement type, tech, city reward or player, depending on the "
+        "type. See docs/python.md for each type's fields.")
         .def(
             "__init__",
             [](Command *c, CommandTypes::CommandType type, int from, int to,
@@ -155,7 +160,7 @@ void bindState(nb::module_ &m) {
              })
         .def("__repr__", &commandRepr);
 
-    nb::class_<Tile>(m, "Tile")
+    nb::class_<Tile>(m, "Tile", "A map tile, as the engine sees it (no fog).")
         .def_ro("terrain", &Tile::terrain)
         .def_ro("resource", &Tile::resource)
         .def_ro("building", &Tile::building)
@@ -165,7 +170,8 @@ void bindState(nb::module_ &m) {
         .def_ro("territory", &Tile::territory)
         .def("explored_by", &Tile::exploredBy, "player"_a);
 
-    nb::class_<Unit>(m, "Unit")
+    nb::class_<Unit>(m, "Unit",
+                     "A unit, as the engine sees it. HP values are x10.")
         .def_ro("type", &Unit::type)
         .def_ro("passenger", &Unit::passenger)
         .def_ro("owner", &Unit::owner)
@@ -181,7 +187,7 @@ void bindState(nb::module_ &m) {
         .def_ro("can_attack", &Unit::canAttack)
         .def_ro("can_act", &Unit::canAct);
 
-    nb::class_<City>(m, "City")
+    nb::class_<City>(m, "City", "A city, as the engine sees it.")
         .def_ro("tile", &City::tile)
         .def_ro("owner", &City::owner)
         .def_ro("level", &City::level)
@@ -193,7 +199,9 @@ void bindState(nb::module_ &m) {
         .def_ro("workshop", &City::workshop)
         .def_ro("wall", &City::wall);
 
-    nb::class_<Player>(m, "Player")
+    nb::class_<Player>(m, "Player",
+                       "A player's full state, including what's hidden "
+                       "from opponents.")
         .def_ro("tribe", &Player::tribe)
         .def_ro("stars", &Player::stars)
         .def_ro("capital", &Player::capital)
@@ -209,7 +217,9 @@ void bindState(nb::module_ &m) {
 }
 
 void bindMaps(nb::module_ &m) {
-    nb::class_<MapData>(m, "MapData")
+    nb::class_<MapData>(m, "MapData",
+                        "A map before the game starts: tiles and each "
+                        "player's capital tile, in seat order.")
         .def_ro("size", &MapData::size)
         .def_ro("type", &MapData::type)
         .def_ro("tiles", &MapData::tiles)
@@ -240,7 +250,11 @@ void bindMaps(nb::module_ &m) {
 }
 
 void bindGame(nb::module_ &m) {
-    nb::class_<Game>(m, "Game")
+    nb::class_<Game>(
+        m, "Game",
+        "The whole game state. Sees everything, including what's hidden by "
+        "fog: bots should decide from make_view(game, player) and use the "
+        "Game only to list and apply commands. Copies are independent.")
         .def(
             "__init__",
             [](Game *g, const MapData &map,
@@ -300,7 +314,11 @@ void bindGame(nb::module_ &m) {
 }
 
 void bindView(nb::module_ &m) {
-    nb::class_<PlayerView> view(m, "PlayerView");
+    nb::class_<PlayerView> view(
+        m, "PlayerView",
+        "What one player knows: explored tiles with their live contents, the "
+        "units they can see, their own stars, techs, tasks and diplomacy. "
+        "Unexplored tiles have explored=False and nothing else filled in.");
 
     nb::class_<PlayerView::TileView>(view, "TileView")
         .def_ro("explored", &PlayerView::TileView::explored)
@@ -372,7 +390,12 @@ void bindView(nb::module_ &m) {
 }
 
 void bindSearch(nb::module_ &m) {
-    nb::class_<LegalMoves>(m, "LegalMoves")
+    nb::class_<LegalMoves>(
+        m, "LegalMoves",
+        "The current player's legal commands, updated one command at a time "
+        "instead of regenerated. For search: keep one next to each Game, and "
+        "apply commands through it. Always matches game.legal_commands() as a "
+        "set, though not in the same order.")
         .def(nb::init<const Game &>(), "game"_a)
         .def("copy", [](const LegalMoves &l) { return LegalMoves(l); })
         .def("__copy__", [](const LegalMoves &l) { return LegalMoves(l); })
@@ -382,7 +405,10 @@ void bindSearch(nb::module_ &m) {
         .def("update", &LegalMoves::update, "before"_a, "after"_a,
              "Updates the list for a game that went from before to after.");
 
-    nb::class_<RandomBot>(m, "RandomBot")
+    nb::class_<RandomBot>(
+        m, "RandomBot",
+        "Plays random legal commands: a random command type, then a random "
+        "command of that type.")
         .def(nb::init<std::uint64_t>(), "seed"_a = 0)
         .def("choose", &RandomBot::choose, "game"_a)
         .def("play_turn", &RandomBot::playTurn, "game"_a,

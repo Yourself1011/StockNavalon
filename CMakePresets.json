@@ -1,0 +1,46 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {"CMAKE_EXPORT_COMPILE_COMMANDS": "ON"}
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "Optimized build",
+            "inherits": "base",
+            "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+        },
+        {
+            "name": "dev",
+            "displayName": "Dev",
+            "description": "Debug info, sanitizers and checked containers; also what the editor uses (.clangd)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "STOCKNAVALON_SANITIZE": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {"name": "release", "configurePreset": "release"},
+        {"name": "dev", "configurePreset": "dev"}
+    ],
+    "testPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "output": {"outputOnFailure": true}
+        },
+        {
+            "name": "dev",
+            "configurePreset": "dev",
+            "output": {"outputOnFailure": true}
+        }
+    ]
+}

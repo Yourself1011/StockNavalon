@@ -1,0 +1,4 @@
+# clangd reads the compile commands of the dev build, which CMake writes and
+# keeps up to date: run `cmake --preset dev` once after cloning
+CompileFlags:
+  CompilationDatabase: build/dev

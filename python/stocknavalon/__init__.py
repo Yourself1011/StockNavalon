@@ -8,7 +8,8 @@ call into C++ (like play_random_games) rather than a Python loop.
 
     tribes = [sn.Tribe.IMPERIUS, sn.Tribe.BARDUR]
     game = sn.Game(sn.generate_map(tribes, seed=1), tribes, seed=1)
-    while not game.game_over:
+    # there's no turn limit in the rules, so a game can go on forever
+    while not game.game_over and game.turn < 100:
         commands = game.legal_commands()
         game.apply(commands[0])
 """

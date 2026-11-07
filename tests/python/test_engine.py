@@ -91,3 +91,9 @@ def test_play_random_games():
     for winner, turns in results:
         assert winner in (-1, 0, 1)
         assert turns <= 20
+
+
+def test_under_ctest_the_build_tree_module_is_tested():
+    package = __import__("os").environ.get("STOCKNAVALON_BUILD_PACKAGE")
+    if package:
+        assert sn.__file__.startswith(package)
