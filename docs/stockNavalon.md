@@ -20,7 +20,7 @@ The pieces:
 
 1. **The network** (section 2): one shared trunk with policy, value and belief heads.
 2. **The search** (section 3): MCTS using the PUCT rule.
-3. **Fog** (section 4): the search runs on sampled versions of the hidden state (determinization).
+3. **Fog** (section 4): the search runs on sampled versions of the hidden state. Stage 1 is plain determinization; stage 2 is POMCP/ISMCTS-style search with one shared tree and a particle filter.
 4. **The belief model** (section 5): predicts the hidden state, including by reading the public score history, to make those samples realistic.
 5. **Batched evaluation** (section 6): the search runs in C++ and asks Python for network evaluations in large batches.
 
@@ -64,7 +64,7 @@ A convolutional ResNet, perhaps 6 to 10 blocks of 64 to 128 channels for a 14×1
 - **Value:**
   - pooled features into a small MLP, giving the expected result for the player to move
   - possibly an auxiliary head predicting the final score difference, since win/loss alone is a sparse signal in long games
-- **Beliefs:** the hidden state (section 5.2).
+- **Beliefs:** the hidden state (section 5.3).
 
 ## 3. The search
 
@@ -162,7 +162,7 @@ A bot trained that way learns habits based on information it won't have in a rea
 
 Explored tiles show their live contents, including enemy units (GAME.md section 16), so everything on explored tiles is known. Within your own turn, fog comes down to what you'll find by exploring. Once the search crosses into the opponent's turn (section 3.5), their stars, techs and units matter too.
 
-### 4.3 Determinization (**Decided**)
+### 4.3 Stage 1: determinization (**Decided**)
 
 1. **Sample a full game consistent with the player's view:**
    - explored tiles, visible units and your own state are copied exactly
@@ -172,9 +172,57 @@ Explored tiles show their live contents, including enemy units (GAME.md section 
 
 The value head is trained on `PlayerView` against real outcomes, so it already estimates the result averaged over the hidden states consistent with the view.
 
-**Known weakness: strategy fusion.** Each sampled search behaves as if it knew what's behind the fog, and plans that only work in that sample, like "explore here, then take the village there". Averaging across samples blurs this but doesn't fix it. Information-set MCTS (ISMCTS), which shares one tree across samples, fixes it properly. It's the upgrade path if the weakness shows up in practice.
+**Known weakness: strategy fusion.** Each sampled search behaves as if it knew what's behind the fog, and plans that only work in that sample, like "explore here, then take the village there". Averaging across samples blurs this but doesn't fix it. Stage 2 (section 4.4) fixes it.
+
+**Why stage 1 first:** it's the simplest way to get the whole pipeline working (network, batched evaluation, belief model, self-play) and to have a working bot. It's also the baseline stage 2 has to beat.
 
 **Before any bot is judged or trained for real,** the search runs on determinized games only. Searching the real game is allowed just for getting the pipeline running, and must be clearly labelled as cheating.
+
+### 4.4 Stage 2: one shared tree (**Decided**)
+
+#### Where it comes from
+
+POMCP and ISMCTS are both MCTS extended to hidden information:
+
+| | Information fully visible | Hidden information |
+| --- | --- | --- |
+| **one agent** (a planning problem) | MDP: MCTS (UCT) | POMDP: **POMCP** |
+| **several players** (a game) | perfect-information game: MCTS (AlphaZero) | imperfect-information game: **ISMCTS** |
+
+Both deal with hidden information the same way: sample a hidden state for every simulation, and share one tree across all of them. ISMCTS adds the opponent. In the opponent's part of the tree, their moves are chosen from what *they* could know, not from the sampled truth.
+
+stockNavalon is an imperfect-information game. With an own-turn search horizon (section 3.5) the opponent never moves inside the tree, so each search is effectively a POMDP and POMCP applies almost directly. Once the search crosses into the opponent's turn, it's ISMCTS.
+
+#### What changes from stage 1
+
+1. **One tree, a fresh sample per simulation.** Instead of K separate trees, every simulation starts by sampling a hidden state. This is the particle, drawn from the belief model through the filter below. The simulation then plays it out in the shared tree. The tree's statistics average over everything that might be behind the fog.
+2. **The tree branches on what was observed.** A move that reveals tiles leads to different children depending on what it revealed. So "explore here" is judged by its average outcome, and later moves are planned per outcome: "if there's a village, take it; if not, do something else". This is what fixes strategy fusion.
+3. **Observations are kept coarse.** One move can reveal several tiles at once, each with terrain, resources, units and buildings. Branching on the exact contents would give nearly every simulation its own child, each visited once. So:
+   - **Coarse observation keys:** branch only on what matters for planning, like "found a village", "found enemy units", "found a ruin", "nothing important".
+   - **Progressive widening:** a node only adds new observation branches as its visit count grows. This is how POMCPOW, POMCP's descendant, handles large observation spaces.
+4. **The opponent's turn (if the horizon reaches it)** is chosen from the opponent's information, as in ISMCTS: their priors come from *their* view of the sampled game, and their tree nodes are keyed by what they can see.
+
+#### Particle filtering between turns
+
+At the start of each turn the bot learns new hard facts:
+- tiles revealed
+- units seen
+- every published score (section 5.1)
+
+A particle filter enforces them exactly:
+- **The belief model proposes** candidate hidden states.
+- **The filter rejects** any that contradict a hard fact. For example, a candidate whose opponent couldn't have produced this turn's +300 is out.
+- **Fresh candidates every turn:** the hidden state is too large for a fixed set of particles to survive many turns of evidence, so they're generated anew each turn rather than carried over. Rejected ones are simply replaced.
+
+So the learned model and the filter divide the work: the model makes the guesses plausible, and the filter makes them consistent with everything known for certain.
+
+#### Stage 1 choices that keep stage 2 from being a rewrite
+
+- **`determinize()` must be cheap enough to call once per simulation,** not just once per tree. It's a copy plus some sampling, so it should be, but measure it when it's built.
+- **Child nodes are looked up through one function,** keyed by the move in stage 1. Adding the observation to the key in stage 2 is then a local change.
+- **The `Beliefs` interface stays as it is** (section 5.6). The belief model is stage 2's particle generator as-is; the filter sits between the two.
+
+**Order:** stage 2 starts once stage 1 is working end to end. It's measured against stage 1 at equal compute, with the same network and beliefs, so the comparison is about the search alone.
 
 ## 5. The belief model
 
@@ -208,66 +256,208 @@ What it reveals:
 
 This only works if the engine's score formula matches the real game's exactly. The starting scores are verified; the mid-game rules (temple levels, population and level-up bonuses, losses) should be checked against real games before the bot relies on them. **Open.**
 
-### 5.2 What the model predicts
+### 5.2 Ambiguity is expected (**Decided**)
+
+The score never pins the opponent down exactly: many combinations of techs, cities, levels and units give the same number. The bot doesn't try to resolve this to one answer. It keeps a realistic spread of possibilities, and makes decisions that hold up across them:
+
+1. **Many samples, not one.** Each call to `determinize()` (section 5.5) produces one possible opponent, and different seeds produce different ones. The search plays out many (K trees in stage 1, one per simulation in stage 2), so its statistics average over them.
+2. **The belief model sets the proportions.** If a +200 could be one tier-2 tech, two tier-1 techs, or a tier-1 tech and 20 explored tiles, and the model puts those at 60%, 25% and 15%, the samples come out in those proportions. What matters is that the proportions are right (calibration), not that one answer is.
+3. **The published score rules samples out.** It's one exact number, and every sample must match it (section 5.5, step 7).
+
+Why that's enough:
+- **Most of the uncertainty doesn't change the right move.** Two or three cities, 14 or 17 stars, rarely matter this turn. What matters is usually a few specific facts (can they reach this city? do they have Archery?), and the samples cover those in the right proportions.
+- **The value head was trained on the same uncertainty.** It never sees hidden state, so it already estimates outcomes averaged over what the opponent might have.
+- **Uncertainty shrinks:** every unit seen proves a tech, every explored tile removes a guess, every published score narrows the options.
+
+### 5.3 What the model predicts
+
+The belief heads are part of the shared network (section 2). They output probabilities directly:
 
 | Target | Output | Loss |
 | --- | --- | --- |
-| opponent's techs | a probability per tech | binary cross-entropy |
-| opponent's stars | a distribution over ranges | cross-entropy |
-| unexplored tiles | per tile: terrain, resource, village/ruin/city/none | cross-entropy, on unexplored tiles only |
-| enemy units in fog | per tile and unit type: the chance one is there | binary cross-entropy, on tiles you can't see |
+| opponent's techs | a sigmoid per tech | binary cross-entropy |
+| opponent's stars | a softmax over ranges (0–4, 5–9, ...) | cross-entropy |
+| **where hidden units are** | one plane: per tile, the chance a hidden enemy unit (any type) is there | binary cross-entropy, only on tiles the player can't see, with extra weight on the rare tiles that have one |
+| **what type each is** | per tile, a softmax over unit types: "if there's a unit here, it's 50% Warrior, 30% Rider, ..." | cross-entropy, only on tiles that have a hidden unit |
+| **how many hidden units** | a count head: a distribution over the total number | cross-entropy |
+| enemy cities in fog | per tile, the chance an enemy city is there, plus its level | binary cross-entropy / cross-entropy |
+| unexplored tiles | per tile, a softmax over terrain, resource, village/ruin/none | cross-entropy, on unexplored tiles only |
 | opponent's exploration | how many tiles they've explored | regression |
 
-The unit predictions amount to a heat map of where the enemy army probably is.
+**Why "where" and "what type" are separate planes,** instead of one plane per unit type:
+- **Sparsity:** any single unit type is hidden on very few tiles, so a per-type plane is nearly all zeros, and rare types (Knights, Mind Benders) give it very few examples to learn from.
+- **Dense signal:** the single "is a unit here" plane learns from every hidden unit of every type. It's also what the search cares about most: where the threats are.
+- **Shared type knowledge:** the type softmax only has to be learned where units actually are, and shares what it learns across tiles ("early on, near their capital, usually a Warrior or Rider").
+- **Boats need no special case:** on water, only boat types make sense, and the softmax learns that.
+- **No grouping:** grouping unit types was considered and dropped. Most groups would hold one or two types, and grouping loses distinctions that matter, like a Defender against a Swordsman.
 
-**First version (**Proposed**):** the opponent's techs, stars and unit positions. Unexplored terrain stays with the baseline sampler (section 5.4), since it's the hardest part to sample well and matters least within a turn.
+The "where" and city planes amount to a heat map of the opponent in the fog. A convolutional trunk suits it: where units are depends on what's near them (their cities, roads, paths between territories, terrain they can't cross). The score history moves it too: a +15 last turn means a Rider was probably trained, so more heat around their cities.
 
-### 5.3 Inputs and training
+**First version (**Proposed**):** techs, stars, and the hidden units (where, what type, how many). Unexplored terrain and fogged cities stay with the baseline (section 5.6), since terrain is the hardest to sample well and matters least within a turn.
 
-- **Inputs:**
-  - the same encoded view as the other heads
-  - the score history, as per-turn changes per opponent, with the player's own effects subtracted, through a small 1-D convolution or GRU
-  - optionally, hand-built breakdowns of each change as extra features, like "divisible by 100"
-- **Training data is free:** in self-play the engine knows the full truth, so every position is a labelled example: the player's view as input, the real hidden state from the `Game` as the answer. Data collection can start right away, with the existing random and one-ply bots.
-- **Caveat:** beliefs depend on how the opponent plays. A model trained on self-play expects opponents like itself, and real opponents won't be. That's acceptable for a first version.
+### 5.4 How it learns (**Decided**)
 
-### 5.4 From predictions to a consistent game
+#### Supervised, from games where the truth is known
 
-The model gives separate probabilities; a determinized game has to be one coherent state:
+```
+input:  the player's view (encoded, with the score history and threat map)
+answer: the opponent's real techs, stars, units and cities; the real unexplored terrain
+```
 
-- **Techs:** sample down the tech tree, parents before children, so the result is always a valid set of techs.
-- **Stars:** sample from the predicted distribution, never below 0.
-- **Units:** sample a count per type, then place them using the heat map, only on legal tiles: the right terrain, not a tile you can see, not stacked.
-- **Terrain:** sample each tile from its prediction and smooth the result at first. Better later: fill tiles in order so each depends on its neighbours, or steer the map generator with the predictions.
-- **Score check:** the opponent's published score is an exact number, and the engine can compute a sample's score. Reject or down-weight samples whose score is far off. Their exploration count is hidden, so the match can't be exact, but it's a strong check on techs and army size.
+In any game the engine knows the full truth, so every position is a labelled example.
 
-### 5.5 Engine interface (**Proposed**)
+The **inputs** are:
+- the same encoded view as the other heads
+- the score history, as per-turn changes per opponent with the player's own effects subtracted, through a small 1-D convolution or GRU
+- optionally, hand-built breakdowns of each change as extra features, like "divisible by 100"
+
+**Why cross-entropy gives honest odds:** the prediction that minimises it is the true frequency. If in 70% of similar-looking situations the opponent really had Archery, the network is pushed towards exactly 70%. It's trained to be calibrated, not to guess the single most likely answer, which is what the sampler needs.
+
+#### Making it reflect good players
+
+The network learns the hidden states that **the players in its training data** tend to be in. Train it on random-bot games and it learns that opponents buy random techs and disband their units. So "predict what a good player has" means "train on games with good players in them":
+
+1. **Bootstrap data from simple bots** (random, one-ply): only to get started and to test the pipeline. Its beliefs are about weak players.
+2. **Self-play, refreshed as the bot improves:** the main source. The belief heads train on the same self-play games as the policy and value heads, from a rolling window of recent games. As stockNavalon gets stronger, so do the opponents in its data, and old data from weak versions ages out.
+3. **Real games**, if available: human game records, or full information revealed after a game. The best labels there are; even a few hundred games could fine-tune the beliefs towards real opponents.
+
+#### Not assuming everyone plays like the bot
+
+Pure self-play learns what *the bot* would have in each situation, so against a different style (a rush, when the bot always builds economy) its beliefs would start out confidently wrong. Three fixes:
+
+- **A varied opponent pool:**
+  - past versions
+  - versions trained with different settings
+  - simple scripted styles (rusher, turtle, expander)
+- **Let the history adapt it within a game.** Trained on varied opponents, the network learns to read style from the score history and what it has seen. A +15 every early turn looks like a Rider rush, and its predictions shift mid-game.
+- **Check calibration per opponent style,** so a blind spot shows up before it costs games.
+
+#### What it doesn't capture: how facts relate
+
+The heads predict each fact separately ("70% Archery", "60% three or more cities"), not how facts relate ("with Archery, probably no Climbing yet"). Sampling (section 5.5) covers the important relationships:
+- it respects the tech tree
+- it forces in proven techs
+- it rejects combinations that don't fit the score
+
+If that's not enough, the next step is a head that samples one fact at a time, each conditioned on the ones already chosen: techs in tree order, then units given those techs. Only if the simple version's samples prove wrong in ways that matter.
+
+### 5.5 Determinization: from beliefs to a game (**Proposed**)
+
+```cpp
+Game determinize(const Game &real, int player, const Beliefs &beliefs,
+                 std::uint64_t seed, Detail detail);
+```
+
+The goal: a complete, valid `Game` that agrees exactly with everything the player knows, and in which everything else was sampled.
+
+#### Copy, wipe, fill, repair
+
+1. **Copy** the real game.
+2. **Wipe** everything the player doesn't know, driven by an explicit list of hidden fields. This is the risky step: anything not wiped leaks, which the leak test (section 5.7) catches.
+3. **Fill it back in** from the beliefs, using a random generator seeded with `seed`.
+4. **Repair** the engine's bookkeeping, so the result is a valid game.
+
+#### What's known and what's sampled
+
+| | Known: kept exactly | Hidden: wiped and resampled |
+| --- | --- | --- |
+| **Tiles** | every tile the player has explored, with its live contents | unexplored tiles: terrain, resource, village, ruin, road, building, territory |
+| **Units** | units on explored tiles except hidden ones; all the player's own units | enemy units on unexplored tiles; hidden Cloaks anywhere, explored tiles included |
+| **Cities** | cities on explored tiles (level, population, wall, owner) | enemy cities in fog: location, level, borders |
+| **The player** | all of it | none |
+| **Each opponent** | tribe, alive, the published score history, peace and embassies with the player | stars, techs, tasks and monuments, kills, which tiles they've explored, ties with third parties |
+| **The game** | turn, whose turn, map size, corner lighthouses | **the random-number state** |
+
+**The random-number state** decides future ruin rewards and Explorer paths. A copy that kept the real one would let the search know which ruin gives a free tech. It's always reseeded.
+
+#### Filling in, in order
+
+Later steps depend on earlier ones:
+
+1. **Enemy cities.** Their capital is copied if it's been seen (Capital Vision included), otherwise sampled. Then the number of other cities, their locations, and each city's level are sampled, with borders claimed over unexplored tiles only. Explored tiles keep the ownership the player sees.
+2. **Unexplored terrain:** terrain and resource per tile, villages and ruins on legal, spaced-out tiles.
+3. **Techs:** sampled down the tech tree, parents before children. Every tech the player has proof of is forced in: a Knight seen means Chivalry, a Windmill means Construction.
+4. **Hidden units:**
+   1. Remove every enemy unit the player can't see.
+   2. Sample how many hidden units there are, from the count head.
+   3. Place each one on a tile picked in proportion to the "where" plane, without reusing a tile, only on legal tiles: terrain the unit can enter, not visible to the player, not occupied. Cloaks may go on explored tiles, since they're invisible there.
+   4. Sample each unit's type from that tile's type softmax, restricted to types whose tech the sample owns.
+5. **The rest:** stars from their distribution, tasks consistent with the techs and units, and which tiles they've explored (around their cities and units at first, grown to fit the score in step 7).
+6. **Repair:**
+   - each tile's unit and territory set to match
+   - city connections recomputed
+   - unit caps respected (level + 1 per city)
+   - the random-number state reseeded
+7. **Score check, with exploration as the slack:**
+   1. Every part of the score is a multiple of 5, and explored tiles (+5 each) are the most flexible part.
+   2. Work out what's left: `leftover = published score − (techs + cities + units + territory + temples + monuments)`.
+   3. Set their explored tile count to `leftover / 5`.
+   4. If that's impossible (negative, fewer tiles than their territory and units already need, or more than the map has), reject the sample and draw another.
+
+   Every accepted sample then matches the published score exactly, and explanations that only fit the score awkwardly get rejected more often. The comparison uses the state at the end of their last turn, so anything the player did to them since (kills, captures) is taken out first.
+
+   **The rejection rate is a health check:** if most samples get rejected, the beliefs are off. Later, it can be a training signal too.
+
+#### Level of detail
+
+In stage 2, `determinize()` runs once per simulation, so it only samples what the search will touch:
+- **Tiles and hidden units only:** enough for own-turn search, which never reads the opponent's stars, techs or private state. Those stay at neutral values that nothing looks at.
+- **Everything:** needed once the search crosses into the opponent's turn.
+
+#### How hidden units relate to the threat map
+
+- **The threat map** (a network input) is computed exactly from visible units.
+- **Hidden units** are estimated by the heat map, and become real units in the sampled game. They threaten tiles like any other unit, and the search sees their attacks itself, with no hand-made conversion.
+- **A possible later refinement:** an "expected hidden threat" input plane built from the heat map, so the value head accounts for unseen units without search. Only if there's evidence it's blind to them; it costs a second network pass.
+
+### 5.6 Engine interface and the no-model baseline (**Proposed**)
 
 ```cpp
 struct Beliefs {   // the model's output, in engine terms
     std::array<float, TechTypes::TECH_TYPE_SIZE> opponentTech;
     std::vector<float> starBuckets;
-    // per tile: terrain and resource distributions, unit heat by type, ...
+    std::vector<float> hiddenUnitCount;   // distribution over the total
+    std::vector<float> unitHere;          // per tile
+    std::vector<std::array<float, UnitTypes::UNIT_TYPE_SIZE>> unitType;   // per tile
+    std::vector<float> cityHere;          // per tile, plus levels
+    // per tile: terrain and resource distributions
 };
 
-// a full Game matching everything `player` knows, with the rest sampled from the beliefs
-Game determinize(const Game &game, int player, const Beliefs &beliefs, std::uint64_t seed);
+enum class Detail { TILES_AND_UNITS, EVERYTHING };
 ```
 
-There's also a baseline `Beliefs` that needs no model:
-- terrain from the map generator's rates
-- tech guesses from score changes alone
-- units near the opponent's known cities
+A baseline `Beliefs` needs no model. The search, determinization and tests can all be built on it before any training, and the learned model then replaces it one part at a time behind the same interface.
 
-The search, determinization and leak tests can all be built and tested on that before any training happens.
+| Hidden | Baseline |
+| --- | --- |
+| unexplored terrain | the map generator's rates, per climate region |
+| villages and ruins | the generator's spacing rules and counts for the map size |
+| enemy cities | an unseen capital in the quadrant opposite the player's; other cities on plausible village spots |
+| techs | the start tech, everything proven by what's been seen, and techs whose costs fit the score changes |
+| stars | estimated income minus estimated spending |
+| hidden units | a few per city, near their cities |
 
-**The leak test:** for any game and player, the sampled game seen from that player must equal the real game seen from that player, tile by tile and unit by unit. It also has to be a valid game.
+### 5.7 Tests (**Decided**)
 
-### 5.6 How to tell it works
+Both run over thousands of games from the existing bots, on every map type, like the fuzz and `LegalMoves` tests:
 
-- **Accuracy:** predictions of techs, stars, units and terrain on held-out games, against the baseline.
-- **Calibration:** when it says 70%, it should be right about 70% of the time.
-- **Playing strength:** the same search with learned beliefs against the search with baseline beliefs.
+1. **No leaks, as an invariance test.**
+   1. Take a real game, and a second version differing only in hidden things: an enemy unit moved within the fog, different opponent stars, different unexplored terrain.
+   2. Determinize both with the same seed.
+   3. The results must be identical.
+
+   This tests the property that matters ("the output depends only on what the player knows") directly. It catches leaks that a view comparison would miss, like the random-number state or the opponent's exploration.
+2. **Valid and consistent.**
+   - The player's view of the sample equals their view of the real game, tile by tile and unit by unit.
+   - The sample passes the fuzz test's internal checks.
+   - Random commands played from it never crash or break those checks.
+
+### 5.8 How to tell it works
+
+- **Calibration:** bucket predictions on held-out games (all the "70%" ones) and check how often they were right. Check separately per opponent style.
+- **Against the baseline:** accuracy on techs, stars, units, cities and terrain.
+- **The rejection rate** of the score check (section 5.5).
+- **Playing strength:** the same search with learned beliefs against the search with baseline beliefs. This is the test that counts.
 
 ## 6. Plumbing
 
@@ -313,7 +503,8 @@ Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ 
 1. **Plumbing:** the batched search with a dummy network (uniform priors, value 0), against the random bot, on determinized games with the baseline sampler.
 2. **Bootstrap:** before self-play, train the value and belief heads on games from simple bots (random, one-ply). Pure self-play from scratch can take a long time to get started.
 3. **Self-play:** the full loop. The search produces visit counts and results, and the network trains on them: the policy towards the visit counts, the value towards the results, and the beliefs towards the true hidden state.
-4. **Measure:** the search horizons against each other (section 3.5), and learned beliefs against the baseline (section 5.6).
+4. **Measure:** the search horizons against each other (section 3.5), and learned beliefs against the baseline (section 5.8).
+5. **Stage 2 search** (section 4.4), measured against stage 1 at equal compute.
 
 **Long games:** the rules have no turn limit, so training needs one, with a fallback value for games that hit it, such as score difference.
 
@@ -329,8 +520,9 @@ Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ 
 ## 9. Build order
 
 1. Command numbering and state encoding, including the threat map, with tests (encoding round-trip, mask matches the legal moves).
-2. `determinize()` with the baseline beliefs, plus the leak test.
-3. The batched search, with a dummy network to test the plumbing, searching across turn boundaries with the horizon as a setting.
+2. `determinize()` with the baseline beliefs, plus the leak test. Fast enough to call per simulation (section 4.4).
+3. The batched search (stage 1), with a dummy network to test the plumbing: across turn boundaries, with the horizon as a setting, and child lookup through one function keyed by the move.
 4. Recording (view, hidden truth) pairs from bot games, for the belief heads.
 5. A first PyTorch model with all heads, and the bootstrap training.
 6. The self-play loop.
+7. Stage 2: one shared tree with observation branching, and the particle filter between turns.
