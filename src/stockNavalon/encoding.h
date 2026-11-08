@@ -1,0 +1,77 @@
+#pragma once
+
+// Game states and commands as arrays, for stockNavalon's network. The spec,
+// with every plane and slot, is docs/encoding.md; ENCODING_VERSION goes up
+// whenever their meaning changes.
+
+#include "command.h"
+#include <cstdint>
+#include <vector>
+
+class Game;
+struct PlayerView;
+
+struct EncodingConfig {
+    // every map is padded to mapSize x mapSize
+    int mapSize = 11;
+    // seats encoded, the player to move first
+    int players = 2;
+
+    bool operator==(const EncodingConfig &) const = default;
+};
+
+constexpr int ENCODING_VERSION = 3;
+
+// the per-tile command slots (docs/encoding.md section 5)
+namespace EncodingSlots {
+constexpr int OFFSET_RADIUS = 6;
+constexpr int OFFSET_SIDE = 2 * OFFSET_RADIUS + 1;
+// Move, Attack and Disembark, by target offset
+constexpr int TARGET = 0;
+// Recover, Heal Others, Promote, Disband, Capture, Examine Ruins, Harvest
+constexpr int UNIT_ACTION = TARGET + OFFSET_SIDE * OFFSET_SIDE;
+// to Scout, Rammer, Bomber
+constexpr int UPGRADE = UNIT_ACTION + 7;
+// farm ... bridge, in ImprovementType order
+constexpr int BUILD = UPGRADE + 3;
+constexpr int DESTROY = BUILD + 27;
+// warrior ... cloak, in UnitType order
+constexpr int TRAIN = DESTROY + 1;
+// the first or second option for the level being rewarded
+constexpr int REWARD = TRAIN + 9;
+constexpr int PER_TILE = REWARD + 2;
+
+// global slots, after the per-tile ones
+constexpr int RESEARCH = 25;
+constexpr int DIPLOMACY_PER_OPPONENT = 6;
+} // namespace EncodingSlots
+
+// C, G and A: the planes, global features and command slots
+int planeCount(const EncodingConfig &config);
+int globalCount(const EncodingConfig &config);
+int actionCount(const EncodingConfig &config);
+
+// Writes the player's input: planes as [C][N][N] (row y, column x) and the
+// global vector as [G]. Reads only what the player knows: their view, the
+// public score history, attack previews between units they can see, and
+// their own units' moves. Throws std::invalid_argument if the game doesn't
+// fit the config.
+void encodeState(const Game &game, int player, const EncodingConfig &config,
+                 float *planes, float *globals);
+
+// The slot of a command of the current player; -1 if it has none (Resign,
+// Stay, or a tile outside the config's map size).
+int encodeCommand(const Game &game, const Command &command,
+                  const EncodingConfig &config);
+// The legal command in that slot. Throws std::invalid_argument if none is.
+Command decodeCommand(const Game &game, int index, const EncodingConfig &config);
+// Writes [A]: 1 for each legal command's slot, 0 elsewhere.
+void legalMask(const Game &game, const EncodingConfig &config,
+               std::uint8_t *mask);
+// The same from an already known legal list, e.g. LegalMoves::commands().
+void legalMask(const std::vector<Command> &legal, const Game &game,
+               const EncodingConfig &config, std::uint8_t *mask);
+
+// The part of a player's published score that the viewer can account for
+// from what they see (docs/encoding.md section 4.1).
+int explainedScore(const PlayerView &view, int player);

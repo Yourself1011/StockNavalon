@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game.h"
+#include <optional>
 #include <vector>
 
 // What one player knows about the game: explored tiles with their live
@@ -19,6 +20,8 @@ struct PlayerView {
         int level = 0;
         // temples: turns until the next level, 0 at the top level
         int turnsToLevelUp = 0;
+        // the tribe whose climate the tile is in
+        std::optional<TribeTypes::Tribe> climate;
         bool road = false;
         // the player whose borders contain it, -1 if none
         int owner = -1;
@@ -46,6 +49,7 @@ struct PlayerView {
         // the player whose original capital it is, -1 if none
         int capitalOf;
         bool wall;
+        int parks;
     };
 
     int player;
@@ -55,7 +59,10 @@ struct PlayerView {
     int stars;
     int income;
     TechSet techs;
-    std::vector<TribeTypes::Tribe> tribes;
+    // each player's tribe: the player's own, and those of tribes they've
+    // met; empty until then. Each player's starting score (the first record
+    // in scoreHistory) narrows an unmet tribe down.
+    std::vector<std::optional<TribeTypes::Tribe>> tribes;
     std::vector<bool> alive;
     // tribes this player has met
     std::vector<bool> met;
@@ -64,6 +71,13 @@ struct PlayerView {
     std::vector<int> scores;
     // every published score so far (public), oldest first
     std::vector<ScoreRecord> scoreHistory;
+    // per player: what this player's own actions visibly did to their score
+    // (units seen dying, cities captured), since they last published, and
+    // within the change they last published. Negative for losses.
+    std::vector<int> effectsSincePublished, effectsInLastChange;
+    // per scoreHistory record: what this player had visibly done to that
+    // record's player's score within that change
+    std::vector<int> effectsInChanges;
 
     // the player's own tasks (GAME.md section 14): done ones unlock their
     // monument, which can be built once

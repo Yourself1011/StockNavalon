@@ -15,8 +15,9 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `view.h`: `makeView(game, player)`, everything one player knows. Bots should read this, not the `Game`.
 - `legalMoves.h`: `LegalMoves`, the current player's legal commands kept up to date one command at a time, for search. A node keeps one next to its `Game`. It finds what changed by comparing the states before and after, and regenerates only the unit and tile commands near the changes. It always matches `legalCommands()` as a set; the tests check that after every command on every map type.
 - `mapgen.h`: `generateMap(settings)`, every map type
-- `bots/randomBot.h`: a bot that plays random legal commands
-- `python/bindings.cc` (outside `src/`): the Python module `polyengine`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine as a static library for it.
+- `bots/randomBot.h`: a bot that plays random legal commands, the CLI's opponent and a test driver
+- stockNavalon's own code (the encoding, tribe inference) is in `src/stockNavalon/`, outside the engine. The engine never includes it.
+- `python/bindings.cc` (outside `src/`): the Python module `polyengine`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine (`engine`) and stockNavalon (`stocknavalon`) as static libraries for it.
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic
 - `data/`: unit, tech, improvement and tribe tables
 - `map.h`: the map file format
@@ -65,7 +66,7 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 
 ### Fog
 
-- **Units reveal only around where they end a move**, not along the path.
+- **Units reveal along their path,** around every tile they pass (GAME.md section 16). When several routes reach the destination, the path is the one that leaves the most movement.
 - **A trained Cloak is visible** until it first moves.
 - **Hidden units are still physical:** splash and stomp hit them without revealing them. Since Hide units can't stop on enemy cities, they never besiege one.
 - **Resource visibility:** fruit shows with Organization, crop with Farming, game with Hunting, metal with Mining, fish with Fishing, starfish with Navigation, each once that tech is researchable or owned.
@@ -129,4 +130,5 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 - **Continents:** about 60 land tiles per landmass, at least 30, but at least one per player. Seeds are placed as far apart as possible, and grow in turns up to 200 tiles each; a tile never joins a landmass when another landmass touches it. Each landmass gets a village first, then villages fill up. The capitals go on different landmasses first, then as far apart as possible, then by the coast.
 - **Tiny island villages** (Continents, Pangea, Water World) go on open water with no land around, and never become capitals.
 - **Starting resources** go next to the capital, off the map edge. They take a tile whose terrain already fits first (an empty one, then one whose resource gets replaced), and only then change a tile's terrain. Water next to another landmass never becomes land.
+- **Climate regions** grow out from the capitals one ring per round (Voronoi-like in Chebyshev distance), with each claim waiting a round 20% of the time (`climateIrregularity`), so borders come out irregular, like the real game's. Map files can mark them with `^N`; without markers, each tile gets its nearest capital's climate.
 - **Ruins** avoid resources and corners. **Starfish** never go next to a village, a lighthouse or another starfish.

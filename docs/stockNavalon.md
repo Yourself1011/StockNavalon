@@ -231,6 +231,37 @@ So the learned model and the filter divide the work: the model makes the guesses
 
 **Order:** stage 2 starts once stage 1 is working end to end. It's measured against stage 1 at equal compute, with the same network and beliefs, so the comparison is about the search alone.
 
+### 4.5 Exploration and the value of information (**Decided**)
+
+Will the bot explore as much as it should, like taking the Explorer reward or scouting with units? Not automatically. Exploring is worth two different things, and the architecture handles them differently.
+
+1. **What you find:** villages, ruins, lighthouses, a meeting bonus, +5 score per tile.
+2. **What you learn:** where their capital and army are, their tribe, the terrain between you. Information that improves later decisions.
+
+**What you find** is handled fairly well. An Explorer reveals tiles at once, within the same turn, so the search sees its results directly. In a determinized game it reveals *sampled* terrain, with villages and ruins at sampled frequencies, so Explorer against Workshop is compared on the expected gains of exploring against +1 star a turn. The Explorer's path is random, and comes from the reseeded random state, so nothing real leaks. This is roughly right, provided the sampler puts villages and ruins in the fog at realistic rates.
+
+**What you learn** is harder:
+
+| | Stage 1 | Stage 2 |
+| --- | --- | --- |
+| what you find | roughly right, given a good sampler | right |
+| what you learn, within the search horizon | **undervalued** | valued properly |
+| what you learn, beyond the horizon | learned by the value head | learned by the value head |
+
+- **Stage 1 undervalues information.** Each sampled tree acts as if it already knew what's behind the fog, so a line *without* exploring also plays as if it knew where the villages and the enemy are. Exploring then looks less useful than it is. It's the classic weakness of plain determinization, and the strategy fusion problem of section 4.3 showing up as concrete behaviour: too little scouting, and the Explorer undervalued.
+- **Stage 2 values it properly within the search horizon.** The tree branches on what a move reveals and plans per outcome, so a move earns credit for the better follow-ups its information enables.
+- **Beyond the horizon it's learned.** The value head reads only the view, so training teaches it whether being well informed (more map explored, the opponent's tribe and location known) tends to win. That depends on self-play games where information actually decides results, which needs opponents that exploit it.
+
+**Making sure it's learned:**
+- **The bot has to try exploring in training.** AlphaZero's usual training randomness (noise on the root priors, and sampling moves in proportion to visits early in each game) makes it sometimes take the Explorer or scout when it otherwise wouldn't. Without that, it can't learn what exploring is worth.
+- **No bonus for exploring.** A reward like "+x per tile explored" would make it explore at whatever rate the bonus sets, not the rate that wins. The value has to come from results.
+
+**Diagnostics to watch:**
+- how often the Explorer reward is picked over Workshop, and scouting rates, over training
+- a fixed set of test positions where scouting clearly pays, or clearly doesn't, and whether the bot gets them right
+- stage 1 against stage 2 at equal compute, specifically on exploration choices, where the difference between them should show up most clearly
+- the value head's accuracy, split by how much of the map is explored, which shows whether it understands what being uninformed costs
+
 ## 5. The belief model
 
 ### 5.1 Reading the score (**Decided**)
@@ -270,7 +301,7 @@ The score never pins the opponent down exactly: many combinations of techs, citi
 
 1. **Many samples, not one.** Each call to `determinize()` (section 5.5) produces one possible opponent, and different seeds produce different ones. The search plays out many (K trees in stage 1, one per simulation in stage 2), so its statistics average over them.
 2. **The belief model sets the proportions.** If a +200 could be one tier-2 tech, two tier-1 techs, or a tier-1 tech and 20 explored tiles, and the model puts those at 60%, 25% and 15%, the samples come out in those proportions. What matters is that the proportions are right (calibration), not that one answer is.
-3. **The published score rules samples out.** It's one exact number, and every sample must match it (section 5.5, step 7).
+3. **The published score rules samples out.** It's one exact number, and every sample must match it (section 5.5, step 8).
 
 Why that's enough:
 
@@ -284,6 +315,7 @@ The belief heads are part of the shared network (section 2). They output probabi
 
 | Target                     | Output                                                                                          | Loss                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| opponent's tribe, unmet    | a softmax over tribes                                                                           | cross-entropy                                                                                               |
 | opponent's techs           | a sigmoid per tech                                                                              | binary cross-entropy                                                                                        |
 | opponent's stars           | a softmax over ranges (0–4, 5–9, ...)                                                           | cross-entropy                                                                                               |
 | **where hidden units are** | one plane: per tile, the chance a hidden enemy unit (any type) is there                         | binary cross-entropy, only on tiles the player can't see, with extra weight on the rare tiles that have one |
@@ -353,6 +385,48 @@ The heads predict each fact separately ("70% Archery", "60% three or more cities
 
 If that's not enough, the next step is a head that samples one fact at a time, each conditioned on the ones already chosen: techs in tree order, then units given those techs. Only if the simple version's samples prove wrong in ways that matter.
 
+### 5.4.5 Combining the exact side with the belief model (**Decided**)
+
+The exact side (tribe inference, proven techs, the score arithmetic) decides what's *possible*. The belief model decides how *likely* each possibility is. They meet at three points:
+
+```
+public information (view, score history, climates)
+        │
+        ├──► exact side: possible tribes, proven techs, explained/unexplained score
+        │         │
+        ▼         ▼
+   network input ◄── 1. exact results as input features
+        │
+        ▼
+   belief heads ──► 2. mask: anything ruled impossible gets 0, the rest renormalized
+        │
+        ▼
+   sample a hidden state ──► 3. filter: tech tree, forced techs, the exact score check
+        │                        (reject and redraw anything inconsistent)
+        ▼
+   determinized game ──► search
+```
+
+1. **Input:** the exact results are network input features: the per-opponent "could be this tribe" flags, and the explained and unexplained score ([`encoding.md`](encoding.md)). The belief model starts from "Vengir or Ai-Mo, 640 points unaccounted for" instead of rediscovering arithmetic. Features alone guarantee nothing, though.
+2. **Mask:** before sampling, the belief heads' outputs are restricted to what the exact side allows:
+   - **tribes:** tribes outside the possible set get 0, and the rest are renormalized
+   - **techs:** proven techs are fixed at 1, and techs shown impossible at 0
+   - **units:** tiles the player can see are masked out of the "where" plane
+
+   Impossible things are then never sampled, however wrong the network is. **Training uses the same mask:** the loss is on the masked, renormalized distribution, so the network only learns to weight the possibilities. Since the exact side never rules out the truth, the true answer is always inside the mask, and the loss is always well-defined. That's another reason the soundness tests matter.
+3. **Filter:** the heads predict facts separately, so a sample can still combine facts that don't fit together. Determinization enforces that:
+   - techs are sampled down the tree, with forced techs included
+   - the sample must match the published score exactly (section 5.5, step 8); if it doesn't, it's rejected and redrawn
+   - **after many rejections in a row** (say 50), it falls back to a looser sample from the exact side alone, and counts it. A high fallback rate means the beliefs are badly off.
+
+| | Exact side | Belief model |
+| --- | --- | --- |
+| decides | what's possible | how likely each possibility is |
+| guarantees | never rules out the truth | none on its own |
+| used as | input features, output mask, sample filter | probabilities to sample from |
+
+**Later:** the exact search can list the actual explanations of the opening, and the policy network can weight each one by how likely a strong player is to have played it. That would replace the belief model's tribe and early-tech probabilities with something more direct, through the same mask and filter.
+
 ### 5.5 Determinization: from beliefs to a game (**Proposed**)
 
 ```cpp
@@ -377,7 +451,7 @@ The goal: a complete, valid `Game` that agrees exactly with everything the playe
 | **Units**         | units on explored tiles except hidden ones; all the player's own units         | enemy units on unexplored tiles; hidden Cloaks anywhere, explored tiles included                |
 | **Cities**        | cities on explored tiles (level, population, wall, owner)                      | enemy cities in fog: location, level, borders                                                   |
 | **The player**    | all of it                                                                      | none                                                                                            |
-| **Each opponent** | tribe, alive, the published score history, peace and embassies with the player | stars, techs, tasks and monuments, kills, which tiles they've explored, ties with third parties |
+| **Each opponent** | alive, the published score history (including their starting score), peace and embassies with the player, their tribe once met | their tribe until met, stars, techs, tasks and monuments, kills, which tiles they've explored, ties with third parties |
 | **The game**      | turn, whose turn, map size, corner lighthouses                                 | **the random-number state**                                                                     |
 
 **The random-number state** decides future ruin rewards and Explorer paths. A copy that kept the real one would let the search know which ruin gives a free tech. It's always reseeded.
@@ -388,19 +462,20 @@ Later steps depend on earlier ones:
 
 1. **Enemy cities.** Their capital is copied if it's been seen (Capital Vision included), otherwise sampled. Then the number of other cities, their locations, and each city's level are sampled, with borders claimed over unexplored tiles only. Explored tiles keep the ownership the player sees.
 2. **Unexplored terrain:** terrain and resource per tile, villages and ruins on legal, spaced-out tiles.
-3. **Techs:** sampled down the tech tree, parents before children. Every tech the player has proof of is forced in: a Knight seen means Chivalry, a Windmill means Construction.
-4. **Hidden units:**
+3. **The tribe**, if not met yet: sampled from the belief model, among the tribes still possible. That set is worked out exactly from their starting score and published score changes, and from the climates seen ([`tribeInference.md`](tribeInference.md)). A starting score of 730 means Vengir or Ai-Mo, 515 one of five tribes (GAME.md section 3). The tribe fixes their starting tech and unit, so it comes before techs.
+4. **Techs:** sampled down the tech tree, parents before children, starting from the tribe's starting tech. Every tech the player has proof of is forced in: a Knight seen means Chivalry, a Windmill means Construction.
+5. **Hidden units:**
     1. Remove every enemy unit the player can't see.
     2. Sample how many hidden units there are, from the count head.
     3. Place each one on a tile picked in proportion to the "where" plane, without reusing a tile, only on legal tiles: terrain the unit can enter, not visible to the player, not occupied. Cloaks may go on explored tiles, since they're invisible there.
     4. Sample each unit's type from that tile's type softmax, restricted to types whose tech the sample owns.
-5. **The rest:** stars from their distribution, tasks consistent with the techs and units, and which tiles they've explored (around their cities and units at first, grown to fit the score in step 7).
-6. **Repair:**
+6. **The rest:** stars from their distribution, tasks consistent with the techs and units, and which tiles they've explored (around their cities and units at first, grown to fit the score in step 8).
+7. **Repair:**
     - each tile's unit and territory set to match
     - city connections recomputed
     - unit caps respected (level + 1 per city)
     - the random-number state reseeded
-7. **Score check, with exploration as the slack:**
+8. **Score check, with exploration as the slack:**
     1. Every part of the score is a multiple of 5, and explored tiles (+5 each) are the most flexible part.
     2. Work out what's left: `leftover = published score − (techs + cities + units + territory + temples + monuments)`.
     3. Set their explored tile count to `leftover / 5`.
@@ -535,7 +610,7 @@ Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ 
 
 ## 9. Build order
 
-1. Command numbering and state encoding, including the threat map, as specified in [`encoding.md`](encoding.md), with its tests.
+1. ~~Command numbering and state encoding, including the threat map, as specified in [`encoding.md`](encoding.md), with its tests.~~ **Done.**
 2. `determinize()` with the baseline beliefs, plus the leak test. Fast enough to call per simulation (section 4.4).
 3. The batched search (stage 1), with a dummy network to test the plumbing: across turn boundaries, with the horizon as a setting, and child lookup through one function keyed by the move.
 4. Recording (view, hidden truth) pairs from bot games, for the belief heads.

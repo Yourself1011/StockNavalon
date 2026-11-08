@@ -22,6 +22,9 @@ struct Tile {
     // index into Game::cities of the city whose borders contain this tile, -1
     // if none. A city's own tile is inside its borders.
     int territory = -1;
+    // the tribe whose climate region the tile is in (a TribeTypes::Tribe),
+    // -1 if none. Visible to anyone who has explored the tile.
+    int climate = -1;
     // bit p is set once player p has explored the tile. Explored tiles stay
     // explored and show their live contents.
     std::uint32_t explored = 0;

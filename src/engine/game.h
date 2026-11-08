@@ -62,6 +62,14 @@ class Game {
     // scores only update then; your own you see live. One flat list, so a
     // copy of the game is one allocation more, not one per player.
     std::vector<ScoreRecord> scoreHistory;
+    // What each player's own actions visibly did to other players' scores
+    // (their units seen dying, cities captured), for reading score changes.
+    // [0][p][q]: by p to q since q last published; [1][p][q]: by p to q
+    // within the change q last published. Flat, players x players each.
+    std::vector<int> scoreEffects;
+    // For each scoreHistory record, what each player had visibly done to the
+    // publisher's score within that change: players entries per record.
+    std::vector<int> scoreEffectHistory;
     // how many steps an Explorer takes
     static constexpr int EXPLORER_STEPS = 12;
     // random number state, part of the game so copies stay deterministic
@@ -199,6 +207,10 @@ class Game {
     int publishedScore(int player) const;
     // records the current player's score for everyone to see
     void publishScore(int player);
+    // what `by` has visibly done to `to`'s score since `to` last published
+    int effectsSincePublished(int by, int to) const;
+    // ... and within the change `to` last published
+    int effectsInLastChange(int by, int to) const;
     int unitScore(const Unit &unit) const;
     int templeLevel(int tile) const;
     // turns until the temple gains its next level, 0 at the top level
@@ -250,8 +262,13 @@ class Game {
     void applyCommand(const Command &command);
 
     // movement.cc
+    // With `parents`, also records for each tile the tile it's best reached
+    // from (the route leaving the most movement), for revealing along a path.
     void reachable(int unit, std::vector<int> *moves,
-                   std::vector<int> *disembarks) const;
+                   std::vector<int> *disembarks,
+                   std::vector<int> *parents = nullptr) const;
+    // reveals around every tile the unit passes on its way to `to`
+    void revealAlongPath(int unit, const std::vector<int> &parents, int to);
     void moveUnit(int unit, int to);
     void disembark(int unit, int to);
     // puts the unit on the tile and applies Stomp

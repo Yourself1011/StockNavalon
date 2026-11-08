@@ -341,3 +341,18 @@ TEST_CASE("the Explorer needs Fishing for shallow water, like units") {
     explore(fishing);
     CHECK(beyondShore(fishing) > 0);
 }
+
+TEST_CASE("moving reveals along the path, not just at the end") {
+    Game game = makeFogGame(bigMap());
+    clearUnits(game);
+    int rider = addUnit(game, 0, RIDER, 2, 5);
+    // explore just the path: (3,6) then (4,7)
+    game.reveal(0, game.index(3, 6));
+    game.reveal(0, game.index(4, 7));
+    // (2,7) is next to the middle of the path only
+    REQUIRE_FALSE(seen(game, 0, 2, 7));
+    REQUIRE(canReach(game, rider, 4, 7));
+    game.apply({MOVE, game.index(2, 5), game.index(4, 7)});
+    CHECK(seen(game, 0, 2, 7));
+    CHECK(seen(game, 0, 5, 8));
+}

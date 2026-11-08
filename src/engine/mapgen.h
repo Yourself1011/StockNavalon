@@ -36,6 +36,10 @@ struct MapGenSettings {
     int minLake = 4, maxLake = 12;
     // fish chance on ocean next to a village, and two tiles from one
     double oceanFishInner = 0.5, oceanFishOuter = 0.25;
+    // Climate regions grow from the capitals, so they're Voronoi-like; this
+    // is the chance a tile's claim waits a round, giving irregular borders
+    // like the real game's
+    double climateIrregularity = 0.2;
 };
 
 int ruinCountForSize(int size);

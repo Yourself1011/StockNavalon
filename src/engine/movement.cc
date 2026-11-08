@@ -73,7 +73,8 @@ int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile, int home) {
 }
 
 void Game::reachable(int unitIdx, std::vector<int> *moves,
-                     std::vector<int> *disembarks) const {
+                     std::vector<int> *disembarks,
+                     std::vector<int> *parents) const {
     const Unit &unit = units[unitIdx];
     bool naval = unit.isNaval();
     bool creep = unit.has(Abilities::CREEP);
@@ -85,9 +86,21 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
     // movement is counted in half steps, since a road step costs half.
     // The buffers are reused between calls: this runs for every unit on
     // every legal-move query.
-    thread_local std::vector<int> best, stack;
+    thread_local std::vector<int> best, stack, arrival;
     thread_local std::vector<char> destination, landing;
     best.assign(tiles.size(), -1);
+    if (parents) {
+        // the most movement left on arriving at each tile, to keep the best
+        // route to it
+        arrival.assign(tiles.size(), -1);
+        parents->assign(tiles.size(), -1);
+    }
+    auto arrive = [&](int from, int to, int remaining) {
+        if (parents && remaining > arrival[to]) {
+            arrival[to] = remaining;
+            (*parents)[to] = from;
+        }
+    };
     destination.assign(tiles.size(), 0);
     landing.assign(tiles.size(), 0);
     best[unit.tile] = unit.data().movement * 2;
@@ -116,6 +129,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
                 if (remaining >= 2 && looksFree &&
                     canEnterTerrain(passenger, to)) {
                     landing[to] = 1;
+                    arrive(from, to, remaining);
                 }
                 return;
             }
@@ -145,6 +159,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
             if (looksFree && !(hide && enemyCity)) {
                 destination[to] = 1;
             }
+            arrive(from, to, remaining);
 
             bool stop =
                 embark || t.terrain == TerrainTypes::MOUNTAIN ||
@@ -212,11 +227,28 @@ bool bumpsHidden(Game &game, int to) {
 }
 } // namespace
 
+void Game::revealAlongPath(int unitIdx, const std::vector<int> &parents,
+                           int to) {
+    const Unit &unit = units[unitIdx];
+    // every tile passed on the way, not the start or the end
+    for (int t = parents[to]; t >= 0 && t != unit.tile; t = parents[t]) {
+        int sight = unit.has(Abilities::SCOUT) ||
+                            tiles[t].terrain == TerrainTypes::MOUNTAIN
+                        ? 2
+                        : 1;
+        revealAround(unit.owner, t, sight);
+    }
+}
+
 void Game::moveUnit(int unitIdx, int to) {
     Unit &unit = units[unitIdx];
     if (bumpsHidden(*this, to)) {
         return;
     }
+    // tiles are revealed along the whole path, not just at the end
+    std::vector<int> parents;
+    reachable(unitIdx, nullptr, nullptr, &parents);
+    revealAlongPath(unitIdx, parents, to);
     placeUnit(unitIdx, to);
     unit.canMove = false;
     unit.canAct = false;
@@ -240,6 +272,9 @@ void Game::disembark(int unitIdx, int to) {
     if (bumpsHidden(*this, to)) {
         return;
     }
+    std::vector<int> parents;
+    reachable(unitIdx, nullptr, nullptr, &parents);
+    revealAlongPath(unitIdx, parents, to);
     placeUnit(unitIdx, to);
     unit.type = unit.passenger;
     unit.canMove = unit.canAttack = unit.canAct = false;
@@ -251,6 +286,12 @@ void Game::disembark(int unitIdx, int to) {
 
 void Game::killUnit(int unitIdx) {
     Unit &unit = units[unitIdx];
+    // a unit the current player saw die off someone else's score
+    if (unit.scoreOwner != currentPlayer && canSee(currentPlayer, unit) &&
+        !scoreEffects.empty()) {
+        scoreEffects[currentPlayer * players.size() + unit.scoreOwner] -=
+            unitScore(unit);
+    }
     tiles[unit.tile].unit = -1;
     unit.alive = false;
     unit.hidden = false;

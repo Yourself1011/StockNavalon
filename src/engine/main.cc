@@ -205,7 +205,7 @@ void printKey() {
 void printStatus(const Game &game) {
     const PlayerView view = makeView(game, game.currentPlayer);
     std::cout << "Turn " << view.turn << ", player " << view.player << " ("
-              << tribeData[view.tribes[view.player]].name << ")\n"
+              << tribeData[*view.tribes[view.player]].name << ")\n"
               << "Stars: " << view.stars << " (+" << view.income
               << "), score " << view.scores[view.player] << "\nTechs:";
     for (const TechData &tech : techData) {
@@ -243,7 +243,9 @@ void printStatus(const Game &game) {
             continue;
         }
         const PlayerView::Relation &r = view.relations[i];
-        std::cout << "Player " << i << " (" << tribeData[view.tribes[i]].name
+        std::cout << "Player " << i << " ("
+                  << (view.tribes[i] ? tribeData[*view.tribes[i]].name
+                                     : std::string_view("unknown tribe"))
                   << "): score " << view.scores[i]
                   << (view.met[i] ? "" : ", not met")
                   << (view.alive[i] ? "" : ", eliminated")
@@ -323,7 +325,7 @@ int main(int argc, char **argv) {
             args.push_back(argv[i]);
         }
     }
-    std::string mapFile = args.empty() ? "./src/game/map.txt" : args[0];
+    std::string mapFile = args.empty() ? "./src/engine/map.txt" : args[0];
     std::vector<TribeTypes::Tribe> tribes;
     for (std::size_t i = 1; i < args.size(); i++) {
         tribes.push_back(parseTribe(args[i]));

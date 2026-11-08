@@ -398,11 +398,24 @@ void Generator::growClimateRegions() {
             f.clear();
         }
         for (int t = 0; t < n * n; t++) {
-            if (!claimants[t].empty()) {
-                int p = rng.pick(claimants[t]);
-                region[t] = p;
-                frontier[p].push_back(t);
+            if (claimants[t].empty()) {
+                continue;
             }
+            // sometimes a claim waits, so borders aren't straight lines.
+            // Its claimants stay on the frontier to try again.
+            if (rng.unit() < s.climateIrregularity) {
+                for (int p : claimants[t]) {
+                    forEachNeighbour(t, [&](int nb) {
+                        if (region[nb] == p) {
+                            frontier[p].push_back(nb);
+                        }
+                    });
+                }
+                continue;
+            }
+            int p = rng.pick(claimants[t]);
+            region[t] = p;
+            frontier[p].push_back(t);
         }
     }
 }
@@ -964,6 +977,7 @@ MapData Generator::run() {
     map.type = s.type;
     map.tiles = tiles;
     map.capitals = capitals;
+    map.regions = region;
     return map;
 }
 

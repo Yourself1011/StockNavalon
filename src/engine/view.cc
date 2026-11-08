@@ -13,9 +13,15 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     for (std::size_t i = 0; i < game.players.size(); i++) {
         const Player &p = game.players[i];
         int other = static_cast<int>(i);
-        view.tribes.push_back(p.tribe);
+        bool known = everything || other == player ||
+                     game.players[player].hasMet(other);
+        view.tribes.push_back(known ? std::optional(p.tribe) : std::nullopt);
         view.alive.push_back(p.alive);
         view.met.push_back(game.players[player].hasMet(other));
+        view.effectsSincePublished.push_back(
+            game.effectsSincePublished(player, other));
+        view.effectsInLastChange.push_back(
+            game.effectsInLastChange(player, other));
         // others' scores only update when they end their turn
         view.scores.push_back(everything || other == player
                                   ? game.score(other)
@@ -35,6 +41,10 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         view.relations.push_back(relation);
     }
     view.scoreHistory = game.scoreHistory;
+    for (std::size_t r = 0; r < game.scoreHistory.size(); r++) {
+        view.effectsInChanges.push_back(
+            game.scoreEffectHistory[r * game.players.size() + player]);
+    }
     const Player &me = game.players[player];
     view.tasksDone = me.tasksDone;
     view.monumentsBuilt = me.monumentsBuilt;
@@ -57,6 +67,9 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         }
         tv.building = t.building;
         tv.level = t.level;
+        if (t.climate >= 0) {
+            tv.climate = static_cast<TribeTypes::Tribe>(t.climate);
+        }
         if (isTemple(t.building)) {
             tv.level = game.templeLevel(tile);
             tv.turnsToLevelUp = game.templeTurnsToLevelUp(tile);
@@ -69,7 +82,7 @@ PlayerView makeView(const Game &game, int player, bool everything) {
             const City &c = game.cities[city];
             tv.city = static_cast<int>(view.cities.size());
             view.cities.push_back({c.tile, c.owner, c.level, c.population,
-                                   c.capitalOf, c.wall});
+                                   c.capitalOf, c.wall, c.parks});
         }
 
         const Unit *unit = game.unitAt(tile);

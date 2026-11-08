@@ -28,12 +28,20 @@ function(polyengine_warnings target)
     target_compile_options(${target} PRIVATE -Wall -Wextra)
 endfunction()
 
-# The engine: every source except the CLI's main
-file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS src/game/*.cc)
+# polyengine, the game engine: every source in src/engine except the CLI's
+# main. It knows nothing of any bot.
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.cc)
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main\\.cc$")
 add_library(engine STATIC ${ENGINE_SOURCES})
-target_include_directories(engine PUBLIC src/game)
+target_include_directories(engine PUBLIC src/engine)
 polyengine_warnings(engine)
+
+# stockNavalon, the bot, built on the engine
+file(GLOB_RECURSE BOT_SOURCES CONFIGURE_DEPENDS src/stockNavalon/*.cc)
+add_library(stocknavalon STATIC ${BOT_SOURCES})
+target_include_directories(stocknavalon PUBLIC src/stockNavalon)
+target_link_libraries(stocknavalon PUBLIC engine)
+polyengine_warnings(stocknavalon)
 
 # The Python module. Under pip it's the only target. In a normal build it's
 # built too when nanobind can be found (in the project's .venv, see README),
@@ -62,7 +70,7 @@ if(POLYENGINE_PYTHON)
     find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(nanobind CONFIG REQUIRED)
     nanobind_add_module(_engine NB_STATIC python/bindings.cc)
-    target_link_libraries(_engine PRIVATE engine)
+    target_link_libraries(_engine PRIVATE stocknavalon)
 endif()
 
 if(SKBUILD)
@@ -71,7 +79,7 @@ if(SKBUILD)
 endif()
 
 # The CLI
-add_executable(final_program src/game/main.cc)
+add_executable(final_program src/engine/main.cc)
 target_link_libraries(final_program PRIVATE engine)
 polyengine_warnings(final_program)
 
@@ -86,10 +94,11 @@ endforeach()
 # file is.
 enable_testing()
 
-file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/*.cc)
+# tests/engine and tests/stockNavalon, sharing tests/main.cc and helpers.h
+file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS tests/*.cc)
 add_executable(run_tests ${TEST_SOURCES})
-target_include_directories(run_tests PRIVATE third_party)
-target_link_libraries(run_tests PRIVATE engine)
+target_include_directories(run_tests PRIVATE third_party tests)
+target_link_libraries(run_tests PRIVATE stocknavalon)
 polyengine_warnings(run_tests)
 add_test(NAME cpp COMMAND run_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 

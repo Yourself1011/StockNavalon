@@ -48,7 +48,27 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
         });
     }
 
+    // each tile's climate: from the map, or else its nearest capital's (the
+    // lowest seat on a tie)
+    for (int t = 0; t < size * size; t++) {
+        int seat = map.regions.empty() ? -1 : map.regions[t];
+        if (seat < 0) {
+            int nearest = size;
+            for (std::size_t p = 0; p < map.capitals.size(); p++) {
+                int d = distance(t, map.capitals[p]);
+                if (d < nearest) {
+                    nearest = d;
+                    seat = static_cast<int>(p);
+                }
+            }
+        }
+        if (seat >= 0 && seat < static_cast<int>(tribes.size())) {
+            tiles[t].climate = tribes[seat];
+        }
+    }
+
     updateAllConnections();
+    scoreEffects.assign(2 * players.size() * players.size(), 0);
     // everyone sees the starting scores
     for (std::size_t i = 0; i < players.size(); i++) {
         publishScore(static_cast<int>(i));

@@ -507,6 +507,8 @@ Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/E
   - Units see 1 tile around them (3×3).
   - Scout-skill units, and any unit on a mountain, see 2 tiles (5×5).
   - Every tile inside your cities' borders is always revealed (game).
+  - A moving unit reveals around every tile along its path, not just where it stops (game). Units can't move into unexplored tiles, so a path only ever runs through explored ground.
+- **Climate:** every tile belongs to one tribe's climate region, and its look shows which, unambiguously, including near region borders (game). So exploring a foreign climate reveals that its tribe is in the game, before meeting them. In 1v1 that identifies the opponent's tribe, unless it's a mirror match: both players can pick the same tribe (game).
 - **Start:** each player starts with the 5×5 area around their capital explored.
 - **Explored tiles stay explored.** A per-player flag goes from unexplored to explored and never back.
 - **What explored tiles show:** their live contents, including enemy units, whether or not one of your units can currently see them.
@@ -516,6 +518,7 @@ Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/E
   - unexplored tiles
   - the player's stars
   - the player's techs. They aren't shown, though an opponent can infer some from the units and buildings they see (game).
+  - the player's tribe, until you meet them (game). Starting scores are public and differ by tribe (section 3), so they narrow it down.
 - **Always visible:**
   - every player's score, including tribes not yet met, as of the end of their last turn (section 3) (game)
   - the level of every temple you can see, whoever owns it, and how many turns until it next levels up (game)
@@ -682,7 +685,7 @@ The pre-terrain row gives the density coefficient.
     2. The forest modifier then scales forest, taking only from fields.
     3. Field is whatever is left.
 - **Water modifiers:** per the wiki, Oumaji's water reduction has no effect on generation. Kickoo's ×2 water is meant to turn 40% of its tiles to water on Continents, but that is bugged and doesn't apply. **VERIFY** whether Kickoo's water modifier does anything on other map types.
-- **Climate regions:** land is split roughly equally between the tribes in the game. **VERIFY** the method; earlier sources describe each capital growing its region outward one tile per round.
+- **Climate regions:** land is split roughly equally between the tribes in the game. They're roughly Voronoi-like around the capitals, with some deviation (game); the exact method isn't known. Earlier sources describe each capital growing its region outward one tile per round, which is Voronoi-like in Chebyshev distance.
 
 **Resources** only appear within 2 tiles of a city or village. "Inner" means next to a city or village, "outer" 2 tiles away. These are shares of all tiles of that terrain, before tribe modifiers:
 

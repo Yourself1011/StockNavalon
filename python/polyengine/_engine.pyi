@@ -3,6 +3,9 @@
 from collections.abc import Sequence
 import enum
 
+import numpy
+from numpy.typing import NDArray
+
 
 class TerrainType(enum.IntEnum):
     FIELD = 0
@@ -389,6 +392,10 @@ class Tile:
     @property
     def territory(self) -> int: ...
 
+    @property
+    def climate(self) -> int:
+        """The tribe whose climate region the tile is in (as an int), -1 if none"""
+
     def explored_by(self, player: int) -> bool: ...
 
 class Unit:
@@ -520,6 +527,12 @@ class MapData:
     @property
     def capitals(self) -> list[int]: ...
 
+    @property
+    def regions(self) -> list[int]:
+        """
+        The seat whose climate region each tile is in; empty if the map doesn't say
+        """
+
 def load_map(path: str) -> MapData:
     """Loads a map file (see map.h)."""
 
@@ -641,6 +654,10 @@ class PlayerView:
             """Temples: turns until the next level, 0 at the top level"""
 
         @property
+        def climate(self) -> Tribe | None:
+            """The tribe whose climate the tile is in"""
+
+        @property
         def road(self) -> bool: ...
 
         @property
@@ -711,6 +728,9 @@ class PlayerView:
         @property
         def wall(self) -> bool: ...
 
+        @property
+        def parks(self) -> int: ...
+
     class Relation:
         @property
         def peace(self) -> bool: ...
@@ -752,7 +772,10 @@ class PlayerView:
     def techs(self) -> list[int]: ...
 
     @property
-    def tribes(self) -> list[Tribe]: ...
+    def tribes(self) -> list[Tribe | None]:
+        """
+        Each player's tribe: your own and those you've met; None until then. Starting scores (the first records in score_history) narrow an unmet tribe down.
+        """
 
     @property
     def alive(self) -> list[bool]: ...
@@ -769,6 +792,16 @@ class PlayerView:
     @property
     def score_history(self) -> list[ScoreRecord]:
         """Every published score so far (public), oldest first."""
+
+    @property
+    def effects_since_published(self) -> list[int]:
+        """
+        Per player: what this player's own actions visibly did to their score since they last published (negative for losses).
+        """
+
+    @property
+    def effects_in_last_change(self) -> list[int]:
+        """Per player: the same, within the change they last published."""
 
     @property
     def tasks_done(self) -> list[int]: ...
@@ -834,4 +867,65 @@ class RandomBot:
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:
     """
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
+    """
+
+ENCODING_VERSION: int = 3
+
+class Encoding:
+    """
+    States and commands as arrays for the network (docs/encoding.md). Arrays are NumPy: planes float32 [C, N, N], globals float32 [G], masks uint8 [A]. The batched forms run in C++ without the GIL.
+    """
+
+    def __init__(self, map_size: int = 11, players: int = 2) -> None: ...
+
+    @property
+    def map_size(self) -> int: ...
+
+    @property
+    def players(self) -> int: ...
+
+    @property
+    def plane_count(self) -> int:
+        """C"""
+
+    @property
+    def global_count(self) -> int:
+        """G"""
+
+    @property
+    def action_count(self) -> int:
+        """A"""
+
+    def encode_state(self, game: Game, player: int) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
+        """The player's input: (planes [C, N, N], globals [G])."""
+
+    def encode_states(self, games: Sequence[Game], players: Sequence[int]) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
+        """A batch: (planes [B, C, N, N], globals [B, G])."""
+
+    def legal_mask(self, game: Game) -> NDArray[numpy.uint8]:
+        """1 for each legal command's slot: [A]."""
+
+    def legal_masks(self, games: Sequence[Game]) -> NDArray[numpy.uint8]:
+        """A batch of masks: [B, A]."""
+
+    def encode_command(self, game: Game, command: Command) -> int:
+        """The command's slot, or -1 if it has none (Resign, Stay)."""
+
+    def decode_command(self, game: Game, index: int) -> Command:
+        """The legal command in that slot; raises ValueError if none is."""
+
+def possible_tribes(view: PlayerView, opponent: int) -> list[Tribe]:
+    """
+    The tribes the opponent could be, from the viewer's starting-score and climate evidence. Always includes the real one.
+    """
+
+def climates_seen(view: PlayerView) -> list[Tribe]:
+    """The tribes whose climate the player has seen."""
+
+def tribes_with_starting_score(score: int) -> list[Tribe]:
+    """The tribes that could start the game with this score."""
+
+def explained_score(view: PlayerView, player: int) -> int:
+    """
+    The part of a player's published score the viewer can account for from what they see.
     """

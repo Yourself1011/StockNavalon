@@ -1,6 +1,6 @@
 # Using polyengine from C++
 
-polyengine, the game engine, is a C++20 library. Bots, search and self-play in C++ use it directly. There's no binding layer, and nothing between your code and the engine. The rules it implements are in [`src/game/GAME.md`](../src/game/GAME.md); the choices made where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md).
+polyengine, the game engine, is a C++20 library. Bots, search and self-play in C++ use it directly. There's no binding layer, and nothing between your code and the engine. The rules it implements are in [`src/engine/GAME.md`](../src/engine/GAME.md); the choices made where the rules are silent are in [`src/engine/ENGINE.md`](../src/engine/ENGINE.md).
 
 Two complete, compiled examples go with this guide:
 
@@ -9,7 +9,7 @@ Two complete, compiled examples go with this guide:
 
 ## Building and linking
 
-CMake builds the engine as the static library target `engine`, with `src/game` as its include directory. Build with the presets (see the README):
+CMake builds the engine as the static library target `engine`, with `src/engine` as its include directory. stockNavalon's code (the encoding and tribe inference) is the separate target `stocknavalon`, with `src/stockNavalon` as its include directory; it links the engine, so linking `stocknavalon` gives you both. Build with the presets (see the README):
 
 ```bash
 cmake --preset release
@@ -26,7 +26,7 @@ add_executable(my_bot my_bot.cc)
 target_link_libraries(my_bot PRIVATE engine)
 ```
 
-From a separate CMake project, `add_subdirectory(path/to/bot)` and link `engine` the same way. Headers are included by their path inside `src/game`, e.g. `#include "game.h"`, `#include "bots/randomBot.h"`.
+From a separate CMake project, `add_subdirectory(path/to/bot)` and link `engine` the same way. Headers are included by their path inside `src/engine`, e.g. `#include "game.h"`, `#include "bots/randomBot.h"`.
 
 ## The basics
 
@@ -121,6 +121,24 @@ for (const Command &c : legal.commands()) {
 - It's two flat command lists, so it's cheap to copy into each search node.
 - When it helps: a step of random play costs about 5.7 µs with `LegalMoves`, and about 6.9 µs with `legalCommands()` + `apply()`. End Turn and research rebuild the whole list, since they change everything.
 
+## Encoding for the network
+
+`encoding.h` (in `stocknavalon`) turns states and commands into arrays, following [`docs/encoding.md`](encoding.md):
+
+```cpp
+#include "encoding.h"
+
+EncodingConfig config{.mapSize = 11, .players = 2};
+std::vector<float> planes(planeCount(config) * 11 * 11), globals(globalCount(config));
+encodeState(game, game.currentPlayer, config, planes.data(), globals.data());
+
+std::vector<std::uint8_t> mask(actionCount(config));
+legalMask(legal.commands(), game, config, mask.data());   // from a LegalMoves
+Command command = decodeCommand(game, index, config);
+```
+
+`encodeState` reads only what the player knows, which the tests check. `ENCODING_VERSION` changes whenever the layout's meaning does.
+
 ## Bots
 
 `RandomBot` (`bots/randomBot.h`) is the reference for the shape of a bot:
@@ -131,7 +149,7 @@ Command c = bot.choose(game);        // one command
 std::vector<Command> turn = bot.playTurn(game);   // a whole turn, until End Turn
 ```
 
-New bots go in `src/game/bots/`. Any `.cc` file under `src/game` becomes part of the engine library on the next build.
+Simple bots for testing the engine go in `src/engine/bots/`; any `.cc` file under `src/engine` becomes part of the engine library on the next build. stockNavalon itself lives in `src/stockNavalon/`, the `stocknavalon` library.
 
 ## Maps
 
@@ -140,7 +158,7 @@ New bots go in `src/game/bots/`. Any `.cc` file under `src/game` becomes part of
 
 MapData map = generateMap({.size = 14, .type = MapTypes::CONTINENTS,
                            .tribes = tribes, .seed = 1});
-MapData fromFile = loadMap("src/game/map.txt");   // format in map.h
+MapData fromFile = loadMap("src/engine/map.txt");   // format in map.h
 ```
 
 `MapGenSettings` (in `mapgen.h`) holds every tunable map generation default. `map.capitals[i]` is player `i`'s capital tile.
@@ -159,6 +177,7 @@ The headers are the reference; these are the parts a bot uses.
 | `game.h` | `Game`: state, geometry (`index`, `distance`, `forEachNeighbour`), queries (`tileOwner`, `unitAt`, `cityAt`, `income`, `score`, `techCost`, `previewAttack`, `moveTargets`, `attackTargets`, `atPeace`, `explored`, `canSee`), commands (`legalCommands`, `isLegal`, `apply`, `applyUnchecked`) |
 | `command.h` | `Command`, `CommandTypes`, `toString` |
 | `view.h` | `PlayerView`, `makeView` |
+| `encoding.h` | `EncodingConfig`, `encodeState`, `encodeCommand`, `decodeCommand`, `legalMask` |
 | `legalMoves.h` | `LegalMoves` |
 | `mapgen.h`, `map.h` | `generateMap`, `MapGenSettings`, `loadMap`, `parseMap`, `MapData` |
 | `tile.h`, `unit.h`, `city.h`, `player.h` | the state structs |

@@ -1,6 +1,6 @@
 # Encoding: states and commands as arrays
 
-The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network (design in [`stockNavalon.md`](stockNavalon.md)). Status: **spec, for review**; nothing here is implemented yet.
+The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network (design in [`stockNavalon.md`](stockNavalon.md)). Status: **implemented** (version 3) in `src/stockNavalon/encoding.h`, with Python access through `polyengine.Encoding`.
 
 ## 1. Configuration and versioning
 
@@ -17,6 +17,8 @@ constexpr int ENCODING_VERSION = 1;
   - **A larger N:** nothing changes but the padding. Every per-tile part of the layout is the same at any size. A fully convolutional trunk with pooled heads (section 2 of the design doc) runs at any N, so a model trained at 11 can be fine-tuned at 14 or 16 rather than retrained from scratch.
   - **More players:** the planes and slots that exist once per player grow, so the network's first and last layers change shape. The trunk can still be carried over.
 - **Versioning:** `ENCODING_VERSION` goes up whenever the meaning of any plane or slot changes. Saved training data and model checkpoints record the version and the config, so mismatches fail loudly instead of training on misread data.
+  - Version 2: an opponent's tribe is hidden until met, and each opponent's starting score was added.
+  - Version 3: climate planes, the tribes each opponent could be, and the climates seen.
 
 ## 2. Conventions
 
@@ -29,9 +31,9 @@ constexpr int ENCODING_VERSION = 1;
 
 ## 3. Spatial planes: `[C, N, N]`
 
-C = 82 + 3P, which is **88** for P = 2.
+C = 94 + 3P, which is **100** for P = 2.
 
-### Board (38 planes)
+### Board (50 planes)
 
 | Planes | Count | Value |
 | --- | --- | --- |
@@ -43,6 +45,7 @@ C = 82 + 3P, which is **88** for P = 2.
 | building | 22 | one-hot: village, ruin, lighthouse, farm, mine, lumber hut, windmill, sawmill, forge, market, port, temple, forest temple, mountain temple, water temple, then the 7 monuments. Cities have their own planes. |
 | building level | 1 | Windmill, Sawmill or Forge level ÷ 8, or temple level ÷ 5. The building planes say which it is. |
 | temple countdown | 1 | temples: turns until the next level ÷ 2; 0 at the top level |
+| climate | 12 | one-hot by tribe: whose climate region the tile is in. It's absolute (by tribe), not relative to the player, since what it reveals is *which tribe* is in the game: in 1v1 a foreign climate is the opponent's. |
 
 ### Territory (P planes)
 
@@ -86,17 +89,20 @@ Computed from the view alone. Enemy reach assumes the opponent owns every moveme
 
 ## 4. Global vector: `[G]`
 
-G = 46 + 15P + 8(P − 1), which is **84** for P = 2.
+G = 58 + 15P + 21(P − 1), which is **109** for P = 2.
 
 | Features | Count | Value |
 | --- | --- | --- |
 | turn | 1 | turn ÷ 50 |
 | stars | 1 | the player's stars ÷ 50 |
 | income | 1 | ÷ 30 |
-| tribe | 12P | one-hot per relative player |
+| tribe | 12P | one-hot per relative player. All zeros for an opponent not met yet, since tribes are hidden until then. |
+| possible tribes | 12(P − 1) | per opponent, 1 for each tribe they could still be: worked out exactly from their starting score and the climates seen ([`tribeInference.md`](tribeInference.md)). A met opponent has just their own. |
+| climates seen | 12 | 1 for each tribe whose climate the player has seen on an explored tile |
 | alive | P | per relative player |
 | met | P | per relative player (1 for the player themselves) |
 | score | P | as the player sees them (own live, others published) ÷ 1000 |
+| starting score | P − 1 | per opponent, their first published score ÷ 1000. Public from turn 0, and the main evidence about a tribe not met yet: starting scores differ by tribe (GAME.md section 3), so 730 means Vengir or Ai-Mo. |
 | explained score | P − 1 | per opponent, the part of their published score that comes from things the player can see (section 4.1), ÷ 1000 |
 | unexplained score | P − 1 | per opponent, (published score + the player's own visible effects on them since) − explained score: the score sitting in things the player can't see, ÷ 1000 |
 | last change | P − 1 | per opponent, their latest published change, with the player's own effects on them since their previous publication taken out, ÷ 500. 0 before their first turn ends. |
@@ -165,7 +171,7 @@ So decoding picks whichever of the three is legal. A test checks that the unique
 
 Resign and Stay never get a slot: Resign is never offered as a legal command, and Stay is never legal.
 
-## 6. Interfaces (**Proposed**)
+## 6. Interfaces
 
 ```cpp
 // encoding.h
@@ -198,15 +204,26 @@ index = enc.encode_command(game, command)
 command = enc.decode_command(game, index)
 ```
 
+### Implementation notes
+
+- **Where the score effects come from:** the engine records what each player's actions visibly did to other players' scores (units seen dying, cities captured), per opponent. `PlayerView` exposes it as `effectsSincePublished` and `effectsInLastChange`.
+- **Parks** are in `CityView`, assuming they're visible on a city as in the real game.
+- **Two small approximations in the explained score:**
+  - **Units** count for whoever owns them now, since the view doesn't say who first had a unit. A converted unit's score stays with its original owner, so it's miscounted.
+  - **Temples** at level 5 count as level 5 at the opponent's last turn end too. The view can't tell exactly when they got there.
+
+  Both are rare and small.
+- **Speed** on a Tiny map: about 8 µs to encode a position, and about 8 µs for a legal mask built from scratch (mostly `legalCommands()`). In search, build the mask from the node's `LegalMoves` list with the second `legalMask` overload, which skips the regeneration.
+
 ## 7. Tests
 
-Run over the fuzz games: random bots on generated 11×11 maps of every type, plus Tiny and Small maps to check padding.
+In `tests/stockNavalon/encoding_test.cc` and `tests/python/test_engine.py`. They run over random games on generated Tiny maps of every type, and Small maps padded to 16.
 
 1. **Commands round-trip:**
    - every legal command encodes to an index, and decodes back to itself
    - no two legal commands share an index
    - the mask has exactly as many ones as there are legal commands
-2. **No leaks:** two games that differ only in what the player can't see (fog contents, hidden units, the opponent's stars and techs) encode to identical input. Same idea as the determinization leak test.
+2. **No leaks:** two games that differ only in what the player can't see (fog contents including climate, hidden units, the opponent's stars, techs, kills, exploration, and their tribe if not met) encode to identical input. Same idea as the determinization leak test. It was checked by planting a leak (one global reading the opponent's real stars), which it caught.
 3. **Feature checks:** in hand-built positions, specific features land where they should. For example: a Rider of the opponent's at (3, 4) sets unit owner `rel 1` and unit type `RIDER` at row 4, column 3, and a threat value on the tiles it can reach.
 4. **Relative players:** the same position encoded for player 0, and for player 1 with the seats swapped, gives the same input.
 5. **Padding:** a 11×11 map at N = 16 matches the N = 11 encoding in its top-left corner, and is zero elsewhere apart from `on_map`.

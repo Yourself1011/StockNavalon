@@ -19,7 +19,17 @@ void parseToken(const std::string &token, int index, MapData &map) {
     Tile &tile = map.tiles[index];
     tile.terrain = static_cast<TerrainTypes::TerrainType>(terrain);
 
-    for (char c : token.substr(1)) {
+    for (std::size_t i = 1; i < token.size(); i++) {
+        char c = token[i];
+        if (c == '^') {
+            if (i + 1 >= token.size() || token[i + 1] < '0' || token[i + 1] > '9') {
+                throw std::runtime_error("^ needs a player in map token '" +
+                                         token + "'");
+            }
+            map.regions.resize(map.size * map.size, -1);
+            map.regions[index] = token[++i] - '0';
+            continue;
+        }
         int resource = indexOf(ResourceTypes::resourceChars, c);
         if (resource > 0) {
             tile.resource = static_cast<ResourceTypes::ResourceType>(resource);

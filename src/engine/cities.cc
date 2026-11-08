@@ -225,6 +225,25 @@ void Game::capture(int unitIdx) {
         city = foundCity(tile, owner);
     } else {
         city = tiles[tile].territory;
+        // the previous owner's score loses the city, its borders, and the
+        // temples and monuments in them: all visible once it's captured
+        int previous = cities[city].owner;
+        int loss = 100 + 50 * (cities[city].level - 1) +
+                   5 * cities[city].population + 250 * cities[city].parks;
+        forEachInRadius(tile, 2, [&](int t) {
+            if (tiles[t].territory != city) {
+                return;
+            }
+            loss += 20;
+            if (isTemple(tiles[t].building)) {
+                loss += 100 * templeLevel(t);
+            } else if (isMonument(tiles[t].building)) {
+                loss += 400;
+            }
+        });
+        loss += 20; // the city tile itself
+        scoreEffects[owner * players.size() + previous] -= loss;
+
         cities[city].owner = owner;
         revealTerritory(city);
         // embassies only stand in a capital its owner still holds

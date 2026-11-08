@@ -46,7 +46,7 @@ void checkInvariants(const Game &game) {
 } // namespace
 
 TEST_CASE("random games keep the state consistent") {
-    MapData fixed = loadMap("src/game/map.txt");
+    MapData fixed = loadMap("src/engine/map.txt");
     for (unsigned seed = 0; seed < 40; seed++) {
         CAPTURE(seed);
         std::mt19937 rng(seed);

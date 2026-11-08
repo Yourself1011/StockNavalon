@@ -71,6 +71,25 @@ int Game::publishedScore(int player) const {
 
 void Game::publishScore(int player) {
     scoreHistory.push_back({player, turn, score(player)});
+    // the effects so far belong to the change just published
+    int count = static_cast<int>(players.size());
+    for (int by = 0; by < count; by++) {
+        scoreEffectHistory.push_back(scoreEffects[by * count + player]);
+    }
+    for (int by = 0; by < count; by++) {
+        scoreEffects[count * count + by * count + player] =
+            scoreEffects[by * count + player];
+        scoreEffects[by * count + player] = 0;
+    }
+}
+
+int Game::effectsSincePublished(int by, int to) const {
+    return scoreEffects[by * static_cast<int>(players.size()) + to];
+}
+
+int Game::effectsInLastChange(int by, int to) const {
+    int count = static_cast<int>(players.size());
+    return scoreEffects[count * count + by * count + to];
 }
 
 int Game::meetingBonus(int score) {

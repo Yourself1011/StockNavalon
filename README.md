@@ -2,6 +2,10 @@
 
 stockNavalon is a Polytopia bot (designed in [`docs/stockNavalon.md`](docs/stockNavalon.md), not built yet). This repository also holds **polyengine**, the C++ game engine it's built on: the rules, a playable CLI, a Python package (`polyengine`), and building blocks for search.
 
+- `src/engine/`: polyengine, the game. It doesn't depend on any bot.
+- `src/stockNavalon/`: the bot's code, built on the engine: the network encoding and tribe inference so far.
+- `tests/engine/`, `tests/stockNavalon/`: their tests, in one doctest binary; `tests/python/`: the Python package's.
+
 ## Setup
 
 Needs CMake 3.25+, Ninja and a C++20 compiler. For the Python package, also [uv](https://docs.astral.sh/uv/):
@@ -46,11 +50,11 @@ The Python tests run against the module just built, not the pip-installed one. T
 
 ```bash
 ./build/release/final_program [map file | map type] [tribe...] [--seed N] [--size N]
-./build/release/final_program src/game/map.txt Imperius Bardur
+./build/release/final_program src/engine/map.txt Imperius Bardur
 ./build/release/final_program lakes Imperius Bardur --seed 7
 ```
 
-- **The map:** a map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `waterworld`) generates a map of that type, 14x14 unless `--size` says otherwise. Otherwise it loads a map file (format in `src/game/map.h`), by default `src/game/map.txt`.
+- **The map:** a map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `waterworld`) generates a map of that type, 14x14 unless `--size` says otherwise. Otherwise it loads a map file (format in `src/engine/map.h`), by default `src/engine/map.txt`.
 - **Players:** every player defaults to Imperius.
 - **`--bot N`** makes seat N a random bot; repeat it for more bots. It plays its whole turn as soon as yours ends. With every seat a bot, the game plays itself, stopping after 300 turns, and shows the final map.
 - **The map display:** drawn with emojis. Add `--ascii` for a letter view, if your terminal shows emojis badly.
@@ -102,8 +106,9 @@ A call into the engine costs about as much as a game step (a full step from Pyth
 ## Docs
 
 - [`docs/stockNavalon.md`](docs/stockNavalon.md): the design of stockNavalon, the bot (network, search, fog, belief model, training plan)
+- [`docs/tribeInference.md`](docs/tribeInference.md): the spec for working out an unmet opponent's possible tribes exactly from their opening score changes
 - [`docs/encoding.md`](docs/encoding.md): the spec for encoding states and commands as arrays for the network
 - [`docs/cpp.md`](docs/cpp.md): using the engine as a C++ library (linking, commands, fog, `LegalMoves` for search, threads), with compiled examples in `examples/`
 - [`docs/python.md`](docs/python.md): the `polyengine` Python package (setup, commands, full API reference, speed)
-- [`src/game/GAME.md`](src/game/GAME.md): the rules spec
-- [`src/game/ENGINE.md`](src/game/ENGINE.md): how the engine implements it, and the assumptions made
+- [`src/engine/GAME.md`](src/engine/GAME.md): the rules spec
+- [`src/engine/ENGINE.md`](src/engine/ENGINE.md): how the engine implements it, and the assumptions made

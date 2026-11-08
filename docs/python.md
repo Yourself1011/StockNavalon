@@ -1,6 +1,6 @@
 # Using polyengine from Python
 
-`polyengine` is the engine as a Python package. It's a thin nanobind wrapper over the C++ library, so it plays exactly the same game. The rules are in [`src/game/GAME.md`](../src/game/GAME.md), and the engine's own choices where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md). [`docs/cpp.md`](cpp.md) covers the same engine from C++.
+`polyengine` is the engine as a Python package. It's a thin nanobind wrapper over the C++ library, so it plays exactly the same game. The rules are in [`src/engine/GAME.md`](../src/engine/GAME.md), and the engine's own choices where the rules are silent are in [`src/engine/ENGINE.md`](../src/engine/ENGINE.md). [`docs/cpp.md`](cpp.md) covers the same engine from C++.
 
 Use Python for experiments, evaluation, training and notebooks. Use C++ for anything that runs per move at scale (see [Speed](#speed)).
 
@@ -111,8 +111,8 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | | |
 | --- | --- |
 | `generate_map(tribes, type=LAKES, size=14, seed=0, candidates=10)` | a generated map for the tribes, in seat order. `candidates` maps are made and the fairest kept. |
-| `load_map(path)`, `parse_map(text)` | a map from the text format (see `src/game/map.h`) |
-| `MapData` | `size`, `type`, `tiles`, `capitals` (each player's capital tile) |
+| `load_map(path)`, `parse_map(text)` | a map from the text format (see `src/engine/map.h`) |
+| `MapData` | `size`, `type`, `tiles`, `capitals` (each player's capital tile), `regions` (each tile's climate region, by seat) |
 | `ruin_count_for_size(size)` | ruins a map of that size gets |
 
 ### `Game`
@@ -129,7 +129,7 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 
 The state classes are read-only:
 
-- **`Tile`:** `terrain`, `resource`, `building`, `level`, `road`, `unit` (an index into the internal unit list, or -1), `territory`, `explored_by(p)`.
+- **`Tile`:** `terrain`, `resource`, `building`, `level`, `road`, `unit` (an index into the internal unit list, or -1), `territory`, `climate` (a tribe as an int, -1 if none), `explored_by(p)`.
 - **`Unit`:** `type`, `passenger` (what a boat carries), `owner`, `tile`, `hp`, `max_hp`, `home`, `kills`, `veteran`, `alive`, `hidden`, `can_move`, `can_attack`, `can_act`.
 - **`City`:** `tile`, `owner`, `level`, `population`, `capital_of`, `connected_for`, `pending_rewards`, `parks`, `workshop`, `wall`.
 - **`Player`:** `tribe`, `stars`, `capital`, `alive`, `kills`, `lighthouses_found`, `techs`, `tasks_done`, `monuments_built` (lists), `has_met(p)`.
@@ -138,14 +138,42 @@ The state classes are read-only:
 
 What the player knows. `everything=True` ignores fog.
 
-- **Fields:** `player`, `size`, `turn`, `current_player`, `winner`, `stars`, `income`, `techs`. These are the player's own; other tribes' stars and techs are hidden.
-- **Per player:** `tribes`, `alive`, `met`, and `scores`. Every player's score is public, met or not, but you see others' scores as of the end of their last turn; your own is live.
+- **Fields:** `player`, `size`, `turn`, `current_player`, `winner`, `stars`, `income`, `techs`.
+- **Score effects:** `effects_since_published[p]` and `effects_in_last_change[p]`: what this player's own actions visibly did to player `p`'s score (units seen dying, cities captured), since `p` last published, and within the change `p` last published. These are the player's own; other tribes' stars and techs are hidden.
+- **Per player:** `tribes` (your own and those you've met; `None` until then), `alive`, `met`, and `scores`. Every player's score is public, met or not, but you see others' scores as of the end of their last turn; your own is live.
 - **`score_history`:** every score published so far, oldest first, as `ScoreRecord`s (`player`, `turn`, `score`): the starting scores, then one each time a player ends a turn. Changes between a player's records are evidence of what they did, like a +300 for a tier-3 tech.
 - **Own tasks:** `tasks_done`, `monuments_built`, `kills`, `peaceful_turns`, `lighthouses_found`.
 - **`relations[p]`:** `peace`, `they_asked`, `we_asked`, `our_embassy`, `their_embassy`.
-- **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level` (Windmill, Sawmill or Forge level, or a temple's level, which everyone can see), `turns_to_level_up` (temples: turns until the next level), `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.
+- **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level` (Windmill, Sawmill or Forge level, or a temple's level, which everyone can see), `turns_to_level_up` (temples: turns until the next level), `climate` (the tribe whose climate region it is), `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.
 - **`units`:** `type`, `passenger`, `owner`, `tile`, `hp`, `max_hp`, `kills`, `veteran`, `hidden`. For the player's own units only, also `can_move`, `can_attack`, `can_act`, `hidden_enemy_near`.
-- **`cities`:** `tile`, `owner`, `level`, `population`, `capital_of`, `wall`.
+- **`cities`:** `tile`, `owner`, `level`, `population`, `capital_of`, `wall`, `parks`.
+
+### Encoding for the network
+
+`Encoding(map_size=11, players=2)` turns states and commands into NumPy arrays, following [`docs/encoding.md`](encoding.md). `ENCODING_VERSION` is the version of that layout; record it with saved data and models.
+
+| | |
+| --- | --- |
+| `plane_count`, `global_count`, `action_count` | C, G and A (88, 84 and 26,410 for 11×11, 1v1) |
+| `encode_state(game, player)` | `(planes, globals)`: float32 `[C, N, N]` and `[G]`, from what the player knows |
+| `encode_states(games, players)` | a batch: `[B, C, N, N]` and `[B, G]`, encoded in C++ without the GIL |
+| `legal_mask(game)`, `legal_masks(games)` | uint8 `[A]` or `[B, A]`: 1 for each legal command's slot |
+| `encode_command(game, c)` | the command's slot, or -1 if it has none (Resign, Stay) |
+| `decode_command(game, index)` | the legal command in that slot; raises `ValueError` if none is |
+| `explained_score(view, p)` | the part of player `p`'s published score the viewer can account for |
+| `possible_tribes(view, p)` | the tribes unmet player `p` could be, from starting scores and climates; always includes the real one |
+| `climates_seen(view)` | the tribes whose climate the player has seen |
+| `tribes_with_starting_score(score)` | the tribes that could start a game with that score |
+
+```python
+enc = pe.Encoding()   # 11x11, 1v1: the map must fit
+tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
+game = pe.Game(pe.generate_map(tribes, size=11, seed=1), tribes, seed=1)
+planes, globals_ = enc.encode_state(game, game.current_player)
+mask = enc.legal_mask(game)
+# ... the network picks an index where mask == 1 ...
+game.apply(enc.decode_command(game, index))
+```
 
 ### Search and bots
 

@@ -6,11 +6,15 @@
 // GIL released) rather than in Python.
 
 #include "bots/randomBot.h"
+#include "encoding.h"
 #include "game.h"
 #include "legalMoves.h"
 #include "mapgen.h"
+#include "tribeInference.h"
 #include "view.h"
 #include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
@@ -39,6 +43,18 @@ std::string commandRepr(const Command &c) {
     out << "Command(" << CommandTypes::commandNames[c.type] << ", from=" << c.from
         << ", to=" << c.to << ", arg=" << c.arg << ")";
     return out.str();
+}
+
+// a new NumPy array of the given shape, zeroed, owned by Python
+template <typename T>
+nb::ndarray<nb::numpy, T> newArray(std::initializer_list<std::size_t> shape) {
+    std::size_t count = 1;
+    for (std::size_t s : shape) {
+        count *= s;
+    }
+    T *data = new T[count]();
+    nb::capsule owner(data, [](void *p) noexcept { delete[] static_cast<T *>(p); });
+    return nb::ndarray<nb::numpy, T>(data, shape, owner);
 }
 
 #define V(ns, name) .value(#name, ns::name)
@@ -183,6 +199,9 @@ void bindState(nb::module_ &m) {
         .def_ro("road", &Tile::road)
         .def_ro("unit", &Tile::unit)
         .def_ro("territory", &Tile::territory)
+        .def_ro("climate", &Tile::climate,
+                "The tribe whose climate region the tile is in (as an int), "
+                "-1 if none")
         .def("explored_by", &Tile::exploredBy, "player"_a);
 
     nb::class_<Unit>(m, "Unit",
@@ -238,7 +257,10 @@ void bindMaps(nb::module_ &m) {
         .def_ro("size", &MapData::size)
         .def_ro("type", &MapData::type)
         .def_ro("tiles", &MapData::tiles)
-        .def_ro("capitals", &MapData::capitals);
+        .def_ro("capitals", &MapData::capitals)
+        .def_ro("regions", &MapData::regions,
+                "The seat whose climate region each tile is in; empty if the "
+                "map doesn't say");
 
     m.def("load_map", &loadMap, "path"_a, "Loads a map file (see map.h).");
     m.def(
@@ -350,6 +372,8 @@ void bindView(nb::module_ &m) {
                 "Windmill, Sawmill or Forge level, or a temple's level")
         .def_ro("turns_to_level_up", &PlayerView::TileView::turnsToLevelUp,
                 "Temples: turns until the next level, 0 at the top level")
+        .def_ro("climate", &PlayerView::TileView::climate,
+                "The tribe whose climate the tile is in")
         .def_ro("road", &PlayerView::TileView::road)
         .def_ro("owner", &PlayerView::TileView::owner)
         .def_ro("unit", &PlayerView::TileView::unit)
@@ -376,7 +400,8 @@ void bindView(nb::module_ &m) {
         .def_ro("level", &PlayerView::CityView::level)
         .def_ro("population", &PlayerView::CityView::population)
         .def_ro("capital_of", &PlayerView::CityView::capitalOf)
-        .def_ro("wall", &PlayerView::CityView::wall);
+        .def_ro("wall", &PlayerView::CityView::wall)
+        .def_ro("parks", &PlayerView::CityView::parks);
 
     nb::class_<PlayerView::Relation>(view, "Relation")
         .def_ro("peace", &PlayerView::Relation::peace)
@@ -393,7 +418,10 @@ void bindView(nb::module_ &m) {
         .def_ro("stars", &PlayerView::stars)
         .def_ro("income", &PlayerView::income)
         .def_prop_ro("techs", [](const PlayerView &v) { return setBits(v.techs); })
-        .def_ro("tribes", &PlayerView::tribes)
+        .def_ro("tribes", &PlayerView::tribes,
+                "Each player's tribe: your own and those you've met; None "
+                "until then. Starting scores (the first records in "
+                "score_history) narrow an unmet tribe down.")
         .def_prop_ro("alive", [](const PlayerView &v) { return toVector(v.alive); })
         .def_prop_ro("met", [](const PlayerView &v) { return toVector(v.met); })
         .def_ro("scores", &PlayerView::scores,
@@ -402,6 +430,11 @@ void bindView(nb::module_ &m) {
                 "turn.")
         .def_ro("score_history", &PlayerView::scoreHistory,
                 "Every published score so far (public), oldest first.")
+        .def_ro("effects_since_published", &PlayerView::effectsSincePublished,
+                "Per player: what this player's own actions visibly did to "
+                "their score since they last published (negative for losses).")
+        .def_ro("effects_in_last_change", &PlayerView::effectsInLastChange,
+                "Per player: the same, within the change they last published.")
         .def_prop_ro("tasks_done",
                      [](const PlayerView &v) { return setBits(v.tasksDone); })
         .def_prop_ro("monuments_built",
@@ -471,6 +504,136 @@ void bindSearch(nb::module_ &m) {
         "each; winner is -1 if the turn limit came first.");
 }
 
+void bindEncoding(nb::module_ &m) {
+    m.attr("ENCODING_VERSION") = ENCODING_VERSION;
+
+    nb::class_<EncodingConfig>(
+        m, "Encoding",
+        "States and commands as arrays for the network (docs/encoding.md). "
+        "Arrays are NumPy: planes float32 [C, N, N], globals float32 [G], "
+        "masks uint8 [A]. The batched forms run in C++ without the GIL.")
+        .def(
+            "__init__",
+            [](EncodingConfig *c, int mapSize, int players) {
+                new (c) EncodingConfig{.mapSize = mapSize, .players = players};
+            },
+            "map_size"_a = 11, "players"_a = 2)
+        .def_ro("map_size", &EncodingConfig::mapSize)
+        .def_ro("players", &EncodingConfig::players)
+        .def_prop_ro("plane_count", &planeCount, "C")
+        .def_prop_ro("global_count", &globalCount, "G")
+        .def_prop_ro("action_count", &actionCount, "A")
+        .def(
+            "encode_state",
+            [](const EncodingConfig &c, const Game &game, int player) {
+                std::size_t n = c.mapSize;
+                auto planes = newArray<float>(
+                    {static_cast<std::size_t>(planeCount(c)), n, n});
+                auto globals = newArray<float>(
+                    {static_cast<std::size_t>(globalCount(c))});
+                encodeState(game, player, c, planes.data(), globals.data());
+                return std::make_tuple(planes, globals);
+            },
+            "game"_a, "player"_a,
+            "The player's input: (planes [C, N, N], globals [G]).")
+        .def(
+            "encode_states",
+            [](const EncodingConfig &c, const std::vector<const Game *> &games,
+               const std::vector<int> &players) {
+                if (games.size() != players.size()) {
+                    throw std::invalid_argument("Need one player per game");
+                }
+                std::size_t b = games.size(), n = c.mapSize,
+                            planeSize = planeCount(c) * n * n,
+                            globalSize = globalCount(c);
+                auto planes = newArray<float>(
+                    {b, static_cast<std::size_t>(planeCount(c)), n, n});
+                auto globals = newArray<float>({b, globalSize});
+                float *p = planes.data(), *g = globals.data();
+                {
+                    nb::gil_scoped_release release;
+                    for (std::size_t i = 0; i < b; i++) {
+                        encodeState(*games[i], players[i], c, p + i * planeSize,
+                                    g + i * globalSize);
+                    }
+                }
+                return std::make_tuple(planes, globals);
+            },
+            "games"_a, "players"_a,
+            "A batch: (planes [B, C, N, N], globals [B, G]).")
+        .def(
+            "legal_mask",
+            [](const EncodingConfig &c, const Game &game) {
+                auto mask = newArray<std::uint8_t>(
+                    {static_cast<std::size_t>(actionCount(c))});
+                legalMask(game, c, mask.data());
+                return mask;
+            },
+            "game"_a, "1 for each legal command's slot: [A].")
+        .def(
+            "legal_masks",
+            [](const EncodingConfig &c, const std::vector<const Game *> &games) {
+                std::size_t b = games.size(),
+                            a = static_cast<std::size_t>(actionCount(c));
+                auto masks = newArray<std::uint8_t>({b, a});
+                std::uint8_t *out = masks.data();
+                {
+                    nb::gil_scoped_release release;
+                    for (std::size_t i = 0; i < b; i++) {
+                        legalMask(*games[i], c, out + i * a);
+                    }
+                }
+                return masks;
+            },
+            "games"_a, "A batch of masks: [B, A].")
+        .def(
+            "encode_command",
+            [](const EncodingConfig &c, const Game &game, const Command &command) {
+                return encodeCommand(game, command, c);
+            },
+            "game"_a, "command"_a,
+            "The command's slot, or -1 if it has none (Resign, Stay).")
+        .def(
+            "decode_command",
+            [](const EncodingConfig &c, const Game &game, int index) {
+                return decodeCommand(game, index, c);
+            },
+            "game"_a, "index"_a,
+            "The legal command in that slot; raises ValueError if none is.");
+
+    auto tribeList = [](const TribeSet &set) {
+        std::vector<TribeTypes::Tribe> out;
+        for (int t = 0; t < TribeTypes::TRIBE_SIZE; t++) {
+            if (set.test(t)) {
+                out.push_back(static_cast<TribeTypes::Tribe>(t));
+            }
+        }
+        return out;
+    };
+    m.def(
+        "possible_tribes",
+        [tribeList](const PlayerView &view, int opponent) {
+            return tribeList(possibleTribes(view, opponent));
+        },
+        "view"_a, "opponent"_a,
+        "The tribes the opponent could be, from the viewer's starting-score "
+        "and climate evidence. Always includes the real one.");
+    m.def(
+        "climates_seen",
+        [tribeList](const PlayerView &view) {
+            return tribeList(climatesSeen(view));
+        },
+        "view"_a, "The tribes whose climate the player has seen.");
+    m.def(
+        "tribes_with_starting_score",
+        [tribeList](int score) { return tribeList(tribesWithStartingScore(score)); },
+        "score"_a, "The tribes that could start the game with this score.");
+
+    m.def("explained_score", &explainedScore, "view"_a, "player"_a,
+          "The part of a player's published score the viewer can account "
+          "for from what they see.");
+}
+
 } // namespace
 
 NB_MODULE(_engine, m) {
@@ -481,4 +644,5 @@ NB_MODULE(_engine, m) {
     bindGame(m);
     bindView(m);
     bindSearch(m);
+    bindEncoding(m);
 }

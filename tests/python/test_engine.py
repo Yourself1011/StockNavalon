@@ -58,9 +58,10 @@ def test_the_view_hides_what_the_player_doesnt_know():
     assert explored == 25
     # the enemy capital is still in fog
     assert all(c.owner == 0 for c in view.cities)
-    # scores are public, even for a tribe not yet met
+    # scores are public, even for a tribe not yet met; its tribe isn't
     assert view.scores == [game.score(0), game.score(1)]
     assert not view.met[1]
+    assert view.tribes == [pe.Tribe.IMPERIUS, None]
 
 
 def test_others_see_a_score_when_its_player_ends_their_turn():
@@ -112,3 +113,45 @@ def test_under_ctest_the_build_tree_module_is_tested():
     package = __import__("os").environ.get("POLYENGINE_BUILD_PACKAGE")
     if package:
         assert pe.__file__.startswith(package)
+
+
+def test_encoding_shapes_and_round_trip():
+    import numpy as np
+
+    enc = pe.Encoding(map_size=11, players=2)
+    assert (enc.plane_count, enc.global_count, enc.action_count) == (100, 109, 26410)
+    tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
+    game = pe.Game(pe.generate_map(tribes, size=11, seed=3), tribes, seed=3)
+
+    planes, globals_ = enc.encode_state(game, 0)
+    assert planes.shape == (100, 11, 11) and planes.dtype == np.float32
+    assert globals_.shape == (109,) and globals_.dtype == np.float32
+    assert planes[0].sum() == 121  # every tile is on the map
+
+    mask = enc.legal_mask(game)
+    commands = game.legal_commands()
+    assert mask.dtype == np.uint8 and mask.sum() == len(commands)
+    for command in commands:
+        index = enc.encode_command(game, command)
+        assert mask[index] == 1
+        assert enc.decode_command(game, index) == command
+
+    games = [game, game.copy()]
+    batch_planes, batch_globals = enc.encode_states(games, [0, 1])
+    assert batch_planes.shape == (2, 100, 11, 11)
+    assert batch_globals.shape == (2, 109)
+    assert np.array_equal(batch_planes[0], planes)
+    assert enc.legal_masks(games).shape == (2, 26410)
+
+
+def test_climate_and_possible_tribes():
+    tribes = [pe.Tribe.VENGIR, pe.Tribe.AIMO]
+    game = pe.Game(pe.generate_map(tribes, size=11, seed=4), tribes, seed=4)
+    view = pe.make_view(game, 0)
+    capital = game.cities[game.players[0].capital].tile
+    assert view.tiles[capital].climate == pe.Tribe.VENGIR
+    assert pe.tribes_with_starting_score(730) == [pe.Tribe.VENGIR, pe.Tribe.AIMO]
+    possible = pe.possible_tribes(view, 1)
+    assert pe.Tribe.AIMO in possible
+    assert set(possible) <= {pe.Tribe.VENGIR, pe.Tribe.AIMO}
+    assert pe.Tribe.VENGIR in pe.climates_seen(view)
