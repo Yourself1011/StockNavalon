@@ -18,6 +18,16 @@ namespace WinConditions {
 enum WinCondition { MIGHT, DOMINATION };
 } // namespace WinConditions
 
+// A score as other players see it: published when its player ends a turn
+struct ScoreRecord {
+    int player;
+    // the turn that just ended
+    int turn;
+    int score;
+
+    bool operator==(const ScoreRecord &) const = default;
+};
+
 struct GameSettings {
     WinConditions::WinCondition winCondition = WinConditions::MIGHT;
     // seeds Game::rng
@@ -47,6 +57,11 @@ class Game {
     // the first round is turn 0
     int turn = 0;
     int winner = -1;
+    // Every score other players have seen, in order: the starting scores,
+    // then one record each time a player ends their turn. Other players'
+    // scores only update then; your own you see live. One flat list, so a
+    // copy of the game is one allocation more, not one per player.
+    std::vector<ScoreRecord> scoreHistory;
     // how many steps an Explorer takes
     static constexpr int EXPLORER_STEPS = 12;
     // random number state, part of the game so copies stay deterministic
@@ -178,8 +193,12 @@ class Game {
     void revealForUnit(int unit);
 
     // ---- score and meeting tribes (score.cc) ----
-    // GAME.md section 3
+    // GAME.md section 3. The live score, which only its player sees.
     int score(int player) const;
+    // the score other players see: from the end of the player's last turn
+    int publishedScore(int player) const;
+    // records the current player's score for everyone to see
+    void publishScore(int player);
     int unitScore(const Unit &unit) const;
     int templeLevel(int tile) const;
     // the stars for meeting a tribe with this score

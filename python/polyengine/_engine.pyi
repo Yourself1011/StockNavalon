@@ -1,4 +1,4 @@
-"""The stockNavalon Polytopia engine"""
+"""polyengine, a Polytopia engine"""
 
 from collections.abc import Sequence
 import enum
@@ -346,6 +346,25 @@ class Command:
 
     def __repr__(self) -> str: ...
 
+class ScoreRecord:
+    """
+    A score as other players saw it: published when its player ended a turn (or the starting score).
+    """
+
+    @property
+    def player(self) -> int: ...
+
+    @property
+    def turn(self) -> int:
+        """the turn that had just ended"""
+
+    @property
+    def score(self) -> int: ...
+
+    def __eq__(self, arg: ScoreRecord, /) -> bool: ...
+
+    def __repr__(self) -> str: ...
+
 class Tile:
     """A map tile, as the engine sees it (no fog)."""
 
@@ -567,7 +586,15 @@ class Game:
 
     def tile_owner(self, tile: int) -> int: ...
 
-    def score(self, player: int) -> int: ...
+    def score(self, player: int) -> int:
+        """The live score, which only its own player sees."""
+
+    def published_score(self, player: int) -> int:
+        """The score other players see: from the end of the player's last turn."""
+
+    @property
+    def score_history(self) -> list[ScoreRecord]:
+        """Every published score so far, oldest first."""
 
     def income(self, player: int) -> int: ...
 
@@ -730,7 +757,13 @@ class PlayerView:
 
     @property
     def scores(self) -> list[int]:
-        """Every player's score, met or not: scores are public."""
+        """
+        Every player's score, met or not, as this player sees it: their own live, everyone else's from the end of their last turn.
+        """
+
+    @property
+    def score_history(self) -> list[ScoreRecord]:
+        """Every published score so far (public), oldest first."""
 
     @property
     def tasks_done(self) -> list[int]: ...

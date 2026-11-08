@@ -86,6 +86,8 @@ The real game has one command per kind of action. The engine should use the same
 
 Score only decides the star bonus for meeting a tribe (section 2), but that bonus needs it tracked exactly (wiki Score page).
 
+- **Who sees what, when:** every player's score is public, but it updates for other players only when its player ends their turn. You see your own score live (game). Older versions updated scores live for everyone.
+
 - **Units:** 5 points per star of the unit's cost. A super unit (Giant) is worth 50.
   - Boat upgrades add nothing.
   - Converting a unit changes neither player's score.
@@ -514,7 +516,7 @@ Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/E
   - unexplored tiles
   - the player's stars
   - the player's techs. They aren't shown, though an opponent can infer some from the units and buildings they see (game).
-- **Always visible:** every player's score, including tribes not yet met (game).
+- **Always visible:** every player's score, including tribes not yet met, as of the end of their last turn (section 3) (game).
 - Legal moves never act on tiles you haven't explored. For example, you can't build a road onto a fogged tile (bengreff).
 
 Sources: <https://polytopia.fandom.com/wiki/Fog_of_War>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md> (rules doc only)

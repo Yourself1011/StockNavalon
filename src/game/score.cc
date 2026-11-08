@@ -50,6 +50,20 @@ int Game::score(int player) const {
     return total;
 }
 
+int Game::publishedScore(int player) const {
+    for (auto record = scoreHistory.rbegin(); record != scoreHistory.rend();
+         ++record) {
+        if (record->player == player) {
+            return record->score;
+        }
+    }
+    return 0;
+}
+
+void Game::publishScore(int player) {
+    scoreHistory.push_back({player, turn, score(player)});
+}
+
 int Game::meetingBonus(int score) {
     int thousands = score <= 0 ? 0 : (score + 999) / 1000;
     return std::min(11, 1 + 2 * thousands);

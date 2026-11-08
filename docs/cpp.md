@@ -1,6 +1,6 @@
-# Using the engine from C++
+# Using polyengine from C++
 
-The engine is a C++20 library. Bots, search and self-play in C++ use it directly. There's no binding layer, and nothing between your code and the engine. The rules it implements are in [`src/game/GAME.md`](../src/game/GAME.md); the choices made where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md).
+polyengine, the game engine, is a C++20 library. Bots, search and self-play in C++ use it directly. There's no binding layer, and nothing between your code and the engine. The rules it implements are in [`src/game/GAME.md`](../src/game/GAME.md); the choices made where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md).
 
 Two complete, compiled examples go with this guide:
 
@@ -92,7 +92,7 @@ A `PlayerView` has:
 - explored tiles with their live contents (unexplored ones have `explored == false` and nothing else filled in)
 - the units the player can see
 - its cities, stars, income, techs, tasks and diplomacy (other tribes' stars and techs are hidden)
-- every player's score, since scores are public
+- every player's score, since scores are public: your own live, the others' as of the end of their last turn, plus `scoreHistory`, every score published so far
 
 `makeView(game, player, true)` ignores fog, for debugging.
 

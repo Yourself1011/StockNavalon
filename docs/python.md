@@ -1,6 +1,6 @@
-# Using the engine from Python
+# Using polyengine from Python
 
-`stocknavalon` is the engine as a Python package. It's a thin nanobind wrapper over the C++ library, so it plays exactly the same game. The rules are in [`src/game/GAME.md`](../src/game/GAME.md), and the engine's own choices where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md). [`docs/cpp.md`](cpp.md) covers the same engine from C++.
+`polyengine` is the engine as a Python package. It's a thin nanobind wrapper over the C++ library, so it plays exactly the same game. The rules are in [`src/game/GAME.md`](../src/game/GAME.md), and the engine's own choices where the rules are silent are in [`src/game/ENGINE.md`](../src/game/ENGINE.md). [`docs/cpp.md`](cpp.md) covers the same engine from C++.
 
 Use Python for experiments, evaluation, training and notebooks. Use C++ for anything that runs per move at scale (see [Speed](#speed)).
 
@@ -26,22 +26,22 @@ ctest --preset release -R python
 
 `.venv/bin/python -m pytest tests/python` also works, but it tests the pip-installed module.
 
-Type stubs (`python/stocknavalon/_engine.pyi`) give editors signatures and docstrings. Regenerate them after changing the bindings. They're generated from the installed module, so reinstall first:
+Type stubs (`python/polyengine/_engine.pyi`) give editors signatures and docstrings. Regenerate them after changing the bindings. They're generated from the installed module, so reinstall first:
 
 ```bash
 uv pip install --python .venv/bin/python --no-build-isolation -e .
-.venv/bin/python -m nanobind.stubgen -m stocknavalon._engine -o python/stocknavalon/_engine.pyi
+.venv/bin/python -m nanobind.stubgen -m polyengine._engine -o python/polyengine/_engine.pyi
 ```
 
 ## A first game
 
 ```python
-import stocknavalon as sn
+import polyengine as pe
 
-tribes = [sn.Tribe.IMPERIUS, sn.Tribe.BARDUR]
-game = sn.Game(sn.generate_map(tribes, seed=7), tribes, seed=7)
+tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
+game = pe.Game(pe.generate_map(tribes, seed=7), tribes, seed=7)
 
-bots = [sn.RandomBot(1), sn.RandomBot(2)]
+bots = [pe.RandomBot(1), pe.RandomBot(2)]
 while not game.game_over and game.turn < 50:
     bots[game.current_player].play_turn(game)
 
@@ -52,7 +52,7 @@ print(game.turn, [game.score(p) for p in range(2)], game.winner)
 
 - **Tiles are indices**, `y * size + x`. Use `game.index(x, y)`, `game.tile_x(t)`, `game.tile_y(t)`. `game.distance(a, b)` counts diagonals as one step.
 - **HP is ×10**, so a full-health Warrior has `hp == 100`.
-- **`Game` sees everything.** A bot should decide from `sn.make_view(game, player)`, which only has what that player knows, and use the `Game` only to list and apply commands.
+- **`Game` sees everything.** A bot should decide from `pe.make_view(game, player)`, which only has what that player knows, and use the `Game` only to list and apply commands.
 - **Copies are independent**: `game.copy()`, `copy.copy(game)` and `copy.deepcopy(game)` all work. A `LegalMoves` copies the same way.
 - **Read-only data comes back as copies.** `game.tiles`, `game.units`, `make_view(...)` and the like are snapshots. They don't change as the game goes on, and changing them doesn't change the game.
 - **Randomness is seeded:** `Game(..., seed=)` for ruins and the Explorer, `generate_map(..., seed=)` for maps. The same seeds and commands give the same game.
@@ -62,9 +62,9 @@ print(game.turn, [game.score(p) for p in range(2)], game.winner)
 A `Command` has `type`, `from_tile`, `to_tile` and `arg`; unused fields are -1. Commands compare equal by value and can go in sets and dicts.
 
 ```python
-sn.Command(sn.CommandType.RESEARCH, arg=sn.TechType.RIDING)
-sn.Command(sn.CommandType.MOVE, from_tile=game.index(3, 3), to_tile=game.index(4, 4))
-sn.Command(sn.CommandType.ENDTURN)
+pe.Command(pe.CommandType.RESEARCH, arg=pe.TechType.RIDING)
+pe.Command(pe.CommandType.MOVE, from_tile=game.index(3, 3), to_tile=game.index(4, 4))
+pe.Command(pe.CommandType.ENDTURN)
 ```
 
 | Type | `from_tile` | `to_tile` | `arg` |
@@ -124,7 +124,7 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | `size`, `map_type`, `turn`, `current_player`, `winner` (-1 until there is one), `game_over` | |
 | `tiles`, `units` (alive only), `cities`, `players` | full state, fog ignored |
 | `index(x, y)`, `tile_x(t)`, `tile_y(t)`, `distance(a, b)`, `tile_owner(t)` | geometry |
-| `score(p)`, `income(p)`, `tech_cost(p, tech)` | |
+| `score(p)` (live), `published_score(p)` (what others see), `score_history`, `income(p)`, `tech_cost(p, tech)` | |
 | `legal_commands()`, `is_legal(c)`, `apply(c)`, `apply_unchecked(c)`, `describe(c)` | commands |
 
 The state classes are read-only:
@@ -139,7 +139,8 @@ The state classes are read-only:
 What the player knows. `everything=True` ignores fog.
 
 - **Fields:** `player`, `size`, `turn`, `current_player`, `winner`, `stars`, `income`, `techs`. These are the player's own; other tribes' stars and techs are hidden.
-- **Per player:** `tribes`, `alive`, `met`, and `scores`. Every player's score is public, met or not.
+- **Per player:** `tribes`, `alive`, `met`, and `scores`. Every player's score is public, met or not, but you see others' scores as of the end of their last turn; your own is live.
+- **`score_history`:** every score published so far, oldest first, as `ScoreRecord`s (`player`, `turn`, `score`): the starting scores, then one each time a player ends a turn. Changes between a player's records are evidence of what they did, like a +300 for a tier-3 tech.
 - **Own tasks:** `tasks_done`, `monuments_built`, `kills`, `peaceful_turns`, `lighthouses_found`.
 - **`relations[p]`:** `peace`, `they_asked`, `we_asked`, `our_embassy`, `their_embassy`.
 - **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level`, `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.

@@ -3,9 +3,9 @@ requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "stocknavalon"
+name = "polyengine"
 version = "0.1.0"
-description = "Python bindings for the stockNavalon Polytopia engine"
+description = "Python bindings for polyengine, a Polytopia engine"
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
@@ -14,5 +14,5 @@ test = ["pytest"]
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/python/{wheel_tag}"
-wheel.packages = ["python/stocknavalon"]
+wheel.packages = ["python/polyengine"]
 cmake.build-type = "Release"

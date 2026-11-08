@@ -160,6 +160,21 @@ void bindState(nb::module_ &m) {
              })
         .def("__repr__", &commandRepr);
 
+    nb::class_<ScoreRecord>(
+        m, "ScoreRecord",
+        "A score as other players saw it: published when its player ended a "
+        "turn (or the starting score).")
+        .def_ro("player", &ScoreRecord::player)
+        .def_ro("turn", &ScoreRecord::turn, "the turn that had just ended")
+        .def_ro("score", &ScoreRecord::score)
+        .def("__eq__",
+             [](const ScoreRecord &a, const ScoreRecord &b) { return a == b; })
+        .def("__repr__", [](const ScoreRecord &r) {
+            return "ScoreRecord(player=" + std::to_string(r.player) +
+                   ", turn=" + std::to_string(r.turn) +
+                   ", score=" + std::to_string(r.score) + ")";
+        });
+
     nb::class_<Tile>(m, "Tile", "A map tile, as the engine sees it (no fog).")
         .def_ro("terrain", &Tile::terrain)
         .def_ro("resource", &Tile::resource)
@@ -297,7 +312,13 @@ void bindGame(nb::module_ &m) {
         .def("tile_y", &Game::tileY, "tile"_a)
         .def("distance", &Game::distance, "a"_a, "b"_a)
         .def("tile_owner", &Game::tileOwner, "tile"_a)
-        .def("score", &Game::score, "player"_a)
+        .def("score", &Game::score, "player"_a,
+             "The live score, which only its own player sees.")
+        .def("published_score", &Game::publishedScore, "player"_a,
+             "The score other players see: from the end of the player's last "
+             "turn.")
+        .def_ro("score_history", &Game::scoreHistory,
+                "Every published score so far, oldest first.")
         .def("income", &Game::income, "player"_a)
         .def("tech_cost", &Game::techCost, "player"_a, "tech"_a)
 
@@ -373,7 +394,11 @@ void bindView(nb::module_ &m) {
         .def_prop_ro("alive", [](const PlayerView &v) { return toVector(v.alive); })
         .def_prop_ro("met", [](const PlayerView &v) { return toVector(v.met); })
         .def_ro("scores", &PlayerView::scores,
-                "Every player's score, met or not: scores are public.")
+                "Every player's score, met or not, as this player sees it: "
+                "their own live, everyone else's from the end of their last "
+                "turn.")
+        .def_ro("score_history", &PlayerView::scoreHistory,
+                "Every published score so far (public), oldest first.")
         .def_prop_ro("tasks_done",
                      [](const PlayerView &v) { return setBits(v.tasksDone); })
         .def_prop_ro("monuments_built",
@@ -446,7 +471,7 @@ void bindSearch(nb::module_ &m) {
 } // namespace
 
 NB_MODULE(_engine, m) {
-    m.doc() = "The stockNavalon Polytopia engine";
+    m.doc() = "polyengine, a Polytopia engine";
     bindEnums(m);
     bindState(m);
     bindMaps(m);

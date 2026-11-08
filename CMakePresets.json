@@ -23,7 +23,7 @@
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "STOCKNAVALON_SANITIZE": "ON"
+                "POLYENGINE_SANITIZE": "ON"
             }
         }
     ],

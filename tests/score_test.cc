@@ -1,5 +1,6 @@
 #include "doctest/doctest.h"
 #include "helpers.h"
+#include "view.h"
 
 using namespace TribeTypes;
 using CommandTypes::EXAMINERUINS;
@@ -219,4 +220,34 @@ TEST_CASE("an Explorer from a ruin needs fog nearby") {
     std::vector<Game::RuinReward> rewards = game.ruinRewards(unit);
     CHECK(std::find(rewards.begin(), rewards.end(), Game::RUIN_EXPLORER) !=
           rewards.end());
+}
+
+TEST_CASE("others see a score only when its player ends their turn") {
+    Game game = makeFogGame(bigMap());
+    int start = game.score(0);
+    // everyone starts out seeing the starting scores
+    CHECK(makeView(game, 1).scores[0] == start);
+    REQUIRE(game.scoreHistory.size() == 2);
+
+    // research changes player 0's live score, which only they see
+    game.apply({CommandTypes::RESEARCH, -1, -1, TechTypes::RIDING});
+    CHECK(game.score(0) == start + 100);
+    CHECK(makeView(game, 0).scores[0] == start + 100);
+    CHECK(makeView(game, 1).scores[0] == start);
+    // with fog off, everything is live
+    CHECK(makeView(game, 1, true).scores[0] == start + 100);
+
+    game.apply({CommandTypes::ENDTURN});
+    CHECK(makeView(game, 1).scores[0] == start + 100);
+    REQUIRE(game.scoreHistory.size() == 3);
+    CHECK(game.scoreHistory.back() == ScoreRecord{0, 0, start + 100});
+
+    // player 1's own changes are live for them, hidden from player 0
+    int theirs = game.score(1);
+    game.players[1].techs.set(TechTypes::TRADE);
+    CHECK(makeView(game, 1).scores[1] == theirs + 300);
+    CHECK(makeView(game, 0).scores[1] == theirs);
+    game.apply({CommandTypes::ENDTURN});
+    CHECK(makeView(game, 0).scores[1] == theirs + 300);
+    CHECK(makeView(game, 0).scoreHistory == game.scoreHistory);
 }

@@ -49,6 +49,10 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
     }
 
     updateAllConnections();
+    // everyone sees the starting scores
+    for (std::size_t i = 0; i < players.size(); i++) {
+        publishScore(static_cast<int>(i));
+    }
     checkMeetings();
     startTurn();
 }
@@ -189,6 +193,9 @@ void Game::startTurn() {
 }
 
 void Game::endTurn() {
+    // the score other players see updates when its player's turn ends
+    publishScore(currentPlayer);
+
     // Pacifist counts the turns without an attack since Meditation
     Player &player = players[currentPlayer];
     if (player.hasTech(TechTypes::MEDITATION)) {

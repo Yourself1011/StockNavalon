@@ -1,6 +1,6 @@
-# StockNavalon
+# stockNavalon
 
-A C++ engine for Polytopia, for training bots: the rules, a playable CLI, a Python package, and building blocks for search.
+stockNavalon is a Polytopia bot (designed in [`docs/stockNavalon.md`](docs/stockNavalon.md), not built yet). This repository also holds **polyengine**, the C++ game engine it's built on: the rules, a playable CLI, a Python package (`polyengine`), and building blocks for search.
 
 ## Setup
 
@@ -75,7 +75,7 @@ The Python tests run against the module just built, not the pip-installed one. T
 
 ## Python
 
-The engine is also a Python package, `stocknavalon`, built with nanobind and scikit-build-core. Install it into the venv (editable):
+The engine is also a Python package, `polyengine`, built with nanobind and scikit-build-core. Install it into the venv (editable):
 
 ```bash
 uv pip install --python .venv/bin/python --no-build-isolation -e .
@@ -84,13 +84,13 @@ uv pip install --python .venv/bin/python --no-build-isolation -e .
 Rerun that after changing C++ code. Then:
 
 ```python
-import stocknavalon as sn
+import polyengine as pe
 
-tribes = [sn.Tribe.IMPERIUS, sn.Tribe.BARDUR]
-game = sn.Game(sn.generate_map(tribes, seed=1), tribes, seed=1)
-game.apply(sn.Command(sn.CommandType.RESEARCH, arg=sn.TechType.RIDING))
-view = sn.make_view(game, 0)          # what player 0 knows
-results = sn.play_random_games(100, tribes)   # loops in C++
+tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
+game = pe.Game(pe.generate_map(tribes, seed=1), tribes, seed=1)
+game.apply(pe.Command(pe.CommandType.RESEARCH, arg=pe.TechType.RIDING))
+view = pe.make_view(game, 0)          # what player 0 knows
+results = pe.play_random_games(100, tribes)   # loops in C++
 ```
 
 A call into the engine costs about as much as a game step (a full step from Python is about 14 µs, against 6 µs in C++), so loops over many games or positions belong in C++ as single calls. The full guide is [`docs/python.md`](docs/python.md).
@@ -101,7 +101,8 @@ A call into the engine costs about as much as a game step (a full step from Pyth
 
 ## Docs
 
+- [`docs/stockNavalon.md`](docs/stockNavalon.md): the design of stockNavalon, the bot (network, search, fog, belief model, training plan)
 - [`docs/cpp.md`](docs/cpp.md): using the engine as a C++ library (linking, commands, fog, `LegalMoves` for search, threads), with compiled examples in `examples/`
-- [`docs/python.md`](docs/python.md): the `stocknavalon` Python package (setup, commands, full API reference, speed)
+- [`docs/python.md`](docs/python.md): the `polyengine` Python package (setup, commands, full API reference, speed)
 - [`src/game/GAME.md`](src/game/GAME.md): the rules spec
 - [`src/game/ENGINE.md`](src/game/ENGINE.md): how the engine implements it, and the assumptions made

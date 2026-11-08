@@ -16,7 +16,10 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         view.tribes.push_back(p.tribe);
         view.alive.push_back(p.alive);
         view.met.push_back(game.players[player].hasMet(other));
-        view.scores.push_back(game.score(other));
+        // others' scores only update when they end their turn
+        view.scores.push_back(everything || other == player
+                                  ? game.score(other)
+                                  : game.publishedScore(other));
 
         // only what this player is part of
         PlayerView::Relation relation;
@@ -31,6 +34,7 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         }
         view.relations.push_back(relation);
     }
+    view.scoreHistory = game.scoreHistory;
     const Player &me = game.players[player];
     view.tasksDone = me.tasksDone;
     view.monumentsBuilt = me.monumentsBuilt;

@@ -55,8 +55,11 @@ struct PlayerView {
     std::vector<bool> alive;
     // tribes this player has met
     std::vector<bool> met;
-    // every player's score, met or not: scores are public
+    // every player's score, met or not, as this player sees it: their own
+    // live, everyone else's from the end of their last turn
     std::vector<int> scores;
+    // every published score so far (public), oldest first
+    std::vector<ScoreRecord> scoreHistory;
 
     // the player's own tasks (GAME.md section 14): done ones unlock their
     // monument, which can be built once

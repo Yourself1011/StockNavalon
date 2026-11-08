@@ -16,7 +16,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `legalMoves.h`: `LegalMoves`, the current player's legal commands kept up to date one command at a time, for search. A node keeps one next to its `Game`. It finds what changed by comparing the states before and after, and regenerates only the unit and tile commands near the changes. It always matches `legalCommands()` as a set; the tests check that after every command on every map type.
 - `mapgen.h`: `generateMap(settings)`, every map type
 - `bots/randomBot.h`: a bot that plays random legal commands
-- `python/bindings.cc` (outside `src/`): the Python module `stocknavalon`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine as a static library for it.
+- `python/bindings.cc` (outside `src/`): the Python module `polyengine`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine as a static library for it.
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic
 - `data/`: unit, tech, improvement and tribe tables
 - `map.h`: the map file format
@@ -27,7 +27,7 @@ Everything in GAME.md for the 12 regular tribes:
 
 - **Core game:** turns, stars and income, techs (cost, Literacy, backwards research), every improvement and harvest, Destroy, all units and boats, movement (roads, forest and mountain stops, zone of control, embark, disembark), combat (formula, retaliation, splash, stomp, Persist, Escape, conversion, infiltration), healing, veterans, unit cap, villages and capture, level-up rewards, borders, road and port connections (including the shared neutral road rule), siege, Giant pushes, Might and Domination wins, elimination, Resign.
 - **Fog of war:** per-player exploration (the 5x5 start, unit sight of 1 or 2, borders always revealed), commands only on explored tiles, Hide (invisible after moving, no Dash on the move that hides it, moves through enemies and enemy cities but never stops on one, revealed by capturing or by an enemy moving onto it, the eye warning), no retaliation against unseen attackers, no connections through unexplored tiles, hidden resources, lighthouses, the Explorer, and the per-player view.
-- **Score** (the starting scores of every tribe match GAME.md section 3), the star bonus for meeting a tribe, and ruins.
+- **Score** (the starting scores of every tribe match GAME.md section 3), published to other players at the end of each turn with the full public history (`Game::scoreHistory`), the star bonus for meeting a tribe, and ruins.
 - **Tasks and monuments:** all 7 tasks, each unlocking its monument.
 - **Diplomacy:** peace treaties (propose, answer, break), embassies (build, income, vision, destroy), Capital Vision.
 - **Map generation:** all 6 map types, following each type's steps in GAME.md section 18 and its defaults until verified.
@@ -74,7 +74,7 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 
 ### Score, meeting and ruins
 
-- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities. Only the player who sees gets the bonus; the other meets them when they see back. The bonus uses the met tribe's score at that moment.
+- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities. Only the player who sees gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one.
 - **Converted units** keep counting for the score of the player who first had them, and come off that score when they die.
 - **Examining a ruin** works like capturing: the unit must have started its turn on the ruin and not moved or attacked yet (the game confirms the first part). It ends the unit's turn. A hidden unit stays hidden.
 - **Ruin rewards:** the free tech is a random researchable one; the population reward needs the player to hold their capital.
