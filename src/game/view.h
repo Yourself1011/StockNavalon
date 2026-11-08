@@ -14,7 +14,11 @@ struct PlayerView {
         // NONE until the player can see that kind of resource
         ResourceTypes::ResourceType resource = ResourceTypes::NONE;
         ImprovementTypes::ImprovementType building = ImprovementTypes::NONE;
+        // Windmill, Sawmill or Forge level, or a temple's level (visible for
+        // every temple the player can see, whoever owns it)
         int level = 0;
+        // temples: turns until the next level, 0 at the top level
+        int turnsToLevelUp = 0;
         bool road = false;
         // the player whose borders contain it, -1 if none
         int owner = -1;

@@ -102,6 +102,7 @@ A call into the engine costs about as much as a game step (a full step from Pyth
 ## Docs
 
 - [`docs/stockNavalon.md`](docs/stockNavalon.md): the design of stockNavalon, the bot (network, search, fog, belief model, training plan)
+- [`docs/encoding.md`](docs/encoding.md): the spec for encoding states and commands as arrays for the network
 - [`docs/cpp.md`](docs/cpp.md): using the engine as a C++ library (linking, commands, fog, `LegalMoves` for search, threads), with compiled examples in `examples/`
 - [`docs/python.md`](docs/python.md): the `polyengine` Python package (setup, commands, full API reference, speed)
 - [`src/game/GAME.md`](src/game/GAME.md): the rules spec

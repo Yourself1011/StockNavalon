@@ -346,7 +346,10 @@ void bindView(nb::module_ &m) {
         .def_ro("terrain", &PlayerView::TileView::terrain)
         .def_ro("resource", &PlayerView::TileView::resource)
         .def_ro("building", &PlayerView::TileView::building)
-        .def_ro("level", &PlayerView::TileView::level)
+        .def_ro("level", &PlayerView::TileView::level,
+                "Windmill, Sawmill or Forge level, or a temple's level")
+        .def_ro("turns_to_level_up", &PlayerView::TileView::turnsToLevelUp,
+                "Temples: turns until the next level, 0 at the top level")
         .def_ro("road", &PlayerView::TileView::road)
         .def_ro("owner", &PlayerView::TileView::owner)
         .def_ro("unit", &PlayerView::TileView::unit)

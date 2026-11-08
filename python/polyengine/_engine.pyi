@@ -633,7 +633,12 @@ class PlayerView:
         def building(self) -> ImprovementType: ...
 
         @property
-        def level(self) -> int: ...
+        def level(self) -> int:
+            """Windmill, Sawmill or Forge level, or a temple's level"""
+
+        @property
+        def turns_to_level_up(self) -> int:
+            """Temples: turns until the next level, 0 at the top level"""
 
         @property
         def road(self) -> bool: ...

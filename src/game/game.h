@@ -201,6 +201,8 @@ class Game {
     void publishScore(int player);
     int unitScore(const Unit &unit) const;
     int templeLevel(int tile) const;
+    // turns until the temple gains its next level, 0 at the top level
+    int templeTurnsToLevelUp(int tile) const;
     // the stars for meeting a tribe with this score
     static int meetingBonus(int score);
     // meets every tribe the player can now see; called after every command

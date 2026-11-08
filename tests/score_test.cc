@@ -251,3 +251,21 @@ TEST_CASE("others see a score only when its player ends their turn") {
     CHECK(makeView(game, 0).scores[1] == theirs + 300);
     CHECK(makeView(game, 0).scoreHistory == game.scoreHistory);
 }
+
+TEST_CASE("a temple's level and next level-up are visible to everyone") {
+    Game game = makeGame(bigMap());
+    int tile = game.index(3, 3);
+    game.tiles[tile].building = ImprovementTypes::TEMPLE;
+    game.tiles[tile].builtTurn = game.turn;
+    for (int player : {0, 1}) {
+        PlayerView::TileView t = makeView(game, player).tiles[tile];
+        CHECK(t.level == 1);
+        CHECK(t.turnsToLevelUp == 2);
+    }
+    game.turn += 3;
+    CHECK(makeView(game, 1).tiles[tile].level == 2);
+    CHECK(makeView(game, 1).tiles[tile].turnsToLevelUp == 1);
+    game.turn += 20;
+    CHECK(makeView(game, 1).tiles[tile].level == 5);
+    CHECK(makeView(game, 1).tiles[tile].turnsToLevelUp == 0);
+}

@@ -263,9 +263,17 @@ void printTile(const Game &game, int tile, int viewer, bool everything) {
     }
     const Tile &t = game.tiles[tile];
     std::cout << "Terrain " << TerrainTypes::terrainChars[t.terrain]
-              << ", building " << improvementInfo(t.building).name
-              << (t.road ? ", road" : "") << ", owner "
-              << game.tileOwner(tile) << '\n';
+              << ", building " << improvementInfo(t.building).name;
+    if (isTemple(t.building)) {
+        std::cout << " (level " << game.templeLevel(tile);
+        if (game.templeTurnsToLevelUp(tile) > 0) {
+            std::cout << ", next in " << game.templeTurnsToLevelUp(tile)
+                      << " turns";
+        }
+        std::cout << ")";
+    }
+    std::cout << (t.road ? ", road" : "") << ", owner " << game.tileOwner(tile)
+              << '\n';
     const Unit *unit = game.unitAt(tile);
     if (unit && (everything || game.canSee(viewer, *unit))) {
         std::cout << "Player " << unit->owner << "'s " << unit->data().name;

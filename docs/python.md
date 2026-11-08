@@ -143,7 +143,7 @@ What the player knows. `everything=True` ignores fog.
 - **`score_history`:** every score published so far, oldest first, as `ScoreRecord`s (`player`, `turn`, `score`): the starting scores, then one each time a player ends a turn. Changes between a player's records are evidence of what they did, like a +300 for a tier-3 tech.
 - **Own tasks:** `tasks_done`, `monuments_built`, `kills`, `peaceful_turns`, `lighthouses_found`.
 - **`relations[p]`:** `peace`, `they_asked`, `we_asked`, `our_embassy`, `their_embassy`.
-- **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level`, `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.
+- **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level` (Windmill, Sawmill or Forge level, or a temple's level, which everyone can see), `turns_to_level_up` (temples: turns until the next level), `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.
 - **`units`:** `type`, `passenger`, `owner`, `tile`, `hp`, `max_hp`, `kills`, `veteran`, `hidden`. For the player's own units only, also `can_move`, `can_attack`, `can_act`, `hidden_enemy_near`.
 - **`cities`:** `tile`, `owner`, `level`, `population`, `capital_of`, `wall`.
 

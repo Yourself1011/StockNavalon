@@ -11,6 +11,15 @@ int Game::templeLevel(int tile) const {
     return std::min(MAX_TEMPLE_LEVEL, 1 + (turn - tiles[tile].builtTurn) / 2);
 }
 
+int Game::templeTurnsToLevelUp(int tile) const {
+    int level = templeLevel(tile);
+    if (level >= MAX_TEMPLE_LEVEL) {
+        return 0;
+    }
+    // level n is reached on turn builtTurn + 2 (n - 1)
+    return tiles[tile].builtTurn + 2 * level - turn;
+}
+
 int Game::score(int player) const {
     int total = 0;
     for (const Unit &unit : units) {

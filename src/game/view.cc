@@ -57,6 +57,10 @@ PlayerView makeView(const Game &game, int player, bool everything) {
         }
         tv.building = t.building;
         tv.level = t.level;
+        if (isTemple(t.building)) {
+            tv.level = game.templeLevel(tile);
+            tv.turnsToLevelUp = game.templeTurnsToLevelUp(tile);
+        }
         tv.road = t.road;
         tv.owner = game.tileOwner(tile);
 
