@@ -16,6 +16,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `legalMoves.h`: `LegalMoves`, the current player's legal commands kept up to date one command at a time, for search. A node keeps one next to its `Game`. It finds what changed by comparing the states before and after, and regenerates only the unit and tile commands near the changes. It always matches `legalCommands()` as a set; the tests check that after every command on every map type.
 - `mapgen.h`: `generateMap(settings)`, every map type
 - `bots/randomBot.h`: a bot that plays random legal commands, the CLI's opponent and a test driver
+- `cli.h`: the command-line game, with any bot in the `--bot` seats; `main.cc` runs it with the random bot, and `src/stockNavalon/main.cc` with stockNavalon
 - stockNavalon's own code (the encoding, tribe inference) is in `src/stockNavalon/`, outside the engine. The engine never includes it.
 - `python/bindings.cc` (outside `src/`): the Python module `polyengine`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine (`engine`) and stockNavalon (`stocknavalon`) as static libraries for it.
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic

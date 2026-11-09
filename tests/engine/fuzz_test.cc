@@ -3,47 +3,6 @@
 #include "mapgen.h"
 #include <random>
 
-namespace {
-void checkInvariants(const Game &game) {
-    for (std::size_t t = 0; t < game.tiles.size(); t++) {
-        int unit = game.tiles[t].unit;
-        if (unit >= 0) {
-            REQUIRE(game.units[unit].alive);
-            REQUIRE(game.units[unit].tile == static_cast<int>(t));
-        }
-    }
-    for (std::size_t i = 0; i < game.units.size(); i++) {
-        const Unit &unit = game.units[i];
-        if (!unit.alive) {
-            continue;
-        }
-        REQUIRE(game.tiles[unit.tile].unit == static_cast<int>(i));
-        REQUIRE(game.explored(unit.owner, unit.tile));
-        REQUIRE(unit.hp > 0);
-        REQUIRE(unit.hp <= unit.maxHp);
-        REQUIRE(game.players[unit.owner].alive);
-        // a bridge holds land units and boats alike
-        const Tile &tile = game.tiles[unit.tile];
-        bool water = TerrainTypes::isWater(tile.terrain);
-        if (!(water && tile.road)) {
-            REQUIRE(unit.isNaval() == water);
-        }
-    }
-    for (std::size_t i = 0; i < game.cities.size(); i++) {
-        const City &city = game.cities[i];
-        REQUIRE(game.tiles[city.tile].building == ImprovementTypes::CITY);
-        REQUIRE(game.tiles[city.tile].territory == static_cast<int>(i));
-        for (std::size_t t = 0; t < game.tiles.size(); t++) {
-            if (game.tiles[t].territory == static_cast<int>(i)) {
-                REQUIRE(game.explored(city.owner, static_cast<int>(t)));
-            }
-        }
-    }
-    for (const Player &player : game.players) {
-        REQUIRE(player.stars >= 0);
-    }
-}
-} // namespace
 
 TEST_CASE("random games keep the state consistent") {
     MapData fixed = loadMap("src/engine/map.txt");

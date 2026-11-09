@@ -137,6 +137,7 @@ void Game::build(int tile, ImprovementType type) {
     case ROAD:
     case BRIDGE:
         t.road = true;
+        t.roadBuilder = currentPlayer;
         updateAllConnections();
         return;
     default:

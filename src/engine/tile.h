@@ -15,8 +15,10 @@ struct Tile {
     int level = 0;
     // the turn a temple was built, for its level
     int builtTurn = 0;
-    // road or bridge
+    // road or bridge, and the player who built it (-1 for one the map
+    // started with)
     bool road = false;
+    int roadBuilder = -1;
     // index into Game::units, -1 if empty
     int unit = -1;
     // index into Game::cities of the city whose borders contain this tile, -1

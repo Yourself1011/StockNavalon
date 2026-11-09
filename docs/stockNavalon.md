@@ -146,6 +146,23 @@ How far ahead the tree reaches is an open design choice, so the search makes it 
 
 Then measure which horizon gives the most strength per unit of compute, by playing the options against each other. The threat map (section 2) helps whichever wins.
 
+### 3.6 Implemented: stage 1 (**Done, first version**)
+
+`src/stockNavalon/search.h`:
+- **`BatchedSearch`** runs many searches at once. Each decision gets `samples` determinized games (section 4.3), each with its own tree, and their root visits are added up. Every tree walks down until it needs an evaluation, and `pending()` hands all waiting positions to the evaluator together; `submit()` continues. `run(search, evaluator)` and `search(game, ...)` wrap the loop.
+- **Nodes** keep their `Game` and `LegalMoves`. Selection is PUCT (section 3.2), with unvisited moves at `Q` = 0, and a child's legal list comes from its parent's.
+- **Across turns:** the horizon (section 3.5) is a setting: the number of turn changes a line may cross before it's scored without looking further. Values are for the player to move, and flip when backed up past a turn change. A finished game is +1 or −1.
+- **Determinization detail:** with a horizon past the player's own turn, samples match the opponent's score (`Detail::EVERYTHING`); within it, tiles and units are enough.
+- **Self-play options:** Dirichlet noise on the root priors, and `SearchResult::choose` with a temperature.
+- **Until there's a network,** `ScoreEvaluator` stands in: uniform priors, and the score lead squashed into [−1, 1].
+- **Not yet:** tree reuse between decisions (a new determinization each time), and the Python side of the batched loop, which comes with the model.
+
+**Tests** (`tests/stockNavalon/search_test.cc`): it takes a win on the spot at value 1; one turn further, it sees an unstoppable capture as a loss on every move, which the player's own turn alone can't; it finds the attack that stops that capture; and root visits and seeds behave.
+
+**What the score evaluator shows** (`examples/search_vs_random`): against the random bot, search plays about as well as the one-ply greedy bot (ahead on score in most games by turn 20, rarely winning), at about 1 to 3 ms a decision. Two limits explain it, and both are the network's job:
+- **The horizon effect within a turn.** With uniform priors, a turn's dozens of commands spread the simulations thin, and a position mid-turn is scored before the opponent has moved. So a line that hasn't ended its turn can't see a loss coming, and looks better than ending the turn, which does. The value head has to judge mid-turn positions knowing what the opponent can do next, and the policy has to narrow the turn.
+- **No sense of attack.** The score rewards capturing a capital only once it happens.
+
 ## 4. Fog of war
 
 ### 4.1 The problem
@@ -464,7 +481,13 @@ Later steps depend on earlier ones:
 1. **Enemy cities.** Their capital is copied if it's been seen (Capital Vision included), otherwise sampled. Then the number of other cities, their locations, and each city's level are sampled, with borders claimed over unexplored tiles only. Explored tiles keep the ownership the player sees.
 2. **Unexplored terrain:** terrain and resource per tile, villages and ruins on legal, spaced-out tiles.
 3. **The tribe**, if not met yet: sampled from the belief model, among the tribes still possible. That set is worked out exactly from their starting score and published score changes, and from the climates seen ([`tribeInference.md`](tribeInference.md)). A starting score of 730 means Vengir or Ai-Mo, 515 one of five tribes (GAME.md section 3). The tribe fixes their starting tech and unit, so it comes before techs.
-4. **Techs:** sampled down the tech tree, parents before children, starting from the tribe's starting tech. Every tech the player has proof of is forced in: a Knight seen means Chivalry, a Windmill means Construction.
+4. **Techs:** sampled down the tech tree, parents before children, starting from the tribe's starting tech. Techs the player has proof of are forced in, with their ancestors (owning a tech means its parent chain was owned, back to a tech already held). A proof has to be certain, since nothing can outweigh it. Anything merely likely is left to the belief head, which learns from games how often each explanation happens.
+    - **Their units** prove a tech once more of them need it than other explanations can cover. A unit can come without the tech in two ways. It can be converted from the player, who knows exactly which units they lost (`PlayerView::convertedAway`). Or it can be a ruin's soldier: only a veteran Swordsman, or a Rammer carrying a veteran Warrior, and no more of them than the ruins they could have reached (the map's ruins less those the player still sees). So a veteran Archer proves Archery (it was promoted by kills), and more veteran Swordsmen than ruins prove Smithery.
+    - **A building in their city** proves its tech, since buildings need their builder's own territory. The exception is a city the player might once have held (they've stood on it).
+    - **A road the player didn't build** proves Roads (a bridge too), on a map that started without roads. The player knows which roads are theirs (`TileView::ownRoad`).
+    - **With three or more players,** none of these prove anything: a unit could be converted from a third player the player has never seen, a city captured from one, a road or a hidden unit be theirs. Those cases are left to the beliefs.
+    - **A monument in their own city** proves its task, and Genius, Wealth and Pacifist prove their techs.
+    - **A hidden-unit warning** proves the tech for hidden units, in 1v1 only.
 5. **Hidden units:**
     1. Remove every enemy unit the player can't see.
     2. Sample how many hidden units there are, from the count head.
@@ -492,6 +515,28 @@ In stage 2, `determinize()` runs once per simulation, so it only samples what th
 
 - **Tiles and hidden units only:** enough for own-turn search, which never reads the opponent's stars, techs or private state. Those stay at neutral values that nothing looks at.
 - **Everything:** needed once the search crosses into the opponent's turn.
+
+#### Implemented: the first version
+
+`src/stockNavalon/determinize.h`: `determinize(real, player, beliefs, seed, detail)`, with `priorBeliefs(view)` standing in for the network until there is one. It follows the steps above, with these simplifications for now:
+
+- **Two-player games only.**
+- **Unexplored tiles** come from a freshly generated map of the same type and tribes, ignoring what's been seen: a lake cut off by the fog doesn't continue into it, and villages near the explored edge can break the spacing rules. The tiles at the fog's edge are the ones the search reveals next, so this matters; the unexplored-terrain belief head (section 5.3) is the proper fix. Their climate is the nearest capital's, by the engine's own rule (`Game::nearestCapitalSeat`).
+- **Enemy cities in the fog:** the capital is placed where their starting score allows (`possibleCapitalTiles`, from tribe inference). Other fogged cities stay only if the player has seen some of their borders, placed within reach of those. Cities with no evidence are dropped, until there's a city head. A fogged city's level is a rough prior, and its population and parks start at 0.
+- **Hidden units:**
+  - **On explored tiles** (the Hide skill: Cloaks, Dinghies), the player only gets a warning on their own units next to one. They're resampled under exactly that: a hidden unit next to every warned unit, none next to an unwarned one. A warning also proves the tech for hidden units. Hidden units next to none of the player's units aren't sampled, since nothing shows them.
+  - **In the fog:** any type their techs allow on the tile's terrain, and at sea the boat a land unit would be in (a Raft or an upgrade they could have), weighted by the beliefs.
+- **Fitting the score:** when the sample's score is further below the published one than exploring every remaining tile could make up, researchable techs are added, weighted by the beliefs, until exploration covers the rest. Without that, the prior's techs missed by far mid-game, and most draws were rejected.
+- **Not repaired yet:** city connections aren't recomputed, and unit caps aren't checked.
+- **Canonical order:** units and cities are renumbered by tile, so the sample carries nothing of the order things happened in.
+
+**Tests** (`tests/stockNavalon/determinize_test.cc`), on random games of every map type:
+- **Valid and consistent:** about 180 samples encode exactly like the real game from the player's side, match the opponent's published score, pass the engine's invariant checks, and survive 100 random commands each.
+- **No leaks:** pairs of games differing only in hidden things (the opponent's stars and techs, unexplored terrain, a unit moved within the fog) give identical samples from the same seed. So do two games with a hidden Cloak on different tiles next to the same warned unit, and the warning stays in the sample.
+
+**Speed:** 60 to 250 µs a call, rejected draws included. Fine for stage 1's few samples per move. Stage 2 also evaluates the network once per simulation, which is likely the same order of time, so this isn't a bottleneck, but most of it is waste: a fresh map is generated for every draw.
+
+**Rejection rate with the prior:** about 60% of draws, mostly on turn 0, where the prior's hidden units outscore a starting position. The parts are drawn independently and then checked against the score. Drawing them within the remaining score budget, as already done for techs when the score is too low, would make rejections rare.
 
 #### How hidden units relate to the threat map
 
@@ -590,6 +635,23 @@ while not search.done():
 
 Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ for fast play without Python. The search wouldn't change.
 
+### 6.3 What the game shows, and what the player remembers (**To do**)
+
+Some `PlayerView` fields aren't on the real game's screen: they're the player's memory. In self-play the engine fills them in directly, which matches a perfect memory. Playing the real game, the bot has to keep them itself:
+
+| Field | What it is | Kept from |
+| --- | --- | --- |
+| `tiles[t].ownRoad` | roads the player built | their own Build commands |
+| `scoreHistory` | every published score | the scores, read after every turn |
+| `effectsSincePublished`, `effectsInLastChange`, `effectsInChanges` | what the player's actions did to others' scores | their own kills and captures, as seen |
+| `attackedOnTurns` | turns they were attacked | HP their units and cities lost on the opponent's turn |
+| `convertedAway` | their units taken by conversion | one of their units turning into the opponent's on the same tile |
+| `firstOccupied` | the first turn their units or cities stood on each tile | their own units' positions after each command |
+
+Task progress (kills, peaceful turns, lighthouses found) and units' kill counts are shown by the game, so they aren't memory.
+
+**Plan:** move these into a `PlayerMemory` part of the view, with an `updateMemory(memory, previous view, view, own commands)` built only from what the player sees and does. A test then plays self-play games and checks, after every command, that this memory equals what the engine gives. That proves the bot can keep it up in the real game, and catches any memory field that secretly needs hidden information.
+
 ## 7. Training (**Proposed**)
 
 1. **Plumbing:** the batched search with a dummy network (uniform priors, value 0), against the random bot, on determinized games with the baseline sampler.
@@ -613,8 +675,8 @@ Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ 
 ## 9. Build order
 
 1. ~~Command numbering and state encoding, including the threat map, as specified in [`encoding.md`](encoding.md), with its tests.~~ **Done.**
-2. `determinize()` with the baseline beliefs, plus the leak test. Fast enough to call per simulation (section 4.4).
-3. The batched search (stage 1), with a dummy network to test the plumbing: across turn boundaries, with the horizon as a setting, and child lookup through one function keyed by the move.
+2. ~~`determinize()` with the baseline beliefs, plus the leak test.~~ **Done**, as a first version (section 5.5). Not yet fast enough to call per simulation (section 4.4).
+3. ~~The batched search (stage 1), with a dummy network to test the plumbing: across turn boundaries, with the horizon as a setting.~~ **Done**, with the score evaluator standing in (section 3.6).
 4. Recording (view, hidden truth) pairs from bot games, for the belief heads.
 5. A first PyTorch model with all heads, and the bootstrap training.
 6. The self-play loop.

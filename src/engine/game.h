@@ -76,6 +76,8 @@ class Game {
     // player by seeing those, so the player can bound when that could have
     // been.
     std::vector<int> firstOccupied;
+    // whether the map had roads before anyone built one
+    bool startedWithRoads = false;
     // random number state, part of the game so copies stay deterministic
     std::uint64_t rng;
 
@@ -117,6 +119,10 @@ class Game {
     Unit *unitAt(int tile);
     int cityAt(int tile) const;
     int cityCount(int player) const;
+    // The seat whose capital (a tile per seat, -1 for none) is nearest the
+    // tile, the lowest seat on a tie: the climate region of a tile a map
+    // doesn't place
+    int nearestCapitalSeat(int tile, const std::vector<int> &capitals) const;
     bool besieged(int city) const;
     // units supported by the city, toward its cap (Rules::unitCap)
     int unitCount(int city) const;
@@ -222,7 +228,6 @@ class Game {
     int templeLevel(int tile) const;
     // turns until the temple gains its next level, 0 at the top level
     int templeTurnsToLevelUp(int tile) const;
-    // the stars for meeting a tribe with this score
     // meets every tribe the player can now see; called after every command
     void checkMeetings();
 

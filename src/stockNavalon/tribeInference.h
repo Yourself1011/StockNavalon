@@ -9,6 +9,7 @@
 
 #include "data/tribeData.h"
 #include <bitset>
+#include <vector>
 
 class Game;
 struct PlayerView;
@@ -44,6 +45,13 @@ TribeSet tribesWithStartingScore(int score);
 // explored (9 to 25), or -1 if no number fits. It says where their capital
 // is: 25 at least 2 tiles from every edge, fewer near an edge or a corner.
 int startingExplored(TribeTypes::Tribe tribe, int score);
+
+// Where the opponent's capital could be, if they're this tribe: tiles the
+// player hasn't explored whose distances to the edges fit the starting
+// square their starting score implies (empty if the score doesn't fit the
+// tribe)
+std::vector<int> possibleCapitalTiles(const PlayerView &view, int opponent,
+                                      TribeTypes::Tribe tribe);
 
 // The search alone: could a player of `tribe` have produced the opponent's
 // published score changes so far? Only for two-player games; otherwise, and

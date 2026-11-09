@@ -197,6 +197,8 @@ void bindState(nb::module_ &m) {
         .def_ro("building", &Tile::building)
         .def_ro("level", &Tile::level)
         .def_ro("road", &Tile::road)
+        .def_ro("road_builder", &Tile::roadBuilder,
+                "The player who built the road, -1 for one the map started with.")
         .def_ro("unit", &Tile::unit)
         .def_ro("territory", &Tile::territory)
         .def_ro("climate", &Tile::climate,
@@ -375,6 +377,8 @@ void bindView(nb::module_ &m) {
         .def_ro("climate", &PlayerView::TileView::climate,
                 "The tribe whose climate the tile is in")
         .def_ro("road", &PlayerView::TileView::road)
+        .def_ro("own_road", &PlayerView::TileView::ownRoad,
+                "A road this player built themselves.")
         .def_ro("owner", &PlayerView::TileView::owner)
         .def_ro("unit", &PlayerView::TileView::unit)
         .def_ro("city", &PlayerView::TileView::city);
@@ -438,6 +442,8 @@ void bindView(nb::module_ &m) {
         .def_ro("effects_in_changes", &PlayerView::effectsInChanges,
                 "Per score_history record: what this player's own actions "
                 "visibly did to the publisher's score within that change.")
+        .def_ro("converted_away", &PlayerView::convertedAway,
+                "This player's units taken by conversion: (type, passenger).")
         .def_ro("attacked_on_turns", &PlayerView::attackedOnTurns,
                 "The turns this player's units or cities were attacked.")
         .def_ro("first_occupied", &PlayerView::firstOccupied,

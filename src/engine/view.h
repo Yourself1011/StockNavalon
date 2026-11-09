@@ -23,6 +23,8 @@ struct PlayerView {
         // the tribe whose climate the tile is in
         std::optional<TribeTypes::Tribe> climate;
         bool road = false;
+        // a road this player built themselves
+        bool ownRoad = false;
         // the player whose borders contain it, -1 if none
         int owner = -1;
         // index into units, -1 if no visible unit
@@ -87,6 +89,8 @@ struct PlayerView {
     int kills, peacefulTurns, lighthousesFound;
     // the turns the player's units or cities were attacked: they always know
     std::vector<int> attackedOnTurns;
+    // the player's units taken by conversion: type and passenger
+    std::vector<std::pair<UnitTypes::UnitType, UnitTypes::UnitType>> convertedAway;
     // the first turn one of the player's units or cities stood on each tile,
     // -1 for never
     std::vector<int> firstOccupied;

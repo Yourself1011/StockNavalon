@@ -28,6 +28,8 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
         player.techs.set(tribe.startTech);
     }
     firstOccupied.assign(players.size() * size * size, -1);
+    startedWithRoads = std::any_of(tiles.begin(), tiles.end(),
+                                   [](const Tile &t) { return t.road; });
 
     for (std::size_t i = 0; i < tribes.size(); i++) {
         const TribeData &tribe = tribeData[tribes[i]];
@@ -54,14 +56,7 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
     for (int t = 0; t < size * size; t++) {
         int seat = map.regions.empty() ? -1 : map.regions[t];
         if (seat < 0) {
-            int nearest = size;
-            for (std::size_t p = 0; p < map.capitals.size(); p++) {
-                int d = distance(t, map.capitals[p]);
-                if (d < nearest) {
-                    nearest = d;
-                    seat = static_cast<int>(p);
-                }
-            }
+            seat = nearestCapitalSeat(t, map.capitals);
         }
         if (seat >= 0 && seat < static_cast<int>(tribes.size())) {
             tiles[t].climate = tribes[seat];
@@ -102,6 +97,21 @@ int Game::cityAt(int tile) const {
     return tiles[tile].building == ImprovementTypes::CITY
                ? tiles[tile].territory
                : -1;
+}
+
+int Game::nearestCapitalSeat(int tile, const std::vector<int> &capitals) const {
+    int seat = -1, nearest = size;
+    for (std::size_t p = 0; p < capitals.size(); p++) {
+        if (capitals[p] < 0) {
+            continue;
+        }
+        int d = distance(tile, capitals[p]);
+        if (d < nearest) {
+            nearest = d;
+            seat = static_cast<int>(p);
+        }
+    }
+    return seat;
 }
 
 int Game::cityCount(int player) const {

@@ -52,6 +52,7 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     view.peacefulTurns = me.peacefulTurns;
     view.lighthousesFound = me.lighthousesFound;
     view.attackedOnTurns = me.attackedOnTurns;
+    view.convertedAway = me.convertedAway;
     int count = game.size * game.size;
     view.firstOccupied.assign(game.firstOccupied.begin() + player * count,
                               game.firstOccupied.begin() + (player + 1) * count);
@@ -79,6 +80,7 @@ PlayerView makeView(const Game &game, int player, bool everything) {
             tv.turnsToLevelUp = game.templeTurnsToLevelUp(tile);
         }
         tv.road = t.road;
+        tv.ownRoad = t.road && t.roadBuilder == player;
         tv.owner = game.tileOwner(tile);
 
         int city = game.cityAt(tile);

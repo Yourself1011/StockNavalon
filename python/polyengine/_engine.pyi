@@ -387,6 +387,10 @@ class Tile:
     def road(self) -> bool: ...
 
     @property
+    def road_builder(self) -> int:
+        """The player who built the road, -1 for one the map started with."""
+
+    @property
     def unit(self) -> int: ...
 
     @property
@@ -661,6 +665,10 @@ class PlayerView:
         def road(self) -> bool: ...
 
         @property
+        def own_road(self) -> bool:
+            """A road this player built themselves."""
+
+        @property
         def owner(self) -> int: ...
 
         @property
@@ -808,6 +816,10 @@ class PlayerView:
         """
         Per score_history record: what this player's own actions visibly did to the publisher's score within that change.
         """
+
+    @property
+    def converted_away(self) -> list["std::__1::pair<UnitTypes::UnitType, UnitTypes::UnitType>"]:
+        """This player's units taken by conversion: (type, passenger)."""
 
     @property
     def attacked_on_turns(self) -> list[int]:

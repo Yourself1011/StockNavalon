@@ -30,9 +30,10 @@ cmake --build --preset dev
 ```
 
 Each builds:
-- `final_program`: the CLI
+- `final_program`: the CLI, against the random bot
+- `play_stocknavalon`: the same CLI, against stockNavalon
 - `run_tests`: the C++ tests
-- `random_game` and `one_ply_search`: the examples
+- `random_game`, `one_ply_search` and `search_vs_random`: the examples
 - the Python module (into `build/<preset>/python`), when the venv has nanobind
 
 The configure step (`cmake --preset ...`) only needs rerunning when the build setup changes. New source files are picked up on the next build.
@@ -63,6 +64,18 @@ The Python tests run against the module just built, not the pip-installed one. T
 ```bash
 ./build/release/final_program lakes Imperius Bardur --bot 1 --seed 7
 ```
+
+### Playing stockNavalon
+
+`play_stocknavalon` is the same CLI, with stockNavalon in the `--bot` seats instead of the random bot:
+
+```bash
+./build/release/play_stocknavalon lakes Imperius Bardur --size 11 --bot 1
+```
+
+- **Fair play:** it searches on determinized games, so it only knows what its own player could.
+- **Its options:** `--simulations N` per determinized game (default 200), `--samples N` determinized games per command (default 4), and `--horizon N`, the turn changes its search looks across (default 1, so it considers your reply).
+- **How it plays for now:** until it has a trained network it judges positions by the score lead, so expect it to build up score rather than attack. A turn takes it about a third of a second.
 
 ### CLI commands
 

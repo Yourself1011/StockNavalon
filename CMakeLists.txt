@@ -36,8 +36,9 @@ add_library(engine STATIC ${ENGINE_SOURCES})
 target_include_directories(engine PUBLIC src/engine)
 polyengine_warnings(engine)
 
-# stockNavalon, the bot, built on the engine
+# stockNavalon, the bot, built on the engine (its CLI's main left out)
 file(GLOB_RECURSE BOT_SOURCES CONFIGURE_DEPENDS src/stockNavalon/*.cc)
+list(FILTER BOT_SOURCES EXCLUDE REGEX ".*/main\\.cc$")
 add_library(stocknavalon STATIC ${BOT_SOURCES})
 target_include_directories(stocknavalon PUBLIC src/stockNavalon)
 target_link_libraries(stocknavalon PUBLIC engine)
@@ -89,6 +90,15 @@ foreach(example random_game one_ply_search)
     target_link_libraries(${example} PRIVATE engine)
     polyengine_warnings(${example})
 endforeach()
+# Play against stockNavalon (README "Run")
+add_executable(play_stocknavalon src/stockNavalon/main.cc)
+target_link_libraries(play_stocknavalon PRIVATE stocknavalon)
+polyengine_warnings(play_stocknavalon)
+
+# and of stockNavalon's search
+add_executable(search_vs_random examples/search_vs_random.cc)
+target_link_libraries(search_vs_random PRIVATE stocknavalon)
+polyengine_warnings(search_vs_random)
 
 # Tests, run with ctest. Both run from the repo root, where the fixed map
 # file is.

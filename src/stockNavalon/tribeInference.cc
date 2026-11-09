@@ -1306,6 +1306,17 @@ int searchModelScore(const Game &game, int player) {
            Rules::EXPLORED_SCORE * s.explored;
 }
 
+std::vector<int> possibleCapitalTiles(const PlayerView &view, int opponent,
+                                      TribeTypes::Tribe tribe) {
+    int startingScore;
+    changesOf(view, opponent, startingScore);
+    int explored = startingScore < 0 ? -1 : startingExplored(tribe, startingScore);
+    if (explored < 0) {
+        return {};
+    }
+    return capitalCandidates(view, startShapes(explored));
+}
+
 bool scoreChangesFit(const PlayerView &view, int opponent,
                      TribeTypes::Tribe tribe,
                      const TribeInferenceConfig &config) {

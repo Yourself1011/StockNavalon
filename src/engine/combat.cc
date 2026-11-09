@@ -145,6 +145,7 @@ void Game::convert(int unitIdx, int targetIdx) {
     Unit &unit = units[unitIdx];
     Unit &target = units[targetIdx];
     onAttack(unit.owner, target.owner);
+    players[target.owner].convertedAway.push_back({target.type, target.passenger});
     target.owner = unit.owner;
     target.home = -1;
     markOccupied(unit.owner, target.tile);

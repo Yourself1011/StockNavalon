@@ -3,10 +3,12 @@
 #include "data/improvementData.h"
 #include "data/techData.h"
 #include "data/tribeData.h"
+#include "data/unitData.h"
 #include <array>
 #include <bitset>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace TaskTypes {
@@ -58,6 +60,9 @@ struct Player {
     bool attackedThisTurn = false;
     // the turns this player's units or cities were attacked, oldest first
     std::vector<int> attackedOnTurns;
+    // this player's units taken by conversion (Mind Benders): type and
+    // passenger, oldest first
+    std::vector<std::pair<UnitTypes::UnitType, UnitTypes::UnitType>> convertedAway;
 
     // diplomacy, one bit per other player: a peace treaty with them, a
     // peace request from them waiting for an answer, an embassy in their
