@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "legalMoves.h"
 #include "mapgen.h"
+#include "tribeInference.h"
 #include "view.h"
 #include <set>
 #include <sstream>
@@ -89,7 +90,7 @@ Game scrambleHidden(const Game &game, int viewer) {
 TEST_CASE("encoding sizes follow the spec") {
     EncodingConfig config;
     CHECK(planeCount(config) == 100);
-    CHECK(globalCount(config) == 109);
+    CHECK(globalCount(config) == 133);
     CHECK(actionCount(config) == 26410);
     CHECK(EncodingSlots::PER_TILE == 218);
 }
@@ -276,6 +277,12 @@ TEST_CASE("one encoding serves both seats") {
     REQUIRE(b.currentPlayer == 1);
     Encoded fromA = encode(a, 0, config), fromB = encode(b, 1, config);
     CHECK(fromA.planes == fromB.planes);
+    // The one difference: in the second seat, the opponent has already
+    // played their turn 0, and that's evidence (a +0 change).
+    const int openingSeen = 3 + 12 * 2 + 12 + 12 + 3 * 2 + 4 + OPENING_CHANGES;
+    CHECK(fromA.globals[openingSeen] == 0);
+    CHECK(fromB.globals[openingSeen] == 1);
+    fromB.globals[openingSeen] = 0;
     CHECK(fromA.globals == fromB.globals);
 }
 
@@ -299,4 +306,51 @@ TEST_CASE("a smaller map is padded into the top-left corner") {
     CHECK(small.globals == big.globals);
     CHECK_THROWS_AS(encode(makeFogGame(bigMap()), 0, {.mapSize = 11}),
                     std::invalid_argument);
+}
+
+TEST_CASE("the opening and the capital it implies are encoded per opponent") {
+    EncodingConfig config;
+    const int opening = 3 + 12 * 2 + 12 + 12 + 3 * 2 + 4;
+    const int capital = opening + 2 * OPENING_CHANGES;
+    std::vector<TribeTypes::Tribe> lineup = {TribeTypes::IMPERIUS, TribeTypes::OUMAJI};
+    Game game(generateMap({.size = 11, .type = MapTypes::LAKES, .tribes = lineup, .seed = 5}),
+              lineup, {.seed = 5});
+    RandomBot bot(5);
+
+    // before their first turn ends: nothing seen yet, but the capital
+    // position for each tribe their starting score allows
+    Encoded e = encode(game, 0, config);
+    PlayerView view = makeView(game, 0);
+    for (int n = 0; n < 2 * OPENING_CHANGES; n++) {
+        CHECK(e.globals[opening + n] == 0);
+    }
+    TribeSet possible = possibleTribes(view, 1);
+    for (int t = 0; t < TribeTypes::TRIBE_SIZE; t++) {
+        int explored = startingExplored(static_cast<TribeTypes::Tribe>(t), view.scores[1]);
+        CHECK(e.globals[capital + t] ==
+              doctest::Approx(possible.test(t) ? explored / 25.0 : 0.0));
+    }
+
+    for (int turn = 0; turn < 6; turn++) {
+        bot.playTurn(game);
+        bot.playTurn(game);
+    }
+    e = encode(game, 0, config);
+    view = makeView(game, 0);
+    std::vector<int> changes;
+    int last = -1;
+    for (std::size_t r = 0; r < view.scoreHistory.size(); r++) {
+        if (view.scoreHistory[r].player != 1) {
+            continue;
+        }
+        if (last >= 0) {
+            changes.push_back(view.scoreHistory[r].score - last - view.effectsInChanges[r]);
+        }
+        last = view.scoreHistory[r].score;
+    }
+    REQUIRE(changes.size() >= OPENING_CHANGES);
+    for (int n = 0; n < OPENING_CHANGES; n++) {
+        CHECK(e.globals[opening + n] == doctest::Approx(changes[n] / 500.0));
+        CHECK(e.globals[opening + OPENING_CHANGES + n] == 1);
+    }
 }

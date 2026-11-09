@@ -64,11 +64,11 @@ TEST_CASE("score follows cities, temples, techs and units") {
 }
 
 TEST_CASE("the star bonus for meeting a tribe") {
-    CHECK(Game::meetingBonus(515) == 3);
-    CHECK(Game::meetingBonus(1000) == 3);
-    CHECK(Game::meetingBonus(1001) == 5);
-    CHECK(Game::meetingBonus(4500) == 11);
-    CHECK(Game::meetingBonus(9000) == 11);
+    CHECK(Rules::meetingBonus(515) == 3);
+    CHECK(Rules::meetingBonus(1000) == 3);
+    CHECK(Rules::meetingBonus(1001) == 5);
+    CHECK(Rules::meetingBonus(4500) == 11);
+    CHECK(Rules::meetingBonus(9000) == 11);
 
     Game game = makeFogGame(bigMap());
     clearUnits(game);
@@ -90,12 +90,12 @@ TEST_CASE("the star bonus for meeting a tribe") {
     int theirScore = game.score(1);
     game.checkMeetings();
     CHECK(game.players[0].hasMet(1));
-    CHECK(game.players[0].stars == stars + Game::meetingBonus(theirScore));
+    CHECK(game.players[0].stars == stars + Rules::meetingBonus(theirScore));
     // only the player who saw the other meets it
     CHECK_FALSE(game.players[1].hasMet(0));
 
     game.checkMeetings();
-    CHECK(game.players[0].stars == stars + Game::meetingBonus(theirScore));
+    CHECK(game.players[0].stars == stars + Rules::meetingBonus(theirScore));
 }
 
 TEST_CASE("hidden units don't count for meeting") {
@@ -268,4 +268,27 @@ TEST_CASE("a temple's level and next level-up are visible to everyone") {
     game.turn += 20;
     CHECK(makeView(game, 1).tiles[tile].level == 5);
     CHECK(makeView(game, 1).tiles[tile].turnsToLevelUp == 0);
+}
+
+TEST_CASE("a player knows where their units have stood, and when they were attacked") {
+    Game game = makeGame(fieldMap());
+    int capital = game.index(1, 1);
+    PlayerView view = makeView(game, 0);
+    CHECK(view.firstOccupied[capital] == 0);
+    CHECK(view.firstOccupied[game.index(6, 6)] == -1);
+    CHECK(view.attackedOnTurns.empty());
+
+    clearUnits(game);
+    int warrior = addUnit(game, 0, UnitTypes::WARRIOR, 3, 3);
+    game.apply({MOVE, game.index(3, 3), game.index(4, 4)});
+    CHECK(makeView(game, 0).firstOccupied[game.index(4, 4)] == 0);
+    CHECK(makeView(game, 1).firstOccupied[game.index(4, 4)] == -1);
+
+    // player 1 attacks it on their turn 0
+    game.apply({CommandTypes::ENDTURN});
+    int theirs = addUnit(game, 1, UnitTypes::WARRIOR, 5, 5);
+    game.apply({CommandTypes::ATTACK, game.units[theirs].tile,
+                game.units[warrior].tile});
+    CHECK(makeView(game, 0).attackedOnTurns == std::vector<int>{0});
+    CHECK(makeView(game, 1).attackedOnTurns.empty());
 }

@@ -21,15 +21,16 @@ void Game::addPopulation(int city, int amount) {
     City &c = cities[city];
     c.population += amount;
     // level n -> n + 1 needs n + 1 population; leftovers carry over
-    while (c.population >= c.level + 1) {
-        c.population -= c.level + 1;
+    while (c.population >= Rules::populationToLevelUp(c.level)) {
+        c.population -= Rules::populationToLevelUp(c.level);
         c.level++;
         c.pendingRewards++;
     }
 }
 
 int Game::healAmount(const Unit &unit) const {
-    return tileOwner(unit.tile) == unit.owner ? 40 : 20;
+    return tileOwner(unit.tile) == unit.owner ? Rules::HEAL_IN_TERRITORY
+                                              : Rules::HEAL_ELSEWHERE;
 }
 
 void Game::claimBorders(int city, int radius) {
@@ -49,7 +50,8 @@ int Game::foundCity(int tile, int owner) {
     cities.push_back({.tile = tile, .owner = owner});
     tiles[tile].building = ImprovementTypes::CITY;
     tiles[tile].resource = ResourceTypes::NONE;
-    claimBorders(city, 1);
+    markOccupied(owner, tile);
+    claimBorders(city, Rules::CITY_BORDER_RADIUS);
     return city;
 }
 
@@ -153,12 +155,12 @@ std::vector<bool> Game::connectedCities(int player, bool newOnly) const {
         if (!ownPort(from)) {
             continue;
         }
-        // a port reaches ports and cities at most 5 tiles away over water
+        // a port reaches ports and cities a few tiles away over water
         std::vector<int> depth(tiles.size(), -1), frontier{from};
         depth[from] = 0;
         for (std::size_t i = 0; i < frontier.size(); i++) {
             int at = frontier[i];
-            if (depth[at] == 5) {
+            if (depth[at] == Rules::PORT_CONNECTION_RANGE) {
                 continue;
             }
             forEachNeighbour(at, [&](int n) {
@@ -197,7 +199,8 @@ void Game::updateConnections(int player) {
         }
         // the city and the capital each get a population, or lose it again.
         // A captured capital still loses it.
-        int change = target ? 1 : -1;
+        int change = target ? Rules::CONNECTION_POPULATION
+                            : -Rules::CONNECTION_POPULATION;
         city.connectedFor = target ? player : -1;
         addPopulation(idx, change);
         addPopulation(capital, change);
@@ -228,23 +231,17 @@ void Game::capture(int unitIdx) {
         // the previous owner's score loses the city, its borders, and the
         // temples and monuments in them: all visible once it's captured
         int previous = cities[city].owner;
-        int loss = 100 + 50 * (cities[city].level - 1) +
-                   5 * cities[city].population + 250 * cities[city].parks;
-        forEachInRadius(tile, 2, [&](int t) {
-            if (tiles[t].territory != city) {
-                return;
-            }
-            loss += 20;
-            if (isTemple(tiles[t].building)) {
-                loss += 100 * templeLevel(t);
-            } else if (isMonument(tiles[t].building)) {
-                loss += 400;
+        const City &c = cities[city];
+        int loss = Rules::cityScore(c.level, c.population, c.parks);
+        forEachInRadius(tile, Rules::MAX_BORDER_RADIUS, [&](int t) {
+            if (tiles[t].territory == city) {
+                loss += tileScore(t);
             }
         });
-        loss += 20; // the city tile itself
         scoreEffects[owner * players.size() + previous] -= loss;
 
         cities[city].owner = owner;
+        markOccupied(owner, cities[city].tile);
         revealTerritory(city);
         // embassies only stand in a capital its owner still holds
         int capitalOf = cities[city].capitalOf;
@@ -289,14 +286,14 @@ void Game::chooseReward(int city, CityReward reward) {
         c.wall = true;
         break;
     case RESOURCES:
-        players[c.owner].stars += 5;
+        players[c.owner].stars += Rules::RESOURCES_STARS;
         break;
     case POPULATIONGROWTH:
-        addPopulation(city, 3);
+        addPopulation(city, Rules::POPULATION_GROWTH);
         break;
     case BORDERGROWTH:
         c.borderGrown = true;
-        claimBorders(city, 2);
+        claimBorders(city, Rules::GROWN_BORDER_RADIUS);
         break;
     case PARK:
         c.parks++;
@@ -314,7 +311,7 @@ void Game::spawnGiant(int city) {
     if (tiles[tile].unit >= 0) {
         pushUnit(tiles[tile].unit, cities[city].owner);
     }
-    spawnUnit(cities[city].owner, UnitTypes::GIANT, tile, city);
+    spawnUnit(cities[city].owner, Rules::SUPER_UNIT, tile, city);
 }
 
 void Game::pushUnit(int unitIdx, int owner) {

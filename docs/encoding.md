@@ -9,7 +9,7 @@ struct EncodingConfig {
     int mapSize = 11;       // N: every map is padded to N x N
     int players = 2;        // P: seats encoded, the player to move first
 };
-constexpr int ENCODING_VERSION = 1;
+constexpr int ENCODING_VERSION = 4;
 ```
 
 - **First target: 11×11 (Tiny), 1v1.** That's the smallest game that still has the whole game in it, so it's the fastest way to find out whether the architecture learns at all. Every number in this document is derived from the config; the concrete counts shown are for N = 11, P = 2.
@@ -19,6 +19,7 @@ constexpr int ENCODING_VERSION = 1;
 - **Versioning:** `ENCODING_VERSION` goes up whenever the meaning of any plane or slot changes. Saved training data and model checkpoints record the version and the config, so mismatches fail loudly instead of training on misread data.
   - Version 2: an opponent's tribe is hidden until met, and each opponent's starting score was added.
   - Version 3: climate planes, the tribes each opponent could be, and the climates seen.
+  - Version 4: each opponent's opening score changes, and where each tribe they could be puts their capital (section 4.2).
 
 ## 2. Conventions
 
@@ -71,7 +72,7 @@ C = 94 + 3P, which is **100** for P = 2.
 | unit type | 18 | one-hot, all unit types including boats |
 | passenger | 11 | for boats, one-hot over the land types it carries (Warrior through Giant); 0 otherwise |
 | HP fraction | 1 | hp ÷ max HP |
-| HP | 1 | hp ÷ 400 (HP is ×10 in the engine, so a 40-HP Giant is 1) |
+| HP | 1 | hp ÷ the most HP any unit can have, veterans included (a Giant's 40, since Giants can't be promoted), so it stays in [0, 1] |
 | veteran | 1 | |
 | can move, can attack, can act | 3 | own units only; 0 for others |
 | hidden | 1 | own units only: hidden from enemies |
@@ -89,7 +90,7 @@ Computed from the view alone. Enemy reach assumes the opponent owns every moveme
 
 ## 4. Global vector: `[G]`
 
-G = 58 + 15P + 21(P − 1), which is **109** for P = 2.
+G = 58 + 15P + 45(P − 1), which is **133** for P = 2.
 
 | Features | Count | Value |
 | --- | --- | --- |
@@ -97,7 +98,7 @@ G = 58 + 15P + 21(P − 1), which is **109** for P = 2.
 | stars | 1 | the player's stars ÷ 50 |
 | income | 1 | ÷ 30 |
 | tribe | 12P | one-hot per relative player. All zeros for an opponent not met yet, since tribes are hidden until then. |
-| possible tribes | 12(P − 1) | per opponent, 1 for each tribe they could still be: worked out exactly from their starting score and the climates seen ([`tribeInference.md`](tribeInference.md)). A met opponent has just their own. |
+| possible tribes | 12(P − 1) | per opponent, 1 for each tribe they could still be: worked out exactly from their starting score, the climates seen and their opening score changes ([`tribeInference.md`](tribeInference.md)). A met opponent has just their own. |
 | climates seen | 12 | 1 for each tribe whose climate the player has seen on an explored tile |
 | alive | P | per relative player |
 | met | P | per relative player (1 for the player themselves) |
@@ -106,6 +107,9 @@ G = 58 + 15P + 21(P − 1), which is **109** for P = 2.
 | explained score | P − 1 | per opponent, the part of their published score that comes from things the player can see (section 4.1), ÷ 1000 |
 | unexplained score | P − 1 | per opponent, (published score + the player's own visible effects on them since) − explained score: the score sitting in things the player can't see, ÷ 1000 |
 | last change | P − 1 | per opponent, their latest published change, with the player's own effects on them since their previous publication taken out, ÷ 500. 0 before their first turn ends. |
+| opening changes | 6(P − 1) | per opponent, their first 6 published changes, own effects taken out the same way, ÷ 500 (section 4.2) |
+| opening seen | 6(P − 1) | per opponent, 1 for each of those changes that has happened, since a +0 change is evidence too |
+| capital position | 12(P − 1) | per opponent, for each tribe they could still be, the tiles that tribe would have started with explored ÷ 25, 0 for a tribe ruled out (section 4.2) |
 | techs | 25 | 1 per tech owned; Basic, which everyone owns, is left out |
 | tasks done | 7 | |
 | monuments built | 7 | |
@@ -134,6 +138,12 @@ All three use the published score, never the live one. Opponents can't change an
 Temple levels count at their real value, since they're public. A temple's score is calculated at its level as of the opponent's last turn end, to match their published score.
 
 If the belief network later needs more history than this, a small sequence model over `scoreHistory` can be added then.
+
+### 4.2 The opening
+
+The exact side ([`tribeInference.md`](tribeInference.md)) only rules out what's impossible. Most of what an opening says is likelihood instead. A +25 on turn 0 fits a Rider or a Climbing tribe, and a +15 on turn 1 is more typical of some tribes than others. The belief head learns those patterns, inside the exact set, from the tribe target (`stockNavalon.md` section 5), but only if it sees the evidence. So the first 6 changes are encoded as they are, not only summarized.
+
+**Capital position:** a tribe's starting score fixes how many tiles of its 5×5 start were on the map: 25 at least 2 tiles from every edge, 20 or 15 next to an edge, fewer near a corner. That depends on the tribe hypothesis, so it's given per possible tribe. It feeds the belief model's guess at where their capital is.
 
 ## 5. Commands: `[A]`
 

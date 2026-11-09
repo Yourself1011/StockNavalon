@@ -50,8 +50,21 @@ int relative(int q, int player, int players) {
     return (q - player + players) % players;
 }
 
-// to the nearest whole HP, halves up, like the engine
-double roundHp(double hp) { return std::floor(hp + 0.5 + 1e-9); }
+// The most HP any unit can have: veterans gain HP, but only units without
+// STATIC are promoted, plus the soldiers ruins make veterans
+int maxHp() {
+    static const int most = [] {
+        int hp = 0;
+        for (const UnitData &data : unitData) {
+            bool veteran = !data.abilities.test(Abilities::STATIC) ||
+                           data.type == Rules::RUIN_LAND_UNIT ||
+                           data.type == Rules::RUIN_SEA_PASSENGER;
+            hp = std::max(hp, data.maxHp + (veteran ? Rules::VETERAN_HP : 0));
+        }
+        return hp;
+    }();
+    return most;
+}
 
 bool attacksUnits(const UnitData &data) {
     return !data.abilities.test(Abilities::INFILTRATE) &&
@@ -190,24 +203,27 @@ double damageAt(const Game &game, const PlayerView &view,
             return game.previewAttack(*attacker, *defender).damage / 10.0;
         }
     }
-    double attack = data.attack / 10.0;
-    double force = attack * enemy.hp / enemy.maxHp;
-    return roundHp(force / (force + 2.0) * attack * 4.5);
+    const UnitData &warrior = unitInfo(UnitTypes::WARRIOR);
+    return Rules::damage(data.attack, enemy.hp, enemy.maxHp, warrior.defence,
+                         warrior.maxHp, warrior.maxHp, 1.0)
+               .dealt /
+           10.0;
 }
 
 // The temple's level when its owner last published their score, worked out
 // from what's visible: its level and countdown now.
 int templeLevelAt(const PlayerView::TileView &tile, int nowTurn,
                   int thenTurn) {
-    if (tile.level >= MAX_TEMPLE_LEVEL) {
-        return MAX_TEMPLE_LEVEL;
+    if (tile.level >= Rules::MAX_TEMPLE_LEVEL) {
+        return Rules::MAX_TEMPLE_LEVEL;
     }
-    // level L is reached on turn built + 2 (L - 1), and L + 1 on built + 2L
-    int built = nowTurn + tile.turnsToLevelUp - 2 * tile.level;
+    // level L + 1 is reached TEMPLE_TURNS_PER_LEVEL x L turns after building
+    int built = nowTurn + tile.turnsToLevelUp -
+                Rules::TEMPLE_TURNS_PER_LEVEL * tile.level;
     if (built > thenTurn) {
         return 0;
     }
-    return std::min(MAX_TEMPLE_LEVEL, 1 + (thenTurn - built) / 2);
+    return Rules::templeLevel(built, thenTurn);
 }
 
 } // namespace
@@ -217,7 +233,7 @@ int planeCount(const EncodingConfig &config) {
 }
 
 int globalCount(const EncodingConfig &config) {
-    return 58 + 15 * config.players + 21 * (config.players - 1);
+    return 58 + 15 * config.players + 45 * (config.players - 1);
 }
 
 int actionCount(const EncodingConfig &config) {
@@ -240,24 +256,24 @@ int explainedScore(const PlayerView &view, int player) {
     int total = 0;
     for (const PlayerView::CityView &city : view.cities) {
         if (city.owner == player) {
-            total += 100 + 50 * (city.level - 1) + 5 * city.population +
-                     250 * city.parks;
+            total += Rules::cityScore(city.level, city.population, city.parks);
         }
     }
     for (const PlayerView::UnitView &unit : view.units) {
         if (unit.owner == player) {
-            total += 5 * unitInfo(unit.passenger).cost;
+            total += Rules::unitScore(unitInfo(unit.passenger).cost);
         }
     }
     for (const PlayerView::TileView &tile : view.tiles) {
         if (!tile.explored || tile.owner != player) {
             continue;
         }
-        total += 20;
+        total += Rules::TERRITORY_SCORE;
         if (isTemple(tile.building)) {
-            total += 100 * templeLevelAt(tile, view.turn, publishedTurn);
+            total += Rules::templeScore(
+                templeLevelAt(tile, view.turn, publishedTurn));
         } else if (isMonument(tile.building)) {
-            total += 400;
+            total += Rules::MONUMENT_SCORE;
         }
     }
     return total;
@@ -296,9 +312,11 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
                 1;
         }
         if (isProducer(tile.building)) {
-            at(Layout::LEVEL, t) = tile.level / 8.0f;
+            at(Layout::LEVEL, t) =
+                tile.level / static_cast<float>(MAX_BUILDING_LEVEL);
         } else if (isTemple(tile.building)) {
-            at(Layout::LEVEL, t) = tile.level / 5.0f;
+            at(Layout::LEVEL, t) =
+                tile.level / static_cast<float>(Rules::MAX_TEMPLE_LEVEL);
             at(Layout::COUNTDOWN, t) = tile.turnsToLevelUp / 2.0f;
         }
         if (tile.climate) {
@@ -329,7 +347,7 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
             }
             const int stats = layout.hpFraction();
             at(stats, t) = static_cast<float>(unit.hp) / unit.maxHp;
-            at(stats + 1, t) = unit.hp / 400.0f;
+            at(stats + 1, t) = unit.hp / static_cast<float>(maxHp());
             at(stats + 2, t) = unit.veteran;
             if (own) {
                 at(stats + 3, t) = unit.canMove;
@@ -464,6 +482,54 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         }
     }
 
+    // the opening (section 4.2), per opponent: their first changes, with the
+    // player's own effects taken out, and whether each has happened yet
+    for (int k = 1; k < P; k++, g += 2 * OPENING_CHANGES) {
+        int q = seat(k);
+        if (q >= players) {
+            continue;
+        }
+        int last = -1, n = 0;
+        for (std::size_t r = 0;
+             r < view.scoreHistory.size() && n < OPENING_CHANGES; r++) {
+            const ScoreRecord &record = view.scoreHistory[r];
+            if (record.player != q) {
+                continue;
+            }
+            if (last >= 0) {
+                g[n] = (record.score - last - view.effectsInChanges[r]) / 500.0f;
+                g[OPENING_CHANGES + n] = 1;
+                n++;
+            }
+            last = record.score;
+        }
+    }
+    // and for each tribe they could be, where that puts their capital: the
+    // tiles they'd have started with explored, / 25 (0 if not possible)
+    for (int k = 1; k < P; k++, g += TribeTypes::TRIBE_SIZE) {
+        int q = seat(k);
+        if (q >= players) {
+            continue;
+        }
+        int start = -1;
+        for (const ScoreRecord &record : view.scoreHistory) {
+            if (record.player == q) {
+                start = record.score;
+                break;
+            }
+        }
+        TribeSet possible = possibleTribes(view, q);
+        for (int t = 0; t < TribeTypes::TRIBE_SIZE; t++) {
+            int explored =
+                start < 0 ? -1
+                          : startingExplored(static_cast<TribeTypes::Tribe>(t), start);
+            if (possible.test(t) && explored >= 0) {
+                int side = 2 * Rules::START_EXPLORED_RADIUS + 1;
+                g[t] = explored / static_cast<float>(side * side);
+            }
+        }
+    }
+
     for (int tech = TechTypes::BASIC + 1; tech < TechTypes::TECH_TYPE_SIZE;
          tech++) {
         *g++ = view.techs.test(tech);
@@ -474,9 +540,10 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
     for (int task = 0; task < TaskTypes::TASK_SIZE; task++) {
         *g++ = view.monumentsBuilt.test(task);
     }
-    *g++ = view.kills / 10.0f;
-    *g++ = view.peacefulTurns / 5.0f;
-    *g++ = view.lighthousesFound / 4.0f;
+    // progress toward the tasks' thresholds
+    *g++ = view.kills / static_cast<float>(Rules::KILLER_KILLS);
+    *g++ = view.peacefulTurns / static_cast<float>(Rules::PACIFIST_TURNS);
+    *g++ = view.lighthousesFound / static_cast<float>(Rules::LIGHTHOUSE_COUNT);
     for (int k = 1; k < P; k++, g += 5) {
         if (seat(k) >= players) {
             continue;

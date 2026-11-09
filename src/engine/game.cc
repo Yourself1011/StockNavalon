@@ -27,6 +27,7 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
         player.techs.set(TechTypes::BASIC);
         player.techs.set(tribe.startTech);
     }
+    firstOccupied.assign(players.size() * size * size, -1);
 
     for (std::size_t i = 0; i < tribes.size(); i++) {
         const TribeData &tribe = tribeData[tribes[i]];
@@ -41,7 +42,7 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
         // the 5x5 around the capital starts explored, except a lighthouse,
         // which still has to be found
         tiles[tile].explored |= std::uint32_t{1} << player;
-        forEachInRadius(tile, 2, [&](int t) {
+        forEachInRadius(tile, Rules::START_EXPLORED_RADIUS, [&](int t) {
             if (tiles[t].building != ImprovementTypes::LIGHTHOUSE) {
                 tiles[t].explored |= std::uint32_t{1} << player;
             }
@@ -124,28 +125,13 @@ int Game::unitCount(int city) const {
 }
 
 int Game::techCost(int player, TechTypes::TechType tech) const {
-    int cost = techData[tech].tier * cityCount(player) + 4;
-    if (players[player].hasTech(TechTypes::PHILOSOPHY)) {
-        // Literacy: a third cheaper, rounded up
-        cost = (cost * 2 + 2) / 3;
-    }
-    return cost;
+    // Literacy comes from Philosophy
+    return Rules::techCost(techData[tech].tier, cityCount(player),
+                           players[player].hasTech(TechTypes::PHILOSOPHY));
 }
 
 bool Game::canResearch(int player, TechTypes::TechType tech) const {
-    const Player &p = players[player];
-    if (tech == TechTypes::BASIC || p.hasTech(tech)) {
-        return false;
-    }
-    if (p.hasTech(techData[tech].parent)) {
-        return true;
-    }
-    // backwards research: owning a child also makes the parent researchable
-    return std::any_of(techData.begin(), techData.end(),
-                       [&](const TechData &child) {
-                           return child.parent == tech && child.type != tech &&
-                                  p.hasTech(child.type);
-                       });
+    return researchableWith(players[player].techs, tech);
 }
 
 int Game::marketIncome(int tile) const {
@@ -164,11 +150,9 @@ int Game::cityIncome(int city) const {
     if (besieged(city)) {
         return 0;
     }
-    int stars = c.level + c.workshop + c.parks;
-    if (players[c.owner].capital == city) {
-        stars += 1;
-    }
-    forEachInRadius(c.tile, 2, [&](int t) {
+    int stars = Rules::cityIncome(c.level, players[c.owner].capital == city,
+                                  c.workshop, c.parks);
+    forEachInRadius(c.tile, Rules::MAX_BORDER_RADIUS, [&](int t) {
         if (tiles[t].territory == city &&
             tiles[t].building == ImprovementTypes::MARKET) {
             stars += marketIncome(t);
@@ -218,7 +202,7 @@ void Game::endTurn() {
 
     // Pacifist counts the turns without an attack since Meditation
     Player &player = players[currentPlayer];
-    if (player.hasTech(TechTypes::MEDITATION)) {
+    if (player.hasTech(Rules::PACIFIST_TECH)) {
         player.peacefulTurns =
             player.attackedThisTurn ? 0 : player.peacefulTurns + 1;
     }
@@ -245,7 +229,7 @@ void Game::research(TechTypes::TechType tech) {
     Player &player = players[currentPlayer];
     player.stars -= techCost(currentPlayer, tech);
     player.techs.set(tech);
-    if (tech == TechTypes::MEDITATION) {
+    if (tech == Rules::PACIFIST_TECH) {
         player.peacefulTurns = 0;
     }
 }
@@ -296,10 +280,10 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
             out.push_back({HEALOTHERS, from});
         }
     }
-    if (unit.kills >= 3 && !unit.veteran && !unit.has(Abilities::STATIC)) {
+    if (unit.kills >= Rules::VETERAN_KILLS && !unit.veteran && !unit.has(Abilities::STATIC)) {
         out.push_back({PROMOTE, from});
     }
-    if (player.hasTech(TechTypes::FREESPIRIT)) {
+    if (player.hasTech(Rules::DISBAND_TECH)) {
         out.push_back({DISBAND, from});
     }
     if (isRaftFamily(unit.type) && tileOwner(from) == unit.owner) {
@@ -326,7 +310,7 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
         out.push_back({EXAMINERUINS, from});
     }
     if (unit.isNaval() && tile.resource == ResourceTypes::STARFISH &&
-        player.hasTech(TechTypes::NAVIGATION)) {
+        player.hasTech(Rules::STARFISH_TECH)) {
         out.push_back({HARVEST, from});
     }
 }
@@ -335,7 +319,7 @@ void Game::addCityCommands(int city, std::vector<Command> &out) const {
     const City &c = cities[city];
     const Player &player = players[c.owner];
     if (besieged(city) || tiles[c.tile].unit >= 0 ||
-        unitCount(city) >= c.level + 1) {
+        unitCount(city) >= Rules::unitCap(c.level)) {
         return;
     }
     for (const UnitData &data : unitData) {
@@ -524,7 +508,7 @@ void Game::applyCommand(const Command &command) {
         forEachNeighbour(u.tile, [&](int n) {
             Unit *other = unitAt(n);
             if (other && other->owner == u.owner) {
-                other->hp = std::min(other->maxHp, other->hp + 40);
+                other->hp = std::min(other->maxHp, other->hp + Rules::HEAL_OTHERS);
             }
         });
         u.canMove = u.canAttack = u.canAct = false;
@@ -533,7 +517,7 @@ void Game::applyCommand(const Command &command) {
     case PROMOTE: {
         Unit &u = units[unit];
         u.veteran = true;
-        u.maxHp += 50;
+        u.maxHp += Rules::VETERAN_HP;
         u.hp = u.maxHp;
         break;
     }
@@ -543,7 +527,7 @@ void Game::applyCommand(const Command &command) {
         if (u.isNaval()) {
             cost += u.data().cost;
         }
-        player.stars += cost / 2;
+        player.stars += Rules::disbandRefund(cost);
         killUnit(unit);
         break;
     }
@@ -563,7 +547,7 @@ void Game::applyCommand(const Command &command) {
         destroy(command.from);
         break;
     case HARVEST:
-        player.stars += 8;
+        player.stars += Rules::STARFISH_STARS;
         tiles[command.from].resource = ResourceTypes::NONE;
         break;
     case CAPTURE:

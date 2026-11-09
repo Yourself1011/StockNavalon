@@ -119,13 +119,13 @@ def test_encoding_shapes_and_round_trip():
     import numpy as np
 
     enc = pe.Encoding(map_size=11, players=2)
-    assert (enc.plane_count, enc.global_count, enc.action_count) == (100, 109, 26410)
+    assert (enc.plane_count, enc.global_count, enc.action_count) == (100, 133, 26410)
     tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
     game = pe.Game(pe.generate_map(tribes, size=11, seed=3), tribes, seed=3)
 
     planes, globals_ = enc.encode_state(game, 0)
     assert planes.shape == (100, 11, 11) and planes.dtype == np.float32
-    assert globals_.shape == (109,) and globals_.dtype == np.float32
+    assert globals_.shape == (133,) and globals_.dtype == np.float32
     assert planes[0].sum() == 121  # every tile is on the map
 
     mask = enc.legal_mask(game)
@@ -139,7 +139,7 @@ def test_encoding_shapes_and_round_trip():
     games = [game, game.copy()]
     batch_planes, batch_globals = enc.encode_states(games, [0, 1])
     assert batch_planes.shape == (2, 100, 11, 11)
-    assert batch_globals.shape == (2, 109)
+    assert batch_globals.shape == (2, 133)
     assert np.array_equal(batch_planes[0], planes)
     assert enc.legal_masks(games).shape == (2, 26410)
 
@@ -155,3 +155,12 @@ def test_climate_and_possible_tribes():
     assert pe.Tribe.AIMO in possible
     assert set(possible) <= {pe.Tribe.VENGIR, pe.Tribe.AIMO}
     assert pe.Tribe.VENGIR in pe.climates_seen(view)
+    # the score search's limits are options, and the evidence it reads is
+    # in the view
+    assert pe.Tribe.AIMO in pe.possible_tribes(view, 1, turns=0)
+    assert pe.score_changes_fit(view, 1, pe.Tribe.AIMO, turns=2, max_work=1000)
+    assert len(view.effects_in_changes) == len(view.score_history)
+    assert view.first_occupied[capital] == 0
+    assert view.attacked_on_turns == []
+    assert pe.starting_explored(pe.Tribe.AIMO, view.scores[1]) in range(9, 26)
+    assert pe.OPENING_CHANGES == 6

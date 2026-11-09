@@ -13,8 +13,8 @@ int Game::embassyIncome(int player) const {
         if (other == player || !players[other].alive) {
             continue;
         }
-        // +2 each way, +4 with a peace treaty
-        int each = atPeace(player, other) ? 4 : 2;
+        int each = atPeace(player, other) ? Rules::EMBASSY_INCOME_AT_PEACE
+                                          : Rules::EMBASSY_INCOME;
         stars += each * players[player].hasEmbassyWith(other);
         stars += each * players[other].hasEmbassyWith(player);
     }
@@ -50,8 +50,8 @@ void Game::addDiplomacyCommands(std::vector<Command> &out) const {
 
         // in their capital, while they still hold it
         int capital = them.capital;
-        if (me.hasTech(TechTypes::DIPLOMACY) && !me.hasEmbassyWith(other) &&
-            me.stars >= 5 && capital >= 0 && cities[capital].owner == other) {
+        if (me.hasTech(Rules::EMBASSY_TECH) && !me.hasEmbassyWith(other) &&
+            me.stars >= Rules::EMBASSY_COST && capital >= 0 && cities[capital].owner == other) {
             out.push_back({ESTABLISHEMBASSY, -1, -1, other});
         }
     }
@@ -96,7 +96,7 @@ void Game::applyDiplomacy(const Command &command) {
     }
     case ESTABLISHEMBASSY: {
         int host = command.arg;
-        me.stars -= 5;
+        me.stars -= Rules::EMBASSY_COST;
         me.embassies |= bit(host);
         // the builder sees the 3x3 around the host's capital
         revealAround(currentPlayer, cities[players[host].capital].tile, 1);

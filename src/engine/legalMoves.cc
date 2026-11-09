@@ -168,7 +168,7 @@ void LegalMoves::update(const Game &before, const Game &after) {
         mark(b.tile);
         if (added || before.cities[i].owner != b.owner) {
             int city = static_cast<int>(i);
-            after.forEachInRadius(b.tile, 2, [&](int t) {
+            after.forEachInRadius(b.tile, Rules::MAX_BORDER_RADIUS, [&](int t) {
                 if (after.tiles[t].territory == city ||
                     before.tiles[t].territory == city) {
                     mark(t);
@@ -189,7 +189,7 @@ void LegalMoves::update(const Game &before, const Game &after) {
             }
             int centre = after.cities[city].tile;
             tileSources[centre] = 1;
-            after.forEachInRadius(centre, 2, [&](int n) {
+            after.forEachInRadius(centre, Rules::MAX_BORDER_RADIUS, [&](int n) {
                 if (after.tiles[n].territory == city) {
                     tileSources[n] = 1;
                 }

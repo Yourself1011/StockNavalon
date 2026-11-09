@@ -9,6 +9,8 @@ Two complete, compiled examples go with this guide:
 
 ## Building and linking
 
+Every rule number lives in the engine: tables in `data/` and the rest in `rules.h` (score amounts, costs, rewards, radii). Code on top of the engine should read rules from there rather than writing the numbers itself, so it follows the engine when the game changes.
+
 CMake builds the engine as the static library target `engine`, with `src/engine` as its include directory. stockNavalon's code (the encoding and tribe inference) is the separate target `stocknavalon`, with `src/stockNavalon` as its include directory; it links the engine, so linking `stocknavalon` gives you both. Build with the presets (see the README):
 
 ```bash
@@ -93,6 +95,7 @@ A `PlayerView` has:
 - the units the player can see
 - its cities, stars, income, techs, tasks and diplomacy (other tribes' stars and techs are hidden)
 - every player's score, since scores are public: your own live, the others' as of the end of their last turn, plus `scoreHistory`, every score published so far
+- the player's own history: `effectsInChanges`, `attackedOnTurns` and `firstOccupied` (the first turn one of their units or cities stood on each tile), which tribe inference uses
 
 `makeView(game, player, true)` ignores fog, for debugging.
 

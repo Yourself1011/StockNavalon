@@ -51,3 +51,7 @@ struct TechData {
 };
 
 extern const std::array<TechData, TechTypes::TECH_TYPE_SIZE> techData;
+
+// Whether a tech can be researched with these techs owned, ignoring the
+// price: its parent owned, or a child owned (backwards research)
+bool researchableWith(const TechSet &owned, TechTypes::TechType tech);

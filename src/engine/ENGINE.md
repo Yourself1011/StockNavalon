@@ -20,6 +20,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `python/bindings.cc` (outside `src/`): the Python module `polyengine`, built with nanobind and scikit-build-core. C++ code uses the engine directly; only Python goes through bindings. `CMakeLists.txt` builds the engine (`engine`) and stockNavalon (`stocknavalon`) as static libraries for it.
 - `Game::rng`: a seeded random state (`GameSettings::seed`), stored in the game so copies stay deterministic
 - `data/`: unit, tech, improvement and tribe tables
+- `rules.h`: every other rule of the game: score amounts, costs and income, rewards, radii, combat, healing, task thresholds. Engine code reads rule numbers only from here and `data/`, and so does everything built on it (stockNavalon), so a change to the game is one edit.
 - `map.h`: the map file format
 
 ## Done
@@ -76,6 +77,7 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 ### Score, meeting and ruins
 
 - **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities. Only the player who sees gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one.
+- **What a player knows of their own past,** for reading others' scores: `Game::firstOccupied` (the first turn each tile held one of their units or cities: others meet them by seeing those) and `Player::attackedOnTurns`, both in the view.
 - **Converted units** keep counting for the score of the player who first had them, and come off that score when they die.
 - **Examining a ruin** works like capturing: the unit must have started its turn on the ruin and not moved or attacked yet (the game confirms the first part). It ends the unit's turn. A hidden unit stays hidden.
 - **Ruin rewards:** the free tech is a random researchable one; the population reward needs the player to hold their capital.

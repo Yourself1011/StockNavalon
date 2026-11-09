@@ -88,4 +88,3 @@ bool isMonument(ImprovementTypes::ImprovementType type);
 
 // the highest level of Windmill, Sawmill, Forge and Market
 constexpr int MAX_BUILDING_LEVEL = 8;
-constexpr int MAX_TEMPLE_LEVEL = 5;

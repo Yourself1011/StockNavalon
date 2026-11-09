@@ -143,6 +143,7 @@ What the player knows. `everything=True` ignores fog.
 - **Per player:** `tribes` (your own and those you've met; `None` until then), `alive`, `met`, and `scores`. Every player's score is public, met or not, but you see others' scores as of the end of their last turn; your own is live.
 - **`score_history`:** every score published so far, oldest first, as `ScoreRecord`s (`player`, `turn`, `score`): the starting scores, then one each time a player ends a turn. Changes between a player's records are evidence of what they did, like a +300 for a tier-3 tech.
 - **Own tasks:** `tasks_done`, `monuments_built`, `kills`, `peaceful_turns`, `lighthouses_found`.
+- **Own history:** `effects_in_changes` (per `score_history` record, what this player visibly did to that change), `attacked_on_turns` (the turns their units or cities were attacked), `first_occupied` (per tile, the first turn one of their units or cities stood there, -1 for never). Tribe inference reads these.
 - **`relations[p]`:** `peace`, `they_asked`, `we_asked`, `our_embassy`, `their_embassy`.
 - **`tiles`** (one per map tile): `explored`, then for explored tiles only `terrain`, `resource` (`NONE` until the player can see that kind), `building`, `level` (Windmill, Sawmill or Forge level, or a temple's level, which everyone can see), `turns_to_level_up` (temples: turns until the next level), `climate` (the tribe whose climate region it is), `road`, `owner`, and `unit`/`city`, which are indices into the view's own `units`/`cities`, or -1.
 - **`units`:** `type`, `passenger`, `owner`, `tile`, `hp`, `max_hp`, `kills`, `veteran`, `hidden`. For the player's own units only, also `can_move`, `can_attack`, `can_act`, `hidden_enemy_near`.
@@ -161,8 +162,10 @@ What the player knows. `everything=True` ignores fog.
 | `encode_command(game, c)` | the command's slot, or -1 if it has none (Resign, Stay) |
 | `decode_command(game, index)` | the legal command in that slot; raises `ValueError` if none is |
 | `explained_score(view, p)` | the part of player `p`'s published score the viewer can account for |
-| `possible_tribes(view, p)` | the tribes unmet player `p` could be, from starting scores and climates; always includes the real one |
+| `possible_tribes(view, p, turns=1, max_states=5000, max_work=50000)` | the tribes unmet player `p` could be, from their starting score, the climates seen and a search over their first `turns` score changes ([`tribeInference.md`](tribeInference.md)); always includes the real one, and the limits only bound the time |
+| `score_changes_fit(view, p, tribe, ...)` | the search alone: could a player of `tribe` have made `p`'s score changes so far (two-player games) |
 | `climates_seen(view)` | the tribes whose climate the player has seen |
+| `starting_explored(tribe, score)` | the tiles a player of `tribe` with that starting score started with explored, -1 if none fits: where their capital is |
 | `tribes_with_starting_score(score)` | the tribes that could start a game with that score |
 
 ```python

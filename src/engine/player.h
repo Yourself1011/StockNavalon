@@ -7,6 +7,7 @@
 #include <bitset>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace TaskTypes {
 // GAME.md section 14. Each unlocks the monument of the same position.
@@ -28,6 +29,10 @@ const std::array<std::string_view, TASK_SIZE> taskNames = {
 inline ImprovementTypes::ImprovementType monumentFor(Task task) {
     return static_cast<ImprovementTypes::ImprovementType>(
         static_cast<int>(ImprovementTypes::ALTAROFPEACE) + task);
+}
+// the task whose monument this is
+inline Task taskFor(ImprovementTypes::ImprovementType monument) {
+    return static_cast<Task>(monument - ImprovementTypes::ALTAROFPEACE);
 }
 } // namespace TaskTypes
 
@@ -51,6 +56,8 @@ struct Player {
     // own turns in a row without an attack since Meditation, for Pacifist
     int peacefulTurns = 0;
     bool attackedThisTurn = false;
+    // the turns this player's units or cities were attacked, oldest first
+    std::vector<int> attackedOnTurns;
 
     // diplomacy, one bit per other player: a peace treaty with them, a
     // peace request from them waiting for an answer, an embassy in their

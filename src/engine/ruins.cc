@@ -23,7 +23,7 @@ std::vector<Game::RuinReward> Game::ruinRewards(int unitIdx) const {
     }
     // only if something in the 5x5 around the ruin is still unexplored
     bool fog = false;
-    forEachInRadius(unit.tile, 2,
+    forEachInRadius(unit.tile, Rules::RUIN_EXPLORER_FOG_RADIUS,
                     [&](int t) { fog |= !explored(player, t); });
     if (fog) {
         rewards.push_back(RUIN_EXPLORER);
@@ -50,10 +50,10 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         break;
     }
     case RUIN_STARS:
-        player.stars += 10;
+        player.stars += Rules::RUIN_STARS;
         break;
     case RUIN_POPULATION:
-        addPopulation(player.capital, 3);
+        addPopulation(player.capital, Rules::RUIN_POPULATION);
         break;
     case RUIN_EXPLORER:
         runExplorer(unit.owner, unit.tile);
@@ -65,12 +65,13 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         bool water = onWater(tiles[spot]);
         pushUnit(unitIdx, unit.owner);
         int idx = spawnUnit(unit.owner,
-                            water ? UnitTypes::RAMMER : UnitTypes::SWORDSMAN,
+                            water ? Rules::RUIN_SEA_BOAT : Rules::RUIN_LAND_UNIT,
                             spot, unit.home);
         Unit &spawned = units[idx];
         // the Rammer carries a Warrior; either way the soldier is a veteran
-        spawned.passenger = water ? UnitTypes::WARRIOR : UnitTypes::SWORDSMAN;
-        spawned.maxHp = unitInfo(spawned.passenger).maxHp + 50;
+        spawned.passenger =
+            water ? Rules::RUIN_SEA_PASSENGER : Rules::RUIN_LAND_UNIT;
+        spawned.maxHp = unitInfo(spawned.passenger).maxHp + Rules::VETERAN_HP;
         spawned.hp = spawned.maxHp;
         spawned.veteran = true;
         spawned.freeOfCap = true;

@@ -68,6 +68,7 @@ int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile, int home) {
         *slot = unit;
     }
     tiles[tile].unit = idx;
+    markOccupied(player, tile);
     revealForUnit(idx);
     return idx;
 }
@@ -103,7 +104,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
     };
     destination.assign(tiles.size(), 0);
     landing.assign(tiles.size(), 0);
-    best[unit.tile] = unit.data().movement * 2;
+    best[unit.tile] = unit.data().movement * Rules::STEP_COST;
     stack.assign(1, unit.tile);
 
     while (!stack.empty()) {
@@ -126,7 +127,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
             bool looksFree = !seenFriend && !seenEnemy;
 
             if (naval && !TerrainTypes::isWater(t.terrain)) {
-                if (remaining >= 2 && looksFree &&
+                if (remaining >= Rules::STEP_COST && looksFree &&
                     canEnterTerrain(passenger, to)) {
                     landing[to] = 1;
                     arrive(from, to, remaining);
@@ -147,7 +148,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
 
             bool roadStep = !naval && isRoadFor(from, unit.owner) &&
                             isRoadFor(to, unit.owner);
-            int cost = roadStep ? 1 : 2;
+            int cost = roadStep ? Rules::ROAD_STEP_COST : Rules::STEP_COST;
             if (remaining < cost) {
                 return;
             }
@@ -197,6 +198,13 @@ std::vector<int> Game::disembarkTargets(int unit) const {
     return disembarks;
 }
 
+void Game::markOccupied(int player, int tile) {
+    int &first = firstOccupied[player * size * size + tile];
+    if (first < 0) {
+        first = turn;
+    }
+}
+
 void Game::placeUnit(int unitIdx, int to) {
     Unit &unit = units[unitIdx];
     int dx = sign(tileX(to) - tileX(unit.tile)),
@@ -208,6 +216,7 @@ void Game::placeUnit(int unitIdx, int to) {
     tiles[unit.tile].unit = -1;
     tiles[to].unit = unitIdx;
     unit.tile = to;
+    markOccupied(unit.owner, to);
     revealForUnit(unitIdx);
     if (unit.has(Abilities::STOMP)) {
         stomp(unitIdx);
@@ -234,8 +243,8 @@ void Game::revealAlongPath(int unitIdx, const std::vector<int> &parents,
     for (int t = parents[to]; t >= 0 && t != unit.tile; t = parents[t]) {
         int sight = unit.has(Abilities::SCOUT) ||
                             tiles[t].terrain == TerrainTypes::MOUNTAIN
-                        ? 2
-                        : 1;
+                        ? Rules::FAR_SIGHT
+                        : Rules::UNIT_SIGHT;
         revealAround(unit.owner, t, sight);
     }
 }

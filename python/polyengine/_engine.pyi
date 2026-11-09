@@ -804,6 +804,22 @@ class PlayerView:
         """Per player: the same, within the change they last published."""
 
     @property
+    def effects_in_changes(self) -> list[int]:
+        """
+        Per score_history record: what this player's own actions visibly did to the publisher's score within that change.
+        """
+
+    @property
+    def attacked_on_turns(self) -> list[int]:
+        """The turns this player's units or cities were attacked."""
+
+    @property
+    def first_occupied(self) -> list[int]:
+        """
+        Per tile: the first turn one of this player's units or cities stood on it, -1 for never.
+        """
+
+    @property
     def tasks_done(self) -> list[int]: ...
 
     @property
@@ -869,7 +885,9 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
     """
 
-ENCODING_VERSION: int = 3
+ENCODING_VERSION: int = 4
+
+OPENING_CHANGES: int = 6
 
 class Encoding:
     """
@@ -914,9 +932,14 @@ class Encoding:
     def decode_command(self, game: Game, index: int) -> Command:
         """The legal command in that slot; raises ValueError if none is."""
 
-def possible_tribes(view: PlayerView, opponent: int) -> list[Tribe]:
+def possible_tribes(view: PlayerView, opponent: int, turns: int = 1, max_states: int = 5000, max_work: int = 50000) -> list[Tribe]:
     """
-    The tribes the opponent could be, from the viewer's starting-score and climate evidence. Always includes the real one.
+    The tribes the opponent could be, from their starting score, the climates seen and their first `turns` score changes (docs/tribeInference.md). Always includes the real one; the limits only bound the time.
+    """
+
+def score_changes_fit(view: PlayerView, opponent: int, tribe: Tribe, turns: int = 1, max_states: int = 5000, max_work: int = 50000) -> bool:
+    """
+    Whether a player of `tribe` could have made the opponent's published score changes so far. Two-player games only; otherwise True.
     """
 
 def climates_seen(view: PlayerView) -> list[Tribe]:
@@ -924,6 +947,11 @@ def climates_seen(view: PlayerView) -> list[Tribe]:
 
 def tribes_with_starting_score(score: int) -> list[Tribe]:
     """The tribes that could start the game with this score."""
+
+def starting_explored(tribe: Tribe, score: int) -> int:
+    """
+    How many tiles a player of this tribe with this starting score started with explored (9 to 25), or -1 if none fits. 25 means their capital is at least 2 tiles from every edge.
+    """
 
 def explained_score(view: PlayerView, player: int) -> int:
     """

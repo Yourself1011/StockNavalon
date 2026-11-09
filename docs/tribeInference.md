@@ -1,6 +1,6 @@
 # Tribe inference: ruling tribes out from the opening
 
-The spec for working out which tribes an unmet opponent could be, from public information. It's part of stockNavalon (design in [`stockNavalon.md`](stockNavalon.md), sections 4 and 5). Status: **partly implemented** in `src/stockNavalon/tribeInference.h`: the starting-score filter and the climate filter (sections 8.1 and 10). The search over later score changes (sections 3 to 6) and its coverage test are next.
+The spec for working out which tribes an unmet opponent could be, from public information. It's part of stockNavalon (design in [`stockNavalon.md`](stockNavalon.md), sections 4 and 5). Status: **implemented** in `src/stockNavalon/tribeInference.h`: the starting-score filter, the climate filter and the search over score changes (section 10 has what's built and the measurements). Its coverage test is built too.
 
 ## 1. Why exact, and what it guarantees
 
@@ -34,7 +34,7 @@ std::bitset<TribeTypes::TRIBE_SIZE> possibleTribes(const PlayerView &view, int o
 
 **Output:** the set of possible tribes. A met opponent's set is just their tribe.
 
-**Turn horizon:** only the first `turns` changes are searched (default 5). Later changes are too ambiguous to rule much out, and the search grows each turn. **To measure:** 3, 4, 5 and 6, by how small the set gets and how long it takes (section 7).
+**Turn horizon:** only the first `turns` changes are searched, by default just 1: the opponent's turn 0. Measured at 1 to 6 turns, only turn 0 ruled anything out (section 10). From turn 1 on, their units could be anywhere within reach, so later changes are too ambiguous, and the search grows each turn. The search handles longer horizons if a stronger opponent's later turns turn out to say more.
 
 ## 3. The opponent's state, as searched
 
@@ -46,8 +46,11 @@ For each candidate tribe, the search tracks the opponent's state turn by turn:
 | techs | Basic plus the tribe's start tech | |
 | cities | 1: the capital | with each city's level and population. Luxidoor's capital starts at level 3. |
 | capital extras | none | workshop (+1 income), wall, park; from level-up rewards |
-| units | the tribe's start unit | by type; for the unit cap and how much they can explore |
-| explored tiles | 25 (the 5×5 start), or less near a corner | only used as an upper bound: total explored ≤ map tiles |
+| units | the tribe's start unit | their score (5 × cost, whatever the type) exactly; the counts by type only as an upper bound on what they can do (explore, capture, disband) |
+| explored tiles | from the starting score: 9 to 25 | the fewest they could have; total explored ≤ what's within sight of their reach (section 5) |
+| reach | 0 | the furthest from their capital (Chebyshev) any of their units could be |
+| met the player | no | whether they've had the meeting stars yet (section 5) |
+| a port | no | whether they could have one, for boats |
 | pending rewards | none | a level-up's reward is chosen within the same turn |
 
 **Income** at the start of each turn after turn 0 is the sum, per city, of:
@@ -61,9 +64,12 @@ That's GAME.md section 3. Markets and embassies aren't reachable in 5 turns, and
 
 A published change, after taking out the viewer's own effects, must equal the sum of the events below over that turn. Each row is one event.
 
-**Linked to the engine, not copied from it.** A missing or wrong event is the one way this could wrongly rule out a tribe, so the list isn't trusted on its own:
-- **Every number comes from the engine:** costs, tiers, unit costs, population per building, level-up rewards, and the score formula itself (`unitData`, `techData`, `improvementData`, `tribeData`, `rewardsForLevel`, `Game::score`). The inference never restates them.
-- **A coverage test** (section 7) plays thousands of engine games. After every command, it checks that each player's score change is explained by one or more of the events below, using the full game state. If the engine ever gains a new way to change score, or an existing one changes amount, that test fails before the inference can go wrong. That holds even for events too rare or too late to show up in the soundness test.
+**Linked to the engine, not copied from it.** A missing or wrong event is the one way this could wrongly rule out a tribe, and the game itself changes over time, so the search never writes a rule's number itself:
+- **Tables** come from `data/`: tech tiers and the tree (`researchableWith`), unit costs, movement and abilities, improvement costs, population and techs, monuments, tribe starts.
+- **Every other rule** comes from `src/engine/rules.h`: score amounts, tech cost, income, embassies, rewards and their amounts, ruins, sight and border radii, task thresholds. The engine reads the same constants, so a change to the game is one edit, and the search follows it.
+- **The engine's own enums** drive the choices: level-up rewards come from `CityRewards::rewardsForLevel`, and the ruin rewards are a switch over `Game::RuinReward`. A new reward type is a compiler warning in the search until it's handled.
+- **The coverage test** (section 7) checks the search's score model against `Game::score` after every command of long random games.
+- **Not modelled:** markets and starfish, which give stars. A state that could have either stops the search reading, so the tribe stays possible. Both need tier-3 techs, so they're out of reach in the opening.
 
 The tables below describe the events for review; the code and the coverage test are the authority.
 
@@ -125,37 +131,24 @@ A ruin can explain score with no stars spent, which is exactly why it has to be 
 
 ## 5. Bounding exploration
 
-Exploration is the flexible part: +5 per tile, anything from none up to a bound. A loose bound lets almost any change through, so it's worth getting tight. It's still always an upper bound, never a guess.
+Exploration is the flexible part: +5 per tile, anything from none up to a bound. Every score is a multiple of 5, so a loose bound explains almost any change as "they explored some tiles", and then nothing is ruled out. The first version of the search had exactly that problem: a bound per unit per turn, ignoring where the units were, and it never ruled out a single tribe. The bound has to follow geometry. It's still always an upper bound, never a guess.
 
-**How units reveal tiles:** around every tile along their path (GAME.md section 16). Units can't move into unexplored tiles, so every tile on a path is already explored, and only the ring of tiles within sight of the path is new. A unit with sight `r` sees a `(2r + 1)²` square from each tile.
+**Per turn, per unit:** units reveal tiles along their path (GAME.md section 16), and can't move into fog, so only the ring within sight of the path is new. Each step reveals at most `4r + 1` new tiles for sight `r` (a diagonal step), and ending on a mountain with Climbing, at most 16. Roads double the length. A kill's move-in and Escape's second move need an attack. In 1v1 the only thing to attack is the player, who always knows when that happened (`PlayerView::attackedOnTurns`), so they count only on those turns. Units trained this turn can't move.
 
-A move of `L` tiles (one king's step each) reveals tiles within `r` of the path. All of those lie within `L + r` of the start, and the start's own square was already explored. So per move:
+**Overall, from the capital:** this is what makes the opening informative.
+- Every unit starts on the capital, inside the explored 5×5. The search tracks the furthest any unit could be by now: each turn adds the longest move any of their units could make, which is doubled by roads and longer by boat. A boat needs a port from an earlier turn, since moving onto a port ends a land unit's move. Explorers and pushes (a Giant or a ruin's unit placed on a tile that's already taken) can put a unit anywhere, and from then on the bound is the whole map.
+- Everything they've explored is within that reach plus sight of their capital: sight 1, or 2 with Climbing (mountains), the Scout skill, or a second city's borders.
+- **The capital's position comes from the starting score.** For each tribe, the starting score gives how many of the 5×5's tiles are on the map, and from that, how many of its rows and columns are: 5 when at least 2 from that edge, 4 one tile in, 3 on the edge. A corner's lighthouse starts unexplored, so a count one short means a corner is inside it. The square within reach is clipped by the map's edges accordingly.
+- So a Warrior's turn 0 explores nothing: from 1 tile out, sight 1 stays inside the 5×5. A Rider gets 2 tiles out and up to 5 new tiles, and Climbing sees 2 tiles from a mountain.
 
-`new tiles ≤ (2(L + r) + 1)² − (2r + 1)²`
+**Lighthouses** (+1 population each) are on the corners, so a find needs a corner within that square. With no corner inside the 5×5, the nearest one is at least 3 away.
 
-| Move | Sight | At most new tiles |
-| --- | --- | --- |
-| 1 tile (Warrior) | 1 | 16 |
-| 2 tiles (Rider) | 1 | 40 |
-| 3 tiles (Knight) | 1 | 72 |
-| any, ending on a mountain or with the Scout skill | 2 | the same formula with r = 2 |
-
-A path of `L` tiles really only exposes a band along it, so this square bound is loose. A tighter one counts only tiles within `r` of some tile the path could cover. That's worth using if the loose bound turns out to let too much through (section 7 measures it). Roads double `L`.
-
-**Position changes per unit per turn:**
-- one move
-- a second move for Escape units (Rider), after attacking
-- a kill-move-in after a melee kill
-- embarking or disembarking also count as a move
-
-So per turn, exploration is at most the sum of that bound over every move each unit makes.
+**The meeting stars** (GAME.md section 3) were the other loophole. The opponent might have met the player without being met back, and those stars pay for anything. They come once, when the opponent explores a tile with one of the player's units or cities on it. The player knows the first turn they stood on each tile (`PlayerView::firstOccupied`), and the opponent's capital is on a tile the player hasn't explored, with edge distances that fit its 5×5. So meeting by a given turn needs one of those tiles within the opponent's sight of where the player had been by then. The search tries each turn both with and without the stars, whenever meeting is possible. Then, at the end of the turn, it checks against the techs and reach the opponent actually had.
 
 **Bigger reveals:**
-- **An Explorer** (level-2 reward or ruin): up to 12 steps, each revealing at most 25. Bounded by the rest of the map.
+- **An Explorer** (level-2 reward or ruin): anywhere, bounded by the rest of the map.
 - **Capturing a village:** its 3×3, up to 9.
 - **Border Growth:** up to 16.
-
-**Overall:** total explored never exceeds the map's tiles (121 on Tiny), so the cumulative +5s are capped too.
 
 ## 6. The search
 
@@ -169,17 +162,18 @@ Per candidate tribe, turn by turn:
 The tribe stays possible if any path matches all `turns` changes.
 
 **Keeping it small:**
-- Dead ends are cut as soon as a turn's score can't be matched.
-- Identical states are merged: the same stars, techs, cities and units reached by different routes.
-- Order within a turn doesn't matter, apart from population triggering a level-up and its reward. Actions are chosen as a set, and level-ups are resolved after.
-- Stars are tiny early on: 2 to 7 at the start, a few more per turn. So only a handful of purchase combinations fit each turn.
+- **Pruning:** a branch stops as soon as its known score has passed the change. Within a turn the known score only rises (each population still to place adds at least 5), except by one disband.
+- **Merging:** states that agree on everything exact merge, keeping the most stars, territory, reach and units of each type and the fewest explored tiles. Each of those only ever allows more, so merging stays sound. A unit's score depends only on its cost, so it's kept separately and exactly.
+- **Stages:** a turn runs in stages (research, train, improvements, events, population, monuments), with merging between them, so a stage runs once per distinct state rather than once per route to it.
+- **Limits:** at most `maxStates` states per turn and `maxWork` states made in a turn's stages. Past either, the search stops reading and the tribe stays possible. The limits bound the time, never the soundness.
+- **Cache:** the opponent's history only grows, so the states after each prefix of it are cached. A new change costs one step, and every position in a turn shares the result.
 
 **Second player:** the opponent's first change comes after the viewer's first turn. Their turn 0 still has no income, and the turn numbering follows their turns, not the viewer's.
 
 ## 7. Tests and measurements
 
 1. **Never wrong** (a hard test): across thousands of self-play games on every map type and every tribe matchup, the true tribe is always in the possible set, at every turn. Random bots are good at this, since they do odd things a real player wouldn't. A failure means a missing event or a bound that's too tight.
-2. **Coverage,** linking the event list to the engine (section 4): across the same games, after every command, each player's score change must be explained by events in the list, worked out from the full game state. This catches events the soundness test might never reach.
+2. **Coverage,** linking the search to the engine (section 4): across long random games, after every command, the search's model of each player's score, built from the true state (`searchModelScore`), must equal `Game::score`. A way of scoring the search doesn't model breaks it, even one too rare or too late for the soundness test to reach. It covers the score formula. Whether the search's moves cover every action the engine allows is what the soundness test checks.
 3. **Usefulness,** per horizon (3, 4, 5, 6):
    - the average size of the set, and how often it's down to one tribe, turn by turn
    - for the random bot and for the stronger bots once they exist, since real players' openings are more distinctive
@@ -206,20 +200,32 @@ Climates also say roughly where the opponent is. Regions are roughly Voronoi-lik
 
 ## 9. Open questions
 
-1. **The horizon:** measure 3, 4, 5 and 6 turns (section 7).
-2. **How loose the exploration bound can be** before it stops ruling tribes out (section 5).
+1. **Stronger opponents:** the measurements in section 10 are against the random bot. A purposeful opening (scouting with a Rider at once, a road on turn 1) should be more distinctive. Measure again once stockNavalon plays.
+2. **Later turns:** nothing past the first change ruled anything out in random games. The bound from turn 1 on is looser, since units could be anywhere within reach. Tracking where each unit could be, not just the furthest, would tighten it.
 3. **Rules the engine itself doesn't have yet:** the coverage test links the event list to the engine, so the inference is exactly as right as the engine's score rules. Mid-game score rules still need checking against the real game (`stockNavalon.md` section 5.1).
 
-## 10. Implemented so far
+## 10. Implemented
 
-`possibleTribes(view, opponent)` already applies two exact filters, with no search:
+`possibleTribes(view, opponent, config)` applies three exact filters:
 
-1. **Starting score:** a tribe stays only if its fixed starting score plus 5 per explored tile matches the opponent's first published score, for 9 to 25 explored tiles. The fixed part is the start tech's tier, the start unit's cost, the capital at its starting level, and its 9 border tiles, all read from the engine's tables. The range of explored tiles covers capitals near an edge or a corner lighthouse. That's why, say, Oumaji (520 normally) stays possible at 515: a corner-capital Oumaji starts 5 lower. It relies on capitals never being on the map edge, which GAME.md guarantees for villages, and so for capitals.
+1. **Starting score:** a tribe stays only if its fixed starting score plus 5 per explored tile matches the opponent's first published score, for 9 to 25 explored tiles. The fixed part is the start tech's tier, the start unit's cost, the capital at its starting level, and its 9 border tiles, all read from the engine's tables.
 2. **Climate** (section 8.1): when there's only one unmet opponent, a foreign climate seen that the tribes already known can't explain must be theirs. Your own climate rules nothing out, because of mirror matches.
+3. **The score-change search** (sections 3 to 6), `scoreChangesFit`, for each tribe left, over the first `config.turns` changes. The default is 1, just their turn 0: that's where all the narrowing came from, below. Two-player games only: with more players, others' effects are mixed into each change.
+
+**Measurements,** random bots on generated 11×11 maps, every map type, 96 games, 1,312 calls with an unmet opponent:
+- **Never wrong:** 0 calls ruled out the real tribe.
+- **Narrowing:** the search shrank 45 of the 1,312 sets, beyond what the starting score and climate had done. The mean set size went from 2.45 to 2.41.
+- **Horizon:** 1 to 6 turns, and work limits of 50,000 and 200,000, all gave exactly the same sets. All of the narrowing comes from the opponent's turn 0, the one turn where every unit's start is known exactly.
+- **Cost:** 5 ms per call on average, 12 ms at the 90th percentile, 270 ms at most.
+
+The search is the most distinctive on turn 0. For example, a +25 there leaves only Oumaji (a Rider reaches 2 tiles out) and Xin-xi (Climbing) of the tribes sharing that starting score. Imperius and Bardur can't get there with a Warrior, and Kickoo's port would take until turn 1 to sail.
 
 **Tests** (`tests/stockNavalon/tribeInference_test.cc`):
 - the starting-score groups
 - climate in maps and games
 - a foreign climate settling the tribe, and a mirror match staying open
-- soundness: every one of the 144 matchups (mirrors included), checked every turn for 20 turns of random play, never ruled out the true tribe. By turn 20 the tribe was pinned down exactly in 110 of the 144, mostly from climate. That count reflects random play, which scouts aimlessly; a purposeful bot would find climates sooner.
+- the turn-0 example above
+- coverage: the search's score model equals `Game::score` after every one of 70,000 random-game commands, for both players. Planting a gap (parks, temple levels, monuments, unit score) makes it fail.
+- soundness, with the full search: all 144 matchups (mirrors included), checked every turn from both sides for 20 turns of random play (5,760 checks), never ruled out the true tribe. By turn 20 the tribe was pinned down in 110 of the 144, mostly from climate.
 
+**What the engine records for it:** `PlayerView::effectsInChanges` (the player's own effects within each published change), `attackedOnTurns` and `firstOccupied`. All three are the player's own knowledge.

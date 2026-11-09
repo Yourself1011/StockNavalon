@@ -219,15 +219,17 @@ void printStatus(const Game &game) {
             std::cout << "City (" << city.tile % view.size << ","
                       << city.tile / view.size << ") level " << city.level
                       << ", population " << city.population << "/"
-                      << city.level + 1 << '\n';
+                      << Rules::populationToLevelUp(city.level) << '\n';
         }
     }
 
     // tasks: done (and whether the monument is built), with progress
-    std::cout << "Tasks: kills " << view.kills << "/10, lighthouses "
-              << view.lighthousesFound << "/4";
-    if (view.techs.test(TechTypes::MEDITATION)) {
-        std::cout << ", peaceful turns " << view.peacefulTurns << "/5";
+    std::cout << "Tasks: kills " << view.kills << "/" << Rules::KILLER_KILLS
+              << ", lighthouses " << view.lighthousesFound << "/"
+              << Rules::LIGHTHOUSE_COUNT;
+    if (view.techs.test(Rules::PACIFIST_TECH)) {
+        std::cout << ", peaceful turns " << view.peacefulTurns << "/"
+                  << Rules::PACIFIST_TURNS;
     }
     for (int task = 0; task < TaskTypes::TASK_SIZE; task++) {
         if (view.tasksDone.test(task)) {

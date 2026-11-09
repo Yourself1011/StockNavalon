@@ -1,5 +1,6 @@
 #include "data/techData.h"
 #include "utils.h"
+#include <algorithm>
 
 namespace {
 using namespace TechTypes;
@@ -48,3 +49,17 @@ const std::array<TechData, TECH_TYPE_SIZE> techData = {
          makeBitset<TERRAIN_TYPE_SIZE>({FOREST})),
     tech(SPIRITUALISM, "spiritualism", 3, ARCHERY),
 };
+
+bool researchableWith(const TechSet &owned, TechTypes::TechType tech) {
+    if (tech == TechTypes::BASIC || owned.test(tech)) {
+        return false;
+    }
+    if (owned.test(techData[tech].parent)) {
+        return true;
+    }
+    return std::any_of(techData.begin(), techData.end(),
+                       [&](const TechData &child) {
+                           return child.parent == tech && child.type != tech &&
+                                  owned.test(child.type);
+                       });
+}

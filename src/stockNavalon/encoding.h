@@ -20,7 +20,9 @@ struct EncodingConfig {
     bool operator==(const EncodingConfig &) const = default;
 };
 
-constexpr int ENCODING_VERSION = 3;
+constexpr int ENCODING_VERSION = 4;
+// how many of each opponent's first score changes are encoded
+constexpr int OPENING_CHANGES = 6;
 
 // the per-tile command slots (docs/encoding.md section 5)
 namespace EncodingSlots {

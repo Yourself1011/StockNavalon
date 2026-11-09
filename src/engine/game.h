@@ -8,6 +8,7 @@
 #include "data/unitData.h"
 #include "map.h"
 #include "player.h"
+#include "rules.h"
 #include "tile.h"
 #include "unit.h"
 #include <algorithm>
@@ -70,8 +71,11 @@ class Game {
     // For each scoreHistory record, what each player had visibly done to the
     // publisher's score within that change: players entries per record.
     std::vector<int> scoreEffectHistory;
-    // how many steps an Explorer takes
-    static constexpr int EXPLORER_STEPS = 12;
+    // The first turn one of each player's units or cities stood on each tile,
+    // -1 for never: players x tiles, filled in as they happen. Others meet a
+    // player by seeing those, so the player can bound when that could have
+    // been.
+    std::vector<int> firstOccupied;
     // random number state, part of the game so copies stay deterministic
     std::uint64_t rng;
 
@@ -114,7 +118,7 @@ class Game {
     int cityAt(int tile) const;
     int cityCount(int player) const;
     bool besieged(int city) const;
-    // units supported by the city, toward its cap of level + 1
+    // units supported by the city, toward its cap (Rules::unitCap)
     int unitCount(int city) const;
     int techCost(int player, TechTypes::TechType tech) const;
     // owns the parent or a child; ignores the price
@@ -212,11 +216,13 @@ class Game {
     // ... and within the change `to` last published
     int effectsInLastChange(int by, int to) const;
     int unitScore(const Unit &unit) const;
+    // what an owned tile adds to its owner's score: the territory, and a
+    // temple or monument on it
+    int tileScore(int tile) const;
     int templeLevel(int tile) const;
     // turns until the temple gains its next level, 0 at the top level
     int templeTurnsToLevelUp(int tile) const;
     // the stars for meeting a tribe with this score
-    static int meetingBonus(int score);
     // meets every tribe the player can now see; called after every command
     void checkMeetings();
 
@@ -273,6 +279,7 @@ class Game {
     void disembark(int unit, int to);
     // puts the unit on the tile and applies Stomp
     void placeUnit(int unit, int to);
+    void markOccupied(int player, int tile);
     void stomp(int unit);
     void killUnit(int unit);
 

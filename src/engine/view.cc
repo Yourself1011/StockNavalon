@@ -51,6 +51,10 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     view.kills = me.kills;
     view.peacefulTurns = me.peacefulTurns;
     view.lighthousesFound = me.lighthousesFound;
+    view.attackedOnTurns = me.attackedOnTurns;
+    int count = game.size * game.size;
+    view.firstOccupied.assign(game.firstOccupied.begin() + player * count,
+                              game.firstOccupied.begin() + (player + 1) * count);
 
     view.tiles.resize(game.tiles.size());
     for (std::size_t i = 0; i < game.tiles.size(); i++) {

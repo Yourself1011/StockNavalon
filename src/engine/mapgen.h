@@ -30,6 +30,8 @@ struct MapGenSettings {
     int minSuburbDistance = 3, maxSuburbDistance = 4;
     // capitals stay at least this far from the map edge (0 is the edge)
     int capitalEdgeDistance = 2;
+    // villages and capitals stay at least this far apart
+    int settlementSpacing = 3;
     // ruins; -1 uses the map size table
     int ruins = -1;
     // lakes are grown this many tiles at a time

@@ -1,22 +1,17 @@
 #include "game.h"
 #include <cmath>
 
-namespace {
-// to the nearest whole HP, halves up; returned x10
-int roundHp(double hp) { return static_cast<int>(std::floor(hp + 0.5 + 1e-9)) * 10; }
-} // namespace
-
 double Game::defenceBonus(const Unit &unit) const {
     const Tile &tile = tiles[unit.tile];
     int city = cityAt(unit.tile);
     if (city >= 0 && cities[city].owner == unit.owner &&
         unit.has(Abilities::FORTIFY)) {
-        return cities[city].wall ? 4.0 : 1.5;
+        return cities[city].wall ? Rules::WALL_BONUS : Rules::FORTIFY_BONUS;
     }
     for (const TechData &tech : techData) {
         if (players[unit.owner].hasTech(tech.type) &&
             tech.defenceBonuses.test(tile.terrain)) {
-            return 1.5;
+            return Rules::TERRAIN_BONUS;
         }
     }
     return 1.0;
@@ -24,17 +19,11 @@ double Game::defenceBonus(const Unit &unit) const {
 
 Game::AttackResult Game::previewAttack(const Unit &attacker,
                                        const Unit &defender) const {
-    double attack = attacker.data().attack / 10.0;
-    double defence = defender.data().defence / 10.0;
-    double attackForce = attack * attacker.hp / attacker.maxHp;
-    double defenceForce =
-        defence * defender.hp / defender.maxHp * defenceBonus(defender);
-    double total = attackForce + defenceForce;
-    if (total <= 0) {
-        return {0, 0};
-    }
-    return {roundHp(attackForce / total * attack * 4.5),
-            roundHp(defenceForce / total * defence * 4.5)};
+    Rules::Damage d = Rules::damage(
+        attacker.data().attack, attacker.hp, attacker.maxHp,
+        defender.data().defence, defender.hp, defender.maxHp,
+        defenceBonus(defender));
+    return {d.dealt, d.returned};
 }
 
 std::vector<int> Game::attackTargets(int unitIdx) const {
@@ -87,7 +76,8 @@ void Game::stomp(int unitIdx) {
     // half of what an attack on each would deal, not rounded
     for (int victim : victims) {
         splashDamage(unitIdx, victim,
-                     previewAttack(unit, units[victim]).damage / 2);
+                     previewAttack(unit, units[victim]).damage /
+                         Rules::SPLASH_DIVISOR);
     }
 }
 
@@ -127,7 +117,8 @@ void Game::attack(int unitIdx, int target) {
             }
         });
         for (int victim : splashed) {
-            splashDamage(unitIdx, victim, result.damage / 2);
+            splashDamage(unitIdx, victim,
+                         result.damage / Rules::SPLASH_DIVISOR);
         }
     }
 
@@ -156,6 +147,7 @@ void Game::convert(int unitIdx, int targetIdx) {
     onAttack(unit.owner, target.owner);
     target.owner = unit.owner;
     target.home = -1;
+    markOccupied(unit.owner, target.tile);
     // counts toward the capital, or a random city without one, even past its
     // cap
     if (!target.has(Abilities::INDEPENDENT)) {
@@ -187,7 +179,7 @@ void Game::infiltrate(int unitIdx, int target) {
     int city = cityAt(target);
     onAttack(owner, cities[city].owner);
     killUnit(unitIdx);
-    int count = std::min(cities[city].level, 5);
+    int count = std::min(cities[city].level, Rules::INFILTRATION_MAX_DAGGERS);
 
     // the city tile first, then outward
     std::vector<int> spots;

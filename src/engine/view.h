@@ -85,6 +85,11 @@ struct PlayerView {
     // progress: enemy units killed (Killer), turns in a row without an
     // attack since Meditation (Pacifist), lighthouses found (Explorer)
     int kills, peacefulTurns, lighthousesFound;
+    // the turns the player's units or cities were attacked: they always know
+    std::vector<int> attackedOnTurns;
+    // the first turn one of the player's units or cities stood on each tile,
+    // -1 for never
+    std::vector<int> firstOccupied;
 
     // the player's diplomacy, one entry per player (false for themselves)
     struct Relation {

@@ -435,6 +435,14 @@ void bindView(nb::module_ &m) {
                 "their score since they last published (negative for losses).")
         .def_ro("effects_in_last_change", &PlayerView::effectsInLastChange,
                 "Per player: the same, within the change they last published.")
+        .def_ro("effects_in_changes", &PlayerView::effectsInChanges,
+                "Per score_history record: what this player's own actions "
+                "visibly did to the publisher's score within that change.")
+        .def_ro("attacked_on_turns", &PlayerView::attackedOnTurns,
+                "The turns this player's units or cities were attacked.")
+        .def_ro("first_occupied", &PlayerView::firstOccupied,
+                "Per tile: the first turn one of this player's units or "
+                "cities stood on it, -1 for never.")
         .def_prop_ro("tasks_done",
                      [](const PlayerView &v) { return setBits(v.tasksDone); })
         .def_prop_ro("monuments_built",
@@ -506,6 +514,7 @@ void bindSearch(nb::module_ &m) {
 
 void bindEncoding(nb::module_ &m) {
     m.attr("ENCODING_VERSION") = ENCODING_VERSION;
+    m.attr("OPENING_CHANGES") = OPENING_CHANGES;
 
     nb::class_<EncodingConfig>(
         m, "Encoding",
@@ -610,14 +619,31 @@ void bindEncoding(nb::module_ &m) {
         }
         return out;
     };
+    TribeInferenceConfig defaults;
     m.def(
         "possible_tribes",
-        [tribeList](const PlayerView &view, int opponent) {
-            return tribeList(possibleTribes(view, opponent));
+        [tribeList](const PlayerView &view, int opponent, int turns,
+                    int maxStates, int maxWork) {
+            return tribeList(possibleTribes(view, opponent,
+                                            {turns, maxStates, maxWork}));
         },
-        "view"_a, "opponent"_a,
-        "The tribes the opponent could be, from the viewer's starting-score "
-        "and climate evidence. Always includes the real one.");
+        "view"_a, "opponent"_a, "turns"_a = defaults.turns,
+        "max_states"_a = defaults.maxStates, "max_work"_a = defaults.maxWork,
+        "The tribes the opponent could be, from their starting score, the "
+        "climates seen and their first `turns` score changes "
+        "(docs/tribeInference.md). Always includes the real one; the limits "
+        "only bound the time.");
+    m.def(
+        "score_changes_fit",
+        [](const PlayerView &view, int opponent, TribeTypes::Tribe tribe,
+           int turns, int maxStates, int maxWork) {
+            return scoreChangesFit(view, opponent, tribe,
+                                   {turns, maxStates, maxWork});
+        },
+        "view"_a, "opponent"_a, "tribe"_a, "turns"_a = defaults.turns,
+        "max_states"_a = defaults.maxStates, "max_work"_a = defaults.maxWork,
+        "Whether a player of `tribe` could have made the opponent's published "
+        "score changes so far. Two-player games only; otherwise True.");
     m.def(
         "climates_seen",
         [tribeList](const PlayerView &view) {
@@ -628,6 +654,10 @@ void bindEncoding(nb::module_ &m) {
         "tribes_with_starting_score",
         [tribeList](int score) { return tribeList(tribesWithStartingScore(score)); },
         "score"_a, "The tribes that could start the game with this score.");
+    m.def("starting_explored", &startingExplored, "tribe"_a, "score"_a,
+          "How many tiles a player of this tribe with this starting score "
+          "started with explored (9 to 25), or -1 if none fits. 25 means "
+          "their capital is at least 2 tiles from every edge.");
 
     m.def("explained_score", &explainedScore, "view"_a, "player"_a,
           "The part of a player's published score the viewer can account "

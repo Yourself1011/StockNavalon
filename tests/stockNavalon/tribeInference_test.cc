@@ -125,9 +125,14 @@ TEST_CASE("the real tribe is never ruled out") {
             for (int turn = 0; turn < 20 && !game.gameOver(); turn++) {
                 bot.playTurn(game);
                 for (int viewer = 0; viewer < 2; viewer++) {
-                    TribeSet possible =
-                        possibleTribes(makeView(game, viewer), 1 - viewer);
-                    REQUIRE(possible.test(lineup[1 - viewer]));
+                    PlayerView view = makeView(game, viewer);
+                    REQUIRE(possibleTribes(view, 1 - viewer)
+                                .test(lineup[1 - viewer]));
+                    // longer horizons than the default stay sound too (with
+                    // a smaller budget, which only bounds the time)
+                    REQUIRE(possibleTribes(view, 1 - viewer,
+                                           {.turns = 4, .maxWork = 5000})
+                                .test(lineup[1 - viewer]));
                     checks++;
                 }
             }
@@ -137,4 +142,64 @@ TEST_CASE("the real tribe is never ruled out") {
     }
     MESSAGE(games << " games, " << checks << " checks; settled by the end in "
                   << settled);
+}
+
+TEST_CASE("the opponent's first turn shows what their units could reach") {
+    // A turn-0 change of +25: a Warrior that can't climb sees nothing new
+    // from 1 tile out of the explored 5x5, and 5 stars can't buy +25, but a
+    // Rider reaches 2 tiles out, and Climbing sees 2 tiles from a mountain.
+    std::vector<Tribe> lineup = {IMPERIUS, OUMAJI};
+    Game game(generateMap({.size = 11,
+                           .type = MapTypes::LAKES,
+                           .tribes = lineup,
+                           .seed = 3}),
+              lineup, {.seed = 3});
+    PlayerView view = makeView(game, 0);
+    REQUIRE_FALSE(view.tribes[1]);
+    int start = view.scores[1];
+    auto after = [&](int change) {
+        PlayerView v = view;
+        v.scoreHistory.push_back({1, 0, start + change});
+        v.effectsInChanges.push_back(0);
+        return v;
+    };
+    TribeSet sharing = tribes({IMPERIUS, BARDUR, KICKOO, OUMAJI, XINXI});
+    REQUIRE((tribesWithStartingScore(start) & sharing) == sharing);
+
+    PlayerView far = after(25);
+    CHECK_FALSE(scoreChangesFit(far, 1, IMPERIUS));
+    CHECK_FALSE(scoreChangesFit(far, 1, BARDUR));
+    // a port takes a turn before its boats sail
+    CHECK_FALSE(scoreChangesFit(far, 1, KICKOO));
+    CHECK(scoreChangesFit(far, 1, OUMAJI));
+    CHECK(scoreChangesFit(far, 1, XINXI));
+
+    // a Warrior and a harvest
+    PlayerView near = after(15);
+    CHECK(scoreChangesFit(near, 1, IMPERIUS));
+    CHECK(scoreChangesFit(near, 1, OUMAJI));
+}
+
+TEST_CASE("the search scores a state exactly as the engine does") {
+    // The coverage test (docs/tribeInference.md section 7): after every
+    // command of long random games, the search's model of the score, built
+    // from the true state, must equal the engine's. Any way of scoring the
+    // search doesn't know about would break it.
+    int commands = 0;
+    for (std::uint64_t seed = 0; seed < 24; seed++) {
+        std::vector<Tribe> lineup = {static_cast<Tribe>(seed % TRIBE_SIZE),
+                                     static_cast<Tribe>((seed * 5 + 3) % TRIBE_SIZE)};
+        auto type = static_cast<MapTypes::MapType>(seed % MapTypes::MAP_TYPE_SIZE);
+        Game game(generateMap({.size = 11, .type = type, .tribes = lineup, .seed = seed}),
+                  lineup, {.seed = seed});
+        RandomBot bot(seed);
+        for (int step = 0; step < 4000 && !game.gameOver(); step++) {
+            game.apply(bot.choose(game));
+            commands++;
+            for (int p = 0; p < 2; p++) {
+                REQUIRE(searchModelScore(game, p) == game.score(p));
+            }
+        }
+    }
+    MESSAGE(commands << " commands");
 }

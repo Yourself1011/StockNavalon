@@ -163,11 +163,11 @@ class Generator {
         return best;
     }
 
-    // every village and capital: on land, off the edge, at least 3 apart.
+    // every village and capital: on land, off the edge, spaced apart.
     // Post-terrain villages also avoid the 2nd and 4th tiles from the edge.
     bool villageAllowed(int t, bool postTerrain) const {
         int edge = edgeDistance(t);
-        if (!land(t) || edge == 0 || nearestSettlement(t) < 3) {
+        if (!land(t) || edge == 0 || nearestSettlement(t) < s.settlementSpacing) {
             return false;
         }
         return !postTerrain || (edge != 1 && edge != 3);
@@ -221,7 +221,7 @@ void Generator::placeCapitals() {
                 return x(t) >= x0 + margin && x(t) < x1 - margin &&
                        y(t) >= y0 + margin && y(t) < y1 - margin &&
                        edgeDistance(t) >= s.capitalEdgeDistance &&
-                       nearestSettlement(t) >= 3;
+                       nearestSettlement(t) >= s.settlementSpacing;
             });
             if (!options.empty()) {
                 int t = rng.pick(options);

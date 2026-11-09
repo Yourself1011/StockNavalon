@@ -34,7 +34,7 @@ bool Game::canBuild(int player, int tile, ImprovementType type) const {
     }
     // a monument needs its task done, and is built once
     if (isMonument(type)) {
-        int task = type - ALTAROFPEACE;
+        int task = TaskTypes::taskFor(type);
         if (!p.tasksDone.test(task) || p.monumentsBuilt.test(task)) {
             return false;
         }
@@ -63,7 +63,7 @@ bool Game::canBuild(int player, int tile, ImprovementType type) const {
     if (data.limited) {
         int city = t.territory;
         bool exists = false;
-        forEachInRadius(cities[city].tile, 2, [&](int n) {
+        forEachInRadius(cities[city].tile, Rules::MAX_BORDER_RADIUS, [&](int n) {
             exists |= tiles[n].territory == city && tiles[n].building == type;
         });
         if (exists) {
@@ -124,7 +124,7 @@ void Game::build(int tile, ImprovementType type) {
     case CLEARFOREST:
         t.terrain = TerrainTypes::FIELD;
         t.resource = ResourceTypes::NONE;
-        player.stars += 1;
+        player.stars += Rules::CLEAR_FOREST_REFUND;
         return;
     case BURNFOREST:
         t.terrain = TerrainTypes::FIELD;
@@ -145,7 +145,7 @@ void Game::build(int tile, ImprovementType type) {
 
     // a building
     if (isMonument(type)) {
-        player.monumentsBuilt.set(type - ALTAROFPEACE);
+        player.monumentsBuilt.set(TaskTypes::taskFor(type));
     }
     t.building = type;
     t.resource = ResourceTypes::NONE;

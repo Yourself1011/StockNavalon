@@ -8,8 +8,8 @@ bool Game::canSee(int player, const Unit &unit) const {
 int Game::sightRange(const Unit &unit) const {
     return unit.has(Abilities::SCOUT) ||
                    tiles[unit.tile].terrain == TerrainTypes::MOUNTAIN
-               ? 2
-               : 1;
+               ? Rules::FAR_SIGHT
+               : Rules::UNIT_SIGHT;
 }
 
 bool Game::resourceVisible(int player,
@@ -60,7 +60,7 @@ void Game::reveal(int player, int tile) {
         Player &p = players[player];
         p.lighthousesFound++;
         if (p.capital >= 0 && cities[p.capital].owner == player) {
-            addPopulation(p.capital, 1);
+            addPopulation(p.capital, Rules::LIGHTHOUSE_POPULATION);
         }
     }
 }
@@ -78,7 +78,7 @@ void Game::revealForUnit(int unit) {
 void Game::revealTerritory(int city) {
     int owner = cities[city].owner;
     reveal(owner, cities[city].tile);
-    forEachInRadius(cities[city].tile, 2, [&](int t) {
+    forEachInRadius(cities[city].tile, Rules::MAX_BORDER_RADIUS, [&](int t) {
         if (tiles[t].territory == city) {
             reveal(owner, t);
         }
@@ -109,7 +109,7 @@ void Game::runExplorer(int player, int start) {
     visited[start] = 1;
     int at = start;
 
-    for (int step = 0; step < EXPLORER_STEPS; step++) {
+    for (int step = 0; step < Rules::EXPLORER_STEPS; step++) {
         // Lower is better. A tile scores by the fog standing on it would clear
         // (sight 1: climbing a mountain doesn't count), capped at 4 tiles,
         // and a lighthouse in that fog is worth a little over 3 tiles.

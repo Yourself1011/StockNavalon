@@ -1,23 +1,32 @@
 #include "game.h"
 
 int Game::unitScore(const Unit &unit) const {
-    // 5 a star of the carried unit's cost; boat upgrades add nothing. A Giant
-    // costs 10, so it's worth 50.
-    return 5 * unitInfo(unit.passenger).cost;
+    // by the carried unit's cost; boat upgrades add nothing
+    return Rules::unitScore(unitInfo(unit.passenger).cost);
 }
 
 int Game::templeLevel(int tile) const {
-    // level 1 when built, one more every 2 turns, up to 5
-    return std::min(MAX_TEMPLE_LEVEL, 1 + (turn - tiles[tile].builtTurn) / 2);
+    return Rules::templeLevel(tiles[tile].builtTurn, turn);
 }
 
 int Game::templeTurnsToLevelUp(int tile) const {
     int level = templeLevel(tile);
-    if (level >= MAX_TEMPLE_LEVEL) {
+    if (level >= Rules::MAX_TEMPLE_LEVEL) {
         return 0;
     }
-    // level n is reached on turn builtTurn + 2 (n - 1)
-    return tiles[tile].builtTurn + 2 * level - turn;
+    // level n is reached on turn builtTurn + TEMPLE_TURNS_PER_LEVEL (n - 1)
+    return tiles[tile].builtTurn + Rules::TEMPLE_TURNS_PER_LEVEL * level - turn;
+}
+
+int Game::tileScore(int tile) const {
+    int total = Rules::TERRITORY_SCORE;
+    ImprovementTypes::ImprovementType building = tiles[tile].building;
+    if (isTemple(building)) {
+        total += Rules::templeScore(templeLevel(tile));
+    } else if (isMonument(building)) {
+        total += Rules::MONUMENT_SCORE;
+    }
+    return total;
 }
 
 int Game::score(int player) const {
@@ -29,31 +38,20 @@ int Game::score(int player) const {
     }
     for (int t = 0; t < size * size; t++) {
         if (explored(player, t)) {
-            total += 5;
+            total += Rules::EXPLORED_SCORE;
         }
-        if (tileOwner(t) != player) {
-            continue;
-        }
-        total += 20;
-        ImprovementTypes::ImprovementType building = tiles[t].building;
-        if (isTemple(building)) {
-            total += 100 * templeLevel(t);
-        } else if (isMonument(building)) {
-            total += 400;
+        if (tileOwner(t) == player) {
+            total += tileScore(t);
         }
     }
     for (const City &city : cities) {
         if (city.owner == player) {
-            // 100 at level 1; each level above is 50 (5 a population point
-            // plus a 50 - 5n bonus for reaching level n); 5 a population
-            // point toward the next; 250 a park
-            total += 100 + 50 * (city.level - 1) + 5 * city.population +
-                     250 * city.parks;
+            total += Rules::cityScore(city.level, city.population, city.parks);
         }
     }
     for (const TechData &tech : techData) {
         if (players[player].hasTech(tech.type)) {
-            total += 100 * tech.tier;
+            total += Rules::techScore(tech.tier);
         }
     }
     return total;
@@ -92,11 +90,6 @@ int Game::effectsInLastChange(int by, int to) const {
     return scoreEffects[count * count + by * count + to];
 }
 
-int Game::meetingBonus(int score) {
-    int thousands = score <= 0 ? 0 : (score + 999) / 1000;
-    return std::min(11, 1 + 2 * thousands);
-}
-
 void Game::checkMeetings() {
     int count = static_cast<int>(players.size());
     for (int p = 0; p < count; p++) {
@@ -110,7 +103,7 @@ void Game::checkMeetings() {
                 return;
             }
             player.met |= std::uint32_t{1} << other;
-            player.stars += meetingBonus(score(other));
+            player.stars += Rules::meetingBonus(score(other));
         };
         // meeting a tribe means seeing one of its units or one of its cities;
         // a border tile alone doesn't count
