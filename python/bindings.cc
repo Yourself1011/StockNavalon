@@ -532,6 +532,19 @@ void bindEncoding(nb::module_ &m) {
         .def_prop_ro("plane_count", &planeCount, "C")
         .def_prop_ro("global_count", &globalCount, "G")
         .def_prop_ro("action_count", &actionCount, "A")
+        .def_prop_ro("target_count", &targetCount,
+                     "The belief targets' length (docs/encoding.md section 8)")
+        .def_prop_ro(
+            "target_heads",
+            [](const EncodingConfig &c) {
+                std::vector<std::tuple<std::string, int, int, int>> out;
+                for (const TargetHead &h : targetHeads(c)) {
+                    out.emplace_back(h.name, h.opponent, h.offset, h.size);
+                }
+                return out;
+            },
+            "Each belief head's part of the targets: (name, opponent, offset, "
+            "size), opponents counted from 1.")
         .def(
             "encode_state",
             [](const EncodingConfig &c, const Game &game, int player) {
@@ -595,6 +608,32 @@ void bindEncoding(nb::module_ &m) {
                 return masks;
             },
             "games"_a, "A batch of masks: [B, A].")
+        .def(
+            "encode_targets",
+            [](const EncodingConfig &c, const std::vector<const Game *> &games,
+               const std::vector<int> &players) {
+                if (games.size() != players.size()) {
+                    throw std::invalid_argument("Need one player per game");
+                }
+                std::size_t b = games.size(),
+                            n = static_cast<std::size_t>(targetCount(c));
+                auto targets = newArray<float>({b, n});
+                auto masks = newArray<std::uint8_t>({b, n});
+                float *t = targets.data();
+                std::uint8_t *m = masks.data();
+                {
+                    nb::gil_scoped_release release;
+                    for (std::size_t i = 0; i < b; i++) {
+                        encodeTargets(*games[i], players[i], c, t + i * n,
+                                      m + i * n);
+                    }
+                }
+                return std::make_tuple(targets, masks);
+            },
+            "games"_a, "players"_a,
+            "The belief targets from the true games, and where each is trained: "
+            "(targets [B, T], masks [B, T]). The value target is the game's "
+            "result, added once it's over.")
         .def(
             "encode_command",
             [](const EncodingConfig &c, const Game &game, const Command &command) {

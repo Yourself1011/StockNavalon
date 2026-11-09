@@ -226,6 +226,6 @@ The search is the most distinctive on turn 0. For example, a +25 there leaves on
 - a foreign climate settling the tribe, and a mirror match staying open
 - the turn-0 example above
 - coverage: the search's score model equals `Game::score` after every one of 70,000 random-game commands, for both players. Planting a gap (parks, temple levels, monuments, unit score) makes it fail.
-- soundness, with the full search: all 144 matchups (mirrors included), checked every turn from both sides for 20 turns of random play (5,760 checks), never ruled out the true tribe. By turn 20 the tribe was pinned down in 110 of the 144, mostly from climate.
+- soundness, with the search at its default horizon: all 144 matchups (mirrors included), checked every turn from both sides for 20 turns of random play (5,760 checks), never ruled out the true tribe. By turn 20 the tribe was pinned down in 110 of the 144, mostly from climate.
 
 **What the engine records for it:** `PlayerView::effectsInChanges` (the player's own effects within each published change), `attackedOnTurns` and `firstOccupied`. All three are the player's own knowledge.

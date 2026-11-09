@@ -1,6 +1,6 @@
 # Encoding: states and commands as arrays
 
-The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network (design in [`stockNavalon.md`](stockNavalon.md)). Status: **implemented** (version 3) in `src/stockNavalon/encoding.h`, with Python access through `polyengine.Encoding`.
+The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network (design in [`stockNavalon.md`](stockNavalon.md)). Status: input and commands **implemented** (version 4) in `src/stockNavalon/encoding.h`, with Python access through `polyengine.Encoding`. Of the outputs (section 8), the belief targets are **implemented**; reading the network's beliefs back (`decodeBeliefs`) comes with determinization.
 
 ## 1. Configuration and versioning
 
@@ -237,3 +237,72 @@ In `tests/stockNavalon/encoding_test.cc` and `tests/python/test_engine.py`. They
 3. **Feature checks:** in hand-built positions, specific features land where they should. For example: a Rider of the opponent's at (3, 4) sets unit owner `rel 1` and unit type `RIDER` at row 4, column 3, and a threat value on the tiles it can reach.
 4. **Relative players:** the same position encoded for player 0, and for player 1 with the seats swapped, gives the same input.
 5. **Padding:** a 11×11 map at N = 16 matches the N = 11 encoding in its top-left corner, and is zero elsewhere apart from `on_map`.
+
+## 8. Outputs: value and beliefs
+
+What the network's other heads output, and the training targets the engine builds for them from the true game. Like the input, both sides depend on the layout: C++ writes the targets and reads the belief outputs back for `determinize()` ([`stockNavalon.md`](stockNavalon.md) section 5.5), and Python trains on them. The policy is section 5. Status: the belief targets are **implemented** (`encodeTargets`); `decodeBeliefs` comes with determinization.
+
+### 8.1 Value
+
+| Head | Output | Target |
+| --- | --- | --- |
+| value | 1, tanh | +1 if the player to move wins, −1 if they lose |
+
+- **Relative to the player to move**, like the input.
+- **Known only at the end:** the result isn't part of a position, so `encodeTargets` doesn't write it. Whoever records a game adds it to every position once the game is over.
+- **No draws.** In Might, the winner is the player holding every capital, and the game can't end any other way.
+- **The turn limit** is a self-play setting, not a rule: early games between weak players can go on forever. A game that hits it has no winner. Whether those games are dropped or given a soft target (from the score lead) is decided in training, not here.
+- **No score head in the first version.** The loser keeps their score (techs, other cities, exploration), so a final-score target isn't the same thing as the result. It could still help as a denser signal than one bit per game, so it stays an option if value training is slow.
+
+### 8.2 Beliefs
+
+Per opponent, so `P − 1` of each in general; one in 1v1. A belief head's target is about the true game, but it's only trained where the player doesn't already know the answer (the mask). Counts come as exact integers up to a cap, or as a distribution with no bins (section 8.3).
+
+| Head | Output | Target | Trained when |
+| --- | --- | --- | --- |
+| tribe | softmax over 12 | their tribe | not met; tribes ruled out ([`tribeInference.md`](tribeInference.md)) are masked to −∞ before the softmax |
+| techs | sigmoid per tech, 25 (Basic left out) | each tech owned | always |
+| stars | mixture of 3 negative binomials: a weight, mean and spread each (9 numbers) | their stars | always |
+| hidden unit here | `[N, N]`, sigmoid | an enemy unit on the tile that the player can't see | tiles without a unit the player sees, on the map. Extra weight on the rare positives. |
+| hidden unit type | `[T, N, N]`, softmax over the T = 20 unit types per tile | that unit's type, as it is now (a boat is its boat type) | tiles that have a hidden unit |
+| hidden unit count | softmax over 0 to 20, the last meaning 20 or more | how many of their units the player can't see | always |
+| opponent's exploration | softmax over 0 to N² | how many tiles they've explored | always |
+
+- **"Can't see"** means on an unexplored tile, or hidden (a Cloak or Dagger) anywhere.
+- **The joint for one tile:** P(a Rider here) = P(unit here) × P(Rider | unit here). The two are separate heads so the "here" loss can weight the rare tiles with units without distorting the type proportions (`stockNavalon.md` section 5.3).
+- **Not in the first version:** enemy cities in the fog, unexplored terrain, and a boat's passenger. Determinization fills those from simple priors until there are heads for them.
+
+### 8.3 Counts: to experiment with
+
+The count heads above are a first choice, not a measured one:
+- **Exact integers with a cap** (unit count, exploration): the only choice is the cap, and they can put weight on several values at once.
+- **A mixture of negative binomials** (stars): a distribution over counts of any size, with no bins. A single one can't have two peaks ("spent everything" against "saving up"), hence the mixture.
+- **Alternatives:** fixed-width buckets, a single negative binomial, or exact integers for stars too (0 to 60, then "more").
+
+To be compared once training runs, by the held-out log-likelihood of the true counts, and by how well `determinize()` samples match real games.
+
+### 8.4 Interfaces
+
+```cpp
+// The targets as one flat array per position: each head's part, per
+// opponent, with its name (layout as in the table above)
+std::vector<TargetHead> targetHeads(const EncodingConfig &);   // name, opponent, offset, size
+int targetCount(const EncodingConfig &);                       // 2,722 for N = 11, P = 2
+
+// The belief targets for `player`, from the true game, and a mask of where
+// each is trained ([targetCount] each). Stars are the count itself; the
+// other counts are one-hot.
+void encodeTargets(const Game &game, int player, const EncodingConfig &,
+                   float *targets, std::uint8_t *masks);
+
+// planned, with determinize(): the belief heads' output in engine terms
+Beliefs decodeBeliefs(const PlayerView &view, const float *outputs,
+                      const EncodingConfig &);
+```
+
+From Python: `enc.target_count`, `enc.target_heads` (a list of `(name, opponent, offset, size)`), and `enc.encode_targets(games, players)`, which returns `(targets [B, T], masks [B, T])`.
+
+**Tested** (`tests/stockNavalon/encoding_test.cc`) over random games: the hidden-unit masks are 0 exactly where the player sees a unit, so no target repeats what the input already shows. The type target is one-hot exactly where a hidden unit is, the per-tile targets add up to the count, and the tribe target is only trained while unmet, over the possible set.
+
+An output layout change bumps `ENCODING_VERSION` like an input change, since a checkpoint is only valid against both.
+

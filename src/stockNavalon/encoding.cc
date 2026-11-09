@@ -704,3 +704,113 @@ void legalMask(const Game &game, const EncodingConfig &config,
                std::uint8_t *mask) {
     legalMask(game.legalCommands(), game, config, mask);
 }
+
+// ---- training targets for the belief heads ----
+
+std::vector<TargetHead> targetHeads(const EncodingConfig &config) {
+    const int area = config.mapSize * config.mapSize;
+    // per opponent, in this order (docs/encoding.md section 8.2)
+    const std::vector<std::pair<std::string, int>> sizes = {
+        {"tribe", TribeTypes::TRIBE_SIZE},
+        // Basic, which everyone owns, is left out
+        {"techs", TechTypes::TECH_TYPE_SIZE - 1},
+        // the count itself, for a distribution over counts
+        {"stars", 1},
+        {"hidden_unit_here", area},
+        {"hidden_unit_type", UnitTypes::UNIT_TYPE_SIZE * area},
+        {"hidden_unit_count", HIDDEN_UNIT_COUNT_CAP + 1},
+        {"exploration", area + 1},
+    };
+    std::vector<TargetHead> heads;
+    int offset = 0;
+    for (int k = 1; k < config.players; k++) {
+        for (const auto &[name, size] : sizes) {
+            heads.push_back({name, k, offset, size});
+            offset += size;
+        }
+    }
+    return heads;
+}
+
+int targetCount(const EncodingConfig &config) {
+    std::vector<TargetHead> heads = targetHeads(config);
+    return heads.empty() ? 0 : heads.back().offset + heads.back().size;
+}
+
+void encodeTargets(const Game &game, int player, const EncodingConfig &config,
+                   float *targets, std::uint8_t *masks) {
+    checkFits(game, config);
+    const PlayerView view = makeView(game, player);
+    const int N = config.mapSize, size = game.size, P = config.players;
+    const int players = static_cast<int>(game.players.size());
+    std::fill(targets, targets + targetCount(config), 0.0f);
+    std::fill(masks, masks + targetCount(config), std::uint8_t{0});
+    auto padded = [&](int tile) { return (tile / size) * N + tile % size; };
+
+    for (const TargetHead &head : targetHeads(config)) {
+        int q = (player + head.opponent) % P;
+        if (q >= players || !game.players[q].alive) {
+            continue;
+        }
+        float *t = targets + head.offset;
+        std::uint8_t *m = masks + head.offset;
+        const Player &them = game.players[q];
+
+        if (head.name == "tribe") {
+            // only while unmet, and only over the tribes still possible
+            if (!view.tribes[q]) {
+                t[them.tribe] = 1;
+                TribeSet possible = possibleTribes(view, q);
+                for (int i = 0; i < head.size; i++) {
+                    m[i] = possible.test(i);
+                }
+            }
+        } else if (head.name == "techs") {
+            for (int i = 0; i < head.size; i++) {
+                t[i] = them.techs.test(i + 1);
+                m[i] = 1;
+            }
+        } else if (head.name == "stars") {
+            t[0] = static_cast<float>(them.stars);
+            m[0] = 1;
+        } else if (head.name == "hidden_unit_here" ||
+                   head.name == "hidden_unit_type") {
+            bool type = head.name == "hidden_unit_type";
+            for (int tile = 0; tile < size * size; tile++) {
+                // a unit the player sees is known, so nothing to learn there
+                if (view.tiles[tile].unit >= 0) {
+                    continue;
+                }
+                const Unit *unit = game.unitAt(tile);
+                bool hidden = unit && unit->owner == q;
+                int at = padded(tile);
+                if (!type) {
+                    t[at] = hidden;
+                    m[at] = 1;
+                } else if (hidden) {
+                    t[unit->type * N * N + at] = 1;
+                    for (int u = 0; u < UnitTypes::UNIT_TYPE_SIZE; u++) {
+                        m[u * N * N + at] = 1;
+                    }
+                }
+            }
+        } else if (head.name == "hidden_unit_count") {
+            int hidden = 0;
+            for (const Unit &unit : game.units) {
+                if (unit.alive && unit.owner == q &&
+                    view.tiles[unit.tile].unit < 0) {
+                    hidden++;
+                }
+            }
+            t[std::min(hidden, HIDDEN_UNIT_COUNT_CAP)] = 1;
+            std::fill(m, m + head.size, std::uint8_t{1});
+        } else if (head.name == "exploration") {
+            int explored = 0;
+            for (int tile = 0; tile < size * size; tile++) {
+                explored += game.explored(q, tile);
+            }
+            t[explored] = 1;
+            std::fill(m, m + head.size, std::uint8_t{1});
+        }
+    }
+}

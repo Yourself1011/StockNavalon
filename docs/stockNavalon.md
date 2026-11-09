@@ -65,7 +65,8 @@ A convolutional ResNet, perhaps 6 to 10 blocks of 64 to 128 channels for a 14×1
   - illegal slots are masked out using the engine's legal moves
 - **Value:**
   - pooled features into a small MLP, giving the expected result for the player to move
-  - possibly an auxiliary head predicting the final score difference, since win/loss alone is a sparse signal in long games
+  - no draws: the result is +1 or −1 for the player to move ([`encoding.md`](encoding.md) section 8.1)
+  - possibly an auxiliary score head later, if one bit per game turns out too sparse
 - **Beliefs:** the hidden state (section 5.3).
 
 ## 3. The search
@@ -317,13 +318,13 @@ The belief heads are part of the shared network (section 2). They output probabi
 | -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | opponent's tribe, unmet    | a softmax over tribes                                                                           | cross-entropy                                                                                               |
 | opponent's techs           | a sigmoid per tech                                                                              | binary cross-entropy                                                                                        |
-| opponent's stars           | a softmax over ranges (0–4, 5–9, ...)                                                           | cross-entropy                                                                                               |
+| opponent's stars           | a distribution over counts: a mixture of negative binomials, no bins ([`encoding.md`](encoding.md) section 8) | negative log-likelihood                                                                                     |
 | **where hidden units are** | one plane: per tile, the chance a hidden enemy unit (any type) is there                         | binary cross-entropy, only on tiles the player can't see, with extra weight on the rare tiles that have one |
 | **what type each is**      | per tile, a softmax over unit types: "if there's a unit here, it's 50% Warrior, 30% Rider, ..." | cross-entropy, only on tiles that have a hidden unit                                                        |
-| **how many hidden units**  | a count head: a distribution over the total number                                              | cross-entropy                                                                                               |
+| **how many hidden units**  | a softmax over the total, 0 to a cap                                                            | cross-entropy                                                                                               |
 | enemy cities in fog        | per tile, the chance an enemy city is there, plus its level                                     | binary cross-entropy / cross-entropy                                                                        |
 | unexplored tiles           | per tile, a softmax over terrain, resource, village/ruin/none                                   | cross-entropy, on unexplored tiles only                                                                     |
-| opponent's exploration     | how many tiles they've explored                                                                 | regression                                                                                                  |
+| opponent's exploration     | a softmax over how many tiles they've explored, 0 to the map's tiles                            | cross-entropy                                                                                               |
 
 **Why "where" and "what type" are separate planes,** instead of one plane per unit type:
 
@@ -607,6 +608,7 @@ Later, a trained model can be exported (TorchScript or ONNX) and run inside C++ 
 4. **Map size:** decided: start at 11×11 (Tiny), 1v1, padded to a fixed `N` that can grow later ([`encoding.md`](encoding.md)).
 5. **The score formula:** verify the mid-game score rules against real games (section 5.1).
 6. **The search horizon:** to be decided by measurement (section 3.5).
+7. **How to predict counts** (stars, hidden units, exploration): to experiment with. The first version uses exact integers with a cap, and a mixture of negative binomials for stars; fixed-width buckets and a single negative binomial are the alternatives. Compare by held-out log-likelihood and by how realistic `determinize()`'s samples are ([`encoding.md`](encoding.md) section 8.3).
 
 ## 9. Build order
 

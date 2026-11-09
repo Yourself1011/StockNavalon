@@ -6,6 +6,7 @@
 
 #include "command.h"
 #include <cstdint>
+#include <string>
 #include <vector>
 
 class Game;
@@ -77,3 +78,26 @@ void legalMask(const std::vector<Command> &legal, const Game &game,
 // The part of a player's published score that the viewer can account for
 // from what they see (docs/encoding.md section 4.1).
 int explainedScore(const PlayerView &view, int player);
+
+// ---- training targets for the belief heads (docs/encoding.md section 8) ----
+
+// the hidden unit count head's last class: this many or more
+constexpr int HIDDEN_UNIT_COUNT_CAP = 20;
+
+// One belief head's part of the target array, for one opponent (`opponent`
+// counts from 1, relative to the player)
+struct TargetHead {
+    std::string name;
+    int opponent, offset, size;
+};
+// every head, for every opponent, in order
+std::vector<TargetHead> targetHeads(const EncodingConfig &config);
+int targetCount(const EncodingConfig &config);
+
+// Writes the belief targets for `player` from the true game, and with them a
+// mask: 1 where the target is trained, 0 where the player already knows the
+// answer or there's nothing to learn. Both are [targetCount]. The value
+// target is the game's result, so whoever records the game adds it at the
+// end. Throws std::invalid_argument if the game doesn't fit the config.
+void encodeTargets(const Game &game, int player, const EncodingConfig &config,
+                   float *targets, std::uint8_t *masks);

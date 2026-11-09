@@ -914,6 +914,16 @@ class Encoding:
     def action_count(self) -> int:
         """A"""
 
+    @property
+    def target_count(self) -> int:
+        """The belief targets' length (docs/encoding.md section 8)"""
+
+    @property
+    def target_heads(self) -> list[tuple[str, int, int, int]]:
+        """
+        Each belief head's part of the targets: (name, opponent, offset, size), opponents counted from 1.
+        """
+
     def encode_state(self, game: Game, player: int) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
         """The player's input: (planes [C, N, N], globals [G])."""
 
@@ -925,6 +935,11 @@ class Encoding:
 
     def legal_masks(self, games: Sequence[Game]) -> NDArray[numpy.uint8]:
         """A batch of masks: [B, A]."""
+
+    def encode_targets(self, games: Sequence[Game], players: Sequence[int]) -> tuple[NDArray[numpy.float32], NDArray[numpy.uint8]]:
+        """
+        The belief targets from the true games, and where each is trained: (targets [B, T], masks [B, T]). The value target is the game's result, added once it's over.
+        """
 
     def encode_command(self, game: Game, command: Command) -> int:
         """The command's slot, or -1 if it has none (Resign, Stay)."""

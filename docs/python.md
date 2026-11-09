@@ -159,6 +159,8 @@ What the player knows. `everything=True` ignores fog.
 | `encode_state(game, player)` | `(planes, globals)`: float32 `[C, N, N]` and `[G]`, from what the player knows |
 | `encode_states(games, players)` | a batch: `[B, C, N, N]` and `[B, G]`, encoded in C++ without the GIL |
 | `legal_mask(game)`, `legal_masks(games)` | uint8 `[A]` or `[B, A]`: 1 for each legal command's slot |
+| `encode_targets(games, players)` | the belief heads' training targets from the true games, and where each is trained: float32 and uint8 `[B, T]` ([`encoding.md`](encoding.md) section 8) |
+| `target_count`, `target_heads` | T, and each head's `(name, opponent, offset, size)` within it |
 | `encode_command(game, c)` | the command's slot, or -1 if it has none (Resign, Stay) |
 | `decode_command(game, index)` | the legal command in that slot; raises `ValueError` if none is |
 | `explained_score(view, p)` | the part of player `p`'s published score the viewer can account for |

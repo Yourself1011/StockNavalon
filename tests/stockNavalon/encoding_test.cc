@@ -6,6 +6,7 @@
 #include "mapgen.h"
 #include "tribeInference.h"
 #include "view.h"
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -353,4 +354,85 @@ TEST_CASE("the opening and the capital it implies are encoded per opponent") {
         CHECK(e.globals[opening + n] == doctest::Approx(changes[n] / 500.0));
         CHECK(e.globals[opening + OPENING_CHANGES + n] == 1);
     }
+}
+
+TEST_CASE("belief targets only cover what the player can't see") {
+    EncodingConfig config;
+    const int N = config.mapSize, area = N * N;
+    CHECK(targetCount(config) == 12 + 25 + 1 + area +
+                                     UnitTypes::UNIT_TYPE_SIZE * area +
+                                     HIDDEN_UNIT_COUNT_CAP + 1 + area + 1);
+    std::map<std::string, TargetHead> head;
+    for (const TargetHead &h : targetHeads(config)) {
+        head[h.name] = h;
+    }
+
+    std::vector<float> targets(targetCount(config));
+    std::vector<std::uint8_t> masks(targetCount(config));
+    int checked = 0, hiddenSeen = 0;
+    for (std::uint64_t seed = 0; seed < 6; seed++) {
+        std::vector<TribeTypes::Tribe> lineup = {
+            static_cast<TribeTypes::Tribe>(seed), static_cast<TribeTypes::Tribe>(seed + 4)};
+        Game game(generateMap({.size = 11,
+                               .type = static_cast<MapTypes::MapType>(seed),
+                               .tribes = lineup,
+                               .seed = seed}),
+                  lineup, {.seed = seed});
+        RandomBot bot(seed);
+        for (int step = 0; step < 600 && !game.gameOver(); step++) {
+            game.apply(bot.choose(game));
+            for (int player = 0; player < 2; player++) {
+                int q = 1 - player;
+                encodeTargets(game, player, config, targets.data(), masks.data());
+                PlayerView view = makeView(game, player);
+                auto t = [&](const std::string &name, int i) {
+                    return targets[head[name].offset + i];
+                };
+                auto m = [&](const std::string &name, int i) {
+                    return masks[head[name].offset + i];
+                };
+
+                // tribe: trained only while unmet, over the possible tribes,
+                // which include the real one
+                int tribe = game.players[q].tribe;
+                for (int i = 0; i < TribeTypes::TRIBE_SIZE; i++) {
+                    CHECK(t("tribe", i) == (view.tribes[q] ? 0 : i == tribe));
+                    if (view.tribes[q]) {
+                        CHECK(m("tribe", i) == 0);
+                    }
+                }
+                CHECK(m("tribe", tribe) == !view.tribes[q]);
+
+                // hidden units: never on a tile the player sees a unit on,
+                // and the per-tile targets add up to the count
+                int here = 0;
+                for (int tile = 0; tile < area; tile++) {
+                    int x = tile % N, y = tile / N;
+                    bool onMap = x < game.size && y < game.size;
+                    bool seen = onMap && view.tiles[y * game.size + x].unit >= 0;
+                    CHECK(m("hidden_unit_here", tile) == (onMap && !seen));
+                    here += t("hidden_unit_here", tile) == 1;
+                    float types = 0;
+                    for (int u = 0; u < UnitTypes::UNIT_TYPE_SIZE; u++) {
+                        types += t("hidden_unit_type", u * area + tile);
+                        CHECK(m("hidden_unit_type", u * area + tile) ==
+                              t("hidden_unit_here", tile));
+                    }
+                    CHECK(types == t("hidden_unit_here", tile));
+                }
+                hiddenSeen += here;
+                CHECK(t("hidden_unit_count", std::min(here, HIDDEN_UNIT_COUNT_CAP)) == 1);
+
+                int explored = 0;
+                for (int tile = 0; tile < game.size * game.size; tile++) {
+                    explored += game.explored(q, tile);
+                }
+                CHECK(t("exploration", explored) == 1);
+                CHECK(t("stars", 0) == game.players[q].stars);
+                checked++;
+            }
+        }
+    }
+    MESSAGE(checked << " positions, " << hiddenSeen << " hidden units");
+    CHECK(hiddenSeen > 0);
 }

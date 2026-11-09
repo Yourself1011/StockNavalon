@@ -142,6 +142,11 @@ def test_encoding_shapes_and_round_trip():
     assert batch_globals.shape == (2, 133)
     assert np.array_equal(batch_planes[0], planes)
     assert enc.legal_masks(games).shape == (2, 26410)
+    targets, target_masks = enc.encode_targets(games, [0, 1])
+    assert targets.shape == target_masks.shape == (2, enc.target_count)
+    heads = {name: (offset, size) for name, _, offset, size in enc.target_heads}
+    offset, size = heads["stars"]
+    assert targets[0, offset] == games[0].players[1].stars
 
 
 def test_climate_and_possible_tribes():

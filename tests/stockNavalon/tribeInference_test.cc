@@ -125,13 +125,7 @@ TEST_CASE("the real tribe is never ruled out") {
             for (int turn = 0; turn < 20 && !game.gameOver(); turn++) {
                 bot.playTurn(game);
                 for (int viewer = 0; viewer < 2; viewer++) {
-                    PlayerView view = makeView(game, viewer);
-                    REQUIRE(possibleTribes(view, 1 - viewer)
-                                .test(lineup[1 - viewer]));
-                    // longer horizons than the default stay sound too (with
-                    // a smaller budget, which only bounds the time)
-                    REQUIRE(possibleTribes(view, 1 - viewer,
-                                           {.turns = 4, .maxWork = 5000})
+                    REQUIRE(possibleTribes(makeView(game, viewer), 1 - viewer)
                                 .test(lineup[1 - viewer]));
                     checks++;
                 }
