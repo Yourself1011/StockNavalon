@@ -169,3 +169,25 @@ def test_climate_and_possible_tribes():
     assert view.attacked_on_turns == []
     assert pe.starting_explored(pe.Tribe.AIMO, view.scores[1]) in range(9, 26)
     assert pe.OPENING_CHANGES == 6
+
+
+def test_self_play_records_and_examples(tmp_path):
+    import numpy as np
+
+    records = pe.play_games(2, seed=3, threads=2, simulations=20, max_turns=3)
+    assert len(records) == 2
+    path = str(tmp_path / "games.txt")
+    pe.save_records(records, path)
+    loaded = pe.load_records(path)
+    assert [r.final_scores for r in loaded] == [r.final_scores for r in records]
+
+    enc = pe.Encoding()
+    positions = [(i, m) for i, r in enumerate(loaded) for m in r.searched[:5]]
+    ex = enc.encode_examples(loaded, positions)
+    b = len(positions)
+    assert ex["planes"].shape == (b, enc.plane_count, 11, 11)
+    assert ex["policy"].shape == ex["legal"].shape == (b, enc.action_count)
+    assert ex["targets"].shape == (b, enc.target_count)
+    assert np.allclose(ex["policy"].sum(axis=1), 1)
+    assert np.all(ex["legal"][ex["policy"] > 0] == 1)
+    assert np.all(np.abs(ex["value"]) <= 1)

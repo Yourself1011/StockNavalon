@@ -10,11 +10,14 @@
 #include "game.h"
 #include "legalMoves.h"
 #include "mapgen.h"
+#include "record.h"
+#include "selfPlay.h"
 #include "tribeInference.h"
 #include "view.h"
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
@@ -55,6 +58,37 @@ nb::ndarray<nb::numpy, T> newArray(std::initializer_list<std::size_t> shape) {
     T *data = new T[count]();
     nb::capsule owner(data, [](void *p) noexcept { delete[] static_cast<T *>(p); });
     return nb::ndarray<nb::numpy, T>(data, shape, owner);
+}
+
+// The training example arrays (ExampleArrays) as a dict of NumPy arrays,
+// filled by `fill` with the GIL released
+template <typename Fill>
+nb::dict exampleDict(const EncodingConfig &c, std::size_t b, Fill fill) {
+    std::size_t n = c.mapSize, a = actionCount(c), t = targetCount(c);
+    auto planes = newArray<float>({b, static_cast<std::size_t>(planeCount(c)), n, n});
+    auto globals = newArray<float>({b, static_cast<std::size_t>(globalCount(c))});
+    auto legal = newArray<std::uint8_t>({b, a});
+    auto policy = newArray<float>({b, a});
+    auto value = newArray<float>({b});
+    auto valueWeight = newArray<float>({b});
+    auto targets = newArray<float>({b, t});
+    auto masks = newArray<std::uint8_t>({b, t});
+    ExampleArrays out{planes.data(), globals.data(), legal.data(), policy.data(),
+                      value.data(), valueWeight.data(), targets.data(), masks.data()};
+    {
+        nb::gil_scoped_release release;
+        fill(out);
+    }
+    nb::dict d;
+    d["planes"] = planes;
+    d["globals"] = globals;
+    d["legal"] = legal;
+    d["policy"] = policy;
+    d["value"] = value;
+    d["value_weight"] = valueWeight;
+    d["targets"] = targets;
+    d["target_masks"] = masks;
+    return d;
 }
 
 #define V(ns, name) .value(#name, ns::name)
@@ -490,6 +524,277 @@ void bindSearch(nb::module_ &m) {
         .def("play_turn", &RandomBot::playTurn, "game"_a,
              "max_commands"_a = 200);
 
+    nb::class_<GameRecord>(m, "GameRecord",
+                           "A recorded game: its setup and commands, replayed "
+                           "to rebuild any position (docs/stockNavalon.md "
+                           "section 7).")
+        .def_prop_ro("map_size", [](const GameRecord &r) { return r.map.size; })
+        .def_prop_ro("map_type", [](const GameRecord &r) { return r.map.type; })
+        .def_prop_ro("tribes", [](const GameRecord &r) { return r.map.tribes; })
+        .def_ro("winner", &GameRecord::winner, "-1 if the turn limit came first")
+        .def_ro("turns", &GameRecord::turns)
+        .def_ro("final_scores", &GameRecord::finalScores)
+        .def_ro("seat_zero_side", &GameRecord::seatZeroSide,
+                "In a match, the side that played seat 0.")
+        .def_prop_ro("move_count",
+                     [](const GameRecord &r) { return r.moves.size(); })
+        .def_prop_ro(
+            "searched",
+            [](const GameRecord &r) {
+                std::vector<int> out;
+                for (std::size_t i = 0; i < r.moves.size(); i++) {
+                    if (!r.moves[i].visits.empty()) {
+                        out.push_back(static_cast<int>(i));
+                    }
+                }
+                return out;
+            },
+            "The moves the search chose, which have a policy target")
+        .def("start", &GameRecord::start, "The game before any command.")
+        .def("result", &GameRecord::result, "player"_a,
+             "+1 or -1 for a win or loss, 0 for a game cut off by the turn limit.")
+        .def("score_value", &GameRecord::scoreValue, "player"_a,
+             "scale"_a = 500.0, "The final score lead, squashed into [-1, 1].");
+    m.def(
+        "play_games",
+        [](int count, std::uint64_t seed, int threads, int simulations,
+           int samples, int horizon, int maxTurns, int temperatureTurns,
+           int mapSize, double fullShare, int quickSimulations) {
+            SelfPlayConfig config;
+            config.fullShare = fullShare;
+            config.quickSimulations = quickSimulations;
+            config.search.simulations = simulations;
+            config.search.samples = samples;
+            config.search.horizon = horizon;
+            config.maxTurns = maxTurns;
+            config.temperatureTurns = temperatureTurns;
+            config.mapSize = mapSize;
+            nb::gil_scoped_release release;
+            return playGames(config, count, seed, threads);
+        },
+        "count"_a, "seed"_a = 0, "threads"_a = 1, "simulations"_a = 100,
+        "samples"_a = 2, "horizon"_a = 1, "max_turns"_a = 50,
+        "temperature_turns"_a = 3, "map_size"_a = 11, "full_share"_a = 0.25,
+        "quick_simulations"_a = 25,
+        "Self-play games with the search on both seats, scored by the score "
+        "lead until there's a network. A full_share of decisions get the full "
+        "search and are recorded for the policy; the rest a quick one.");
+    using Floats = nb::ndarray<const float, nb::c_contig, nb::device::cpu>;
+    nb::class_<SelfPlaySession>(
+        m, "SelfPlaySession",
+        "Many self-play games at once, their waiting positions evaluated "
+        "together by the caller's network:\n\n"
+        "    while not session.done():\n"
+        "        planes, globals_, legal = session.pending_inputs(enc)\n"
+        "        logits, values = model(planes, globals_)\n"
+        "        session.submit_network(enc, logits, values)\n"
+        "    records = session.take_finished()")
+        .def("__init__",
+             [](SelfPlaySession *self, int parallel, int games, std::uint64_t seed,
+                int simulations, int samples, int horizon, int maxTurns,
+                int temperatureTurns, int mapSize, bool rootNoise, int threads,
+                double fullShare, int quickSimulations,
+                const std::vector<std::string> &sides, bool paired) {
+                 SelfPlayConfig config;
+                 config.search.simulations = simulations;
+                 config.search.samples = samples;
+                 config.search.horizon = horizon;
+                 config.search.rootNoise = rootNoise;
+                 config.maxTurns = maxTurns;
+                 config.temperatureTurns = temperatureTurns;
+                 config.mapSize = mapSize;
+                 config.threads = threads;
+                 config.fullShare = fullShare;
+                 config.quickSimulations = quickSimulations;
+                 if (sides.size() != 2) {
+                     throw std::invalid_argument("Need two sides");
+                 }
+                 for (int i = 0; i < 2; i++) {
+                     const std::string &kind = sides[i];
+                     config.sides[i] = kind == "network" ? SideKind::NETWORK
+                                       : kind == "score" ? SideKind::SCORE
+                                       : kind == "random"
+                                           ? SideKind::RANDOM
+                                           : throw std::invalid_argument(
+                                                 "A side is network, score or random");
+                 }
+                 config.paired = paired;
+                 new (self) SelfPlaySession(config, parallel, games, seed);
+             },
+             "parallel"_a, "games"_a, "seed"_a = 0, "simulations"_a = 100,
+             "samples"_a = 2, "horizon"_a = 1, "max_turns"_a = 50,
+             "temperature_turns"_a = 3, "map_size"_a = 11, "root_noise"_a = true,
+             "threads"_a = 1, "full_share"_a = 0.25, "quick_simulations"_a = 25,
+             "sides"_a = std::vector<std::string>{"network", "network"},
+             "paired"_a = false)
+        .def("done", &SelfPlaySession::done)
+        .def_prop_ro("finished_games", &SelfPlaySession::finishedGames)
+        .def(
+            "pending_inputs",
+            [](SelfPlaySession &s, const EncodingConfig &c, bool withLegal) {
+                std::size_t b, n = c.mapSize;
+                {
+                    nb::gil_scoped_release release;
+                    b = s.pending().size();
+                }
+                auto planes = newArray<float>(
+                    {b, static_cast<std::size_t>(planeCount(c)), n, n});
+                auto globals = newArray<float>(
+                    {b, static_cast<std::size_t>(globalCount(c))});
+                auto legal = newArray<std::uint8_t>(
+                    {withLegal ? b : 0, static_cast<std::size_t>(actionCount(c))});
+                {
+                    nb::gil_scoped_release release;
+                    encodeRequests(s.waiting(), c, planes.data(), globals.data(),
+                                   withLegal ? legal.data() : nullptr, s.threads());
+                }
+                return std::make_tuple(planes, globals, legal);
+            },
+            "encoding"_a, "legal"_a = true,
+            "Advances every game to its next waiting positions and encodes "
+            "them: (planes [B, C, N, N], globals [B, G], legal [B, A]). With "
+            "legal=False the masks are skipped (empty): pending_slots gives "
+            "what the search needs.")
+        .def(
+            "submit_network",
+            [](SelfPlaySession &s, const EncodingConfig &c, Floats logits,
+               Floats values) {
+                std::size_t b = s.waiting().size();
+                if (logits.ndim() != 2 || logits.shape(0) != b ||
+                    logits.shape(1) != static_cast<std::size_t>(actionCount(c)) ||
+                    values.size() != b) {
+                    throw std::invalid_argument(
+                        "Need logits [B, A] and values [B] for the pending positions");
+                }
+                nb::gil_scoped_release release;
+                std::vector<Evaluation> results;
+                evaluationsFromNetwork(s.waiting(), c, logits.data(),
+                                       values.data(), results);
+                s.submit(results);
+            },
+            "encoding"_a, "logits"_a, "values"_a,
+            "The network's policy logits [B, A] and values [B] for the "
+            "pending positions.")
+        .def(
+            "pending_sides",
+            [](SelfPlaySession &s) {
+                const std::vector<int> &sides = s.waitingSides();
+                auto out = newArray<std::int64_t>({sides.size()});
+                std::copy(sides.begin(), sides.end(), out.data());
+                return out;
+            },
+            "For each pending position, the side (0 or 1) whose network "
+            "evaluates it: in a match, only network sides' positions are "
+            "pending. Call after pending_inputs.")
+        .def(
+            "pending_slots",
+            [](SelfPlaySession &s, const EncodingConfig &c) {
+                std::vector<int> rows, slots;
+                {
+                    nb::gil_scoped_release release;
+                    requestSlots(s.waiting(), c, rows, slots);
+                }
+                auto r = newArray<std::int64_t>({rows.size()});
+                auto k = newArray<std::int64_t>({slots.size()});
+                for (std::size_t i = 0; i < rows.size(); i++) {
+                    r.data()[i] = rows[i];
+                    // -1 (no slot) reads slot 0; its logit is ignored
+                    k.data()[i] = std::max(0, slots[i]);
+                }
+                return std::make_tuple(r, k);
+            },
+            "encoding"_a,
+            "For the pending positions' moves, flattened: (rows, slots) to "
+            "gather from the policy logits, logits[rows, slots], so only those "
+            "leave the GPU. Call after pending_inputs.")
+        .def(
+            "submit_move_logits",
+            [](SelfPlaySession &s, const EncodingConfig &c, Floats moveLogits,
+               Floats values) {
+                std::vector<int> rows, slots;
+                requestSlots(s.waiting(), c, rows, slots);
+                if (moveLogits.size() != slots.size() ||
+                    values.size() != s.waiting().size()) {
+                    throw std::invalid_argument(
+                        "Need one logit per pending move and one value per position");
+                }
+                nb::gil_scoped_release release;
+                std::vector<Evaluation> results;
+                evaluationsFromMoveLogits(s.waiting(), slots, moveLogits.data(),
+                                          values.data(), results);
+                s.submit(results);
+            },
+            "encoding"_a, "move_logits"_a, "values"_a,
+            "The logits gathered at pending_slots, and the values [B].")
+        .def(
+            "submit_scores",
+            [](SelfPlaySession &s) {
+                nb::gil_scoped_release release;
+                ScoreEvaluator evaluator;
+                std::vector<Evaluation> results;
+                evaluator.evaluate(s.waiting(), results);
+                s.submit(results);
+            },
+            "Evaluates the pending positions with the score evaluator instead.")
+        .def("take_finished", &SelfPlaySession::takeFinished,
+             "The games finished since the last call.");
+    nb::class_<ReplayBuffer>(
+        m, "ReplayBuffer",
+        "The recent games training draws from, held in C++: random positions "
+        "across all of them, the oldest games dropped past max_positions.")
+        .def(nb::init<std::size_t>(), "max_positions"_a)
+        .def("add", &ReplayBuffer::add, "games"_a)
+        .def_prop_ro("game_count", &ReplayBuffer::gameCount)
+        .def_prop_ro("positions", &ReplayBuffer::positions,
+                     "Positions with a policy target (moves the search chose).")
+        .def_prop_ro("added", &ReplayBuffer::added,
+                     "Positions ever added, dropped ones included.")
+        .def_prop_ro("decided_share", &ReplayBuffer::decidedShare,
+                     "The share of games decided before the turn limit.")
+        .def("sample", &ReplayBuffer::sample, "count"_a, "seed"_a,
+             "per_game"_a = 1,
+             "Random (game, move) positions with a policy target, in groups "
+             "of per_game from the same game (replayed once for the group).")
+        .def(
+            "encode",
+            [](const ReplayBuffer &buffer, const EncodingConfig &c,
+               const std::vector<std::pair<int, int>> &positions,
+               double scoreWeight, double valueScale, int threads) {
+                return exampleDict(c, positions.size(), [&](const ExampleArrays &out) {
+                    buffer.encode(positions, c,
+                                  {.scoreWeight = scoreWeight, .scale = valueScale},
+                                  out, threads);
+                });
+            },
+            "encoding"_a, "positions"_a, "score_weight"_a = 0.1,
+            "value_scale"_a = 500.0, "threads"_a = 8,
+            "Training examples at those positions, like Encoding.encode_examples. "
+            "The positions only hold until the next add(): from another "
+            "thread than the one adding, use sample_examples.")
+        .def(
+            "sample_examples",
+            [](const ReplayBuffer &buffer, const EncodingConfig &c, int count,
+               std::uint64_t seed, int perGame, double scoreWeight,
+               double valueScale, int threads) {
+                return exampleDict(c, static_cast<std::size_t>(count),
+                                   [&](const ExampleArrays &out) {
+                    buffer.encodeSample(count, seed, perGame, c,
+                                        {.scoreWeight = scoreWeight, .scale = valueScale},
+                                        out, threads);
+                });
+            },
+            "encoding"_a, "count"_a, "seed"_a, "per_game"_a = 4,
+            "score_weight"_a = 0.1, "value_scale"_a = 500.0, "threads"_a = 8,
+            "Random training examples, sampled and encoded at once, so safe "
+            "while another thread adds games.")
+        .def("save", [](const ReplayBuffer &b, const std::string &path) {
+            nb::gil_scoped_release release;
+            b.save(path);
+        }, "path"_a, "Writes exactly the buffer's games to a record file, "
+                     "replacing it.");
+    m.def("save_records", &saveRecords, "records"_a, "path"_a, "append"_a = true,
+          "Appends records to a text file, or with append=False replaces it.");
+    m.def("load_records", &loadRecords, "path"_a);
     m.def(
         "play_random_games",
         [](int games, std::vector<TribeTypes::Tribe> tribes,
@@ -521,6 +826,9 @@ void bindSearch(nb::module_ &m) {
 void bindEncoding(nb::module_ &m) {
     m.attr("ENCODING_VERSION") = ENCODING_VERSION;
     m.attr("OPENING_CHANGES") = OPENING_CHANGES;
+    // command slots per tile; the global slots come after them
+    m.attr("SLOTS_PER_TILE") = EncodingSlots::PER_TILE;
+    m.attr("HIDDEN_UNIT_COUNT_CAP") = HIDDEN_UNIT_COUNT_CAP;
 
     nb::class_<EncodingConfig>(
         m, "Encoding",
@@ -640,6 +948,27 @@ void bindEncoding(nb::module_ &m) {
             "The belief targets from the true games, and where each is trained: "
             "(targets [B, T], masks [B, T]). The value target is the game's "
             "result, added once it's over.")
+        .def(
+            "encode_examples",
+            [](const EncodingConfig &c, const std::vector<GameRecord> &records,
+               const std::vector<std::pair<int, int>> &positions,
+               double scoreWeight, double valueScale) {
+                return exampleDict(c, positions.size(), [&](const ExampleArrays &out) {
+                    encodeExamples(records, positions, c,
+                                   {.scoreWeight = scoreWeight, .scale = valueScale},
+                                   out);
+                });
+            },
+            "records"_a, "positions"_a, "score_weight"_a = 0.1,
+            "value_scale"_a = 500.0,
+            "Training examples at (record, move) positions, each the position "
+            "just before that move, for the player to move: a dict of planes "
+            "[B, C, N, N], globals [B, G], legal [B, A], policy [B, A] (the "
+            "search's visits, normalized; all 0 for a move it didn't choose), "
+            "value and value_weight [B] (score_weight x the squashed score lead + "
+            "the rest x the result, 0 for a game cut off by the turn limit; "
+            "weights all 1), targets and target_masks [B, T]. "
+            "Copies the records: for training, use ReplayBuffer.encode.")
         .def(
             "encode_command",
             [](const EncodingConfig &c, const Game &game, const Command &command) {

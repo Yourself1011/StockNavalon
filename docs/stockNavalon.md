@@ -660,7 +660,45 @@ Task progress (kills, peaceful turns, lighthouses found) and units' kill counts 
 4. **Measure:** the search horizons against each other (section 3.5), and learned beliefs against the baseline (section 5.8).
 5. **Stage 2 search** (section 4.4), measured against stage 1 at equal compute.
 
-**Long games:** the rules have no turn limit, so training needs one, with a fallback value for games that hit it, such as score difference.
+**Long games:** the rules have no turn limit, so self-play stops at 50 turns on Tiny maps. A game cut off there gets its value from the final score lead, squashed like the score evaluator's (`tanh(lead / 500)`).
+
+### 7.1 Recording games (**Done**)
+
+`src/stockNavalon/record.h` and `selfPlay.h`, with Python access (`pe.play_games`, `save_records`, `load_records`, `Encoding.encode_examples`):
+- **A record is a game's setup and commands,** not encoded positions: the map settings, the game seed, every command, and the search's root visits for the ones it chose. The engine is deterministic, so replaying rebuilds every position exactly, and records outlive encoding changes. Positions are encoded when training samples them.
+- **Self-play:** the search on both seats, random tribes and map types, root noise, and visits-proportional choices for the first 3 turns, then the most visited. Games run in parallel threads.
+- **Examples:** `encodeExamples(records, positions)` gives, for each (record, move), the position just before that move for the player to move: the input, the legal mask, the policy target (visits, normalized), the value, and the belief targets with their masks.
+- **Training on them:** a replay buffer of recent games, random minibatches across them, so neighbouring positions of one game don't dominate a batch.
+
+**Measured** on this machine (Apple Silicon, 10 cores), 100 simulations × 2 samples: about 2,700 positions a second of self-play on 8 threads; encoding 256 examples takes about 36 ms. A record is about 180 KB, mostly root visits (every root command, since uniform priors visit nearly all of them). With the score evaluator, almost every game reaches the turn limit.
+
+### 7.2 The network and the training loop (**Done, first version**)
+
+`python/stocknavalon/` (PyTorch; `uv pip install -e ".[train]"`):
+- **`model.py`, the network:** a 3×3 convolutional ResNet, 6 blocks of 64 channels by default (about 0.6M parameters), with the global vector added as a per-channel bias, and global pooling (the board's mean and max as a bias) in two blocks. The policy is per-tile 1×1 convolutions plus a pooled branch for the global slots; the value is pooled features into a small MLP. The belief heads are those of [`encoding.md`](encoding.md) section 8, pooled or per tile.
+- **`train.py`, losses:** cross-entropy of the policy against the visits, over legal slots; weighted squared error for the value; each belief head over its mask (the stars by the negative log-likelihood of a mixture of 3 negative binomials). The belief heads share a weight of 0.25 together.
+- **The value target** is mostly the result, with a small score term: `(1 − w) × result + w × tanh(final score lead / 500)`, where a game cut off by the turn limit counts as a draw (0). `w` is 0.1 (`--score-weight`) while few games end in a capture, fading to 0 as captures become the norm (from 10% to 60% of the buffer's games decided; `score_weight_for`). The small score term breaks ties, but a lead at the limit is worth about +0.08 against a win's +1, so winning stays worth playing for. (The first run started from the score lead alone, with capped games weighted by it: being ahead at the limit looked nearly as good as winning, and the share of games ending in a capture fell from 22% to 13% in five iterations.)
+- **The replay buffer** is in C++ (`pe.ReplayBuffer`): it holds the games once, samples positions across them, and encodes minibatches. Keeping the games on the Python side would copy every record into C++ on every batch.
+- **Self-play with the network** (`selfplay.py`, `pe.SelfPlaySession`): many games at once in C++; all their waiting positions go to the network in one batch, and Python only runs the model. The softmax of each node's moves' logits gives its priors (`evaluationsFromNetwork`).
+- **`run.py`, the loop:** bootstrap games with the score evaluator until the replay buffer is full (more would only push earlier ones out). Then self-play and training run at once, in two threads, with no iterations:
+  - **Self-play** keeps its games going continuously with its own copy of the network (a model mid-update can't be read, and the two need different BatchNorm modes), adds each finished game to the buffer and the record file, and takes the trainer's weights every `--sync-steps` (200).
+  - **Training** draws minibatches continuously, throttled to `--reuse` (9) samples per position self-play has added: it waits rather than overtrain, and the reuse stays what it's set to whatever the two speeds are.
+  - **Sharing the GPU:** a lock around each thread's GPU work, since MPS has had trouble with two threads submitting at once; the CPU work (games, encoding, the C++ search) still overlaps freely.
+  - **The buffer** is safe across threads (C++ lock), and training samples and encodes in one step, since adding games can drop old ones and shift the indices.
+  - **Record files** hold only what the buffers do: `records.txt` and `holdout.txt` are rewritten from the buffers at every checkpoint (aside, then swapped in), so they stay around the buffer's size instead of growing by gigabytes a day. Old games aren't needed once trained on; the checkpoints keep what they taught.
+  - A status line every minute: training steps a minute, milliseconds a step, how much training waited, games a minute, positions a second, recent captures, the reuse so far, and the losses. A checkpoint every 10 minutes, and on Ctrl-C or `--minutes`; running again resumes.
+- **Measuring progress** (`evaluate.py`): losses on self-play data can't say whether the network plays better, since it makes its own data. So, as a third thread, every `--eval-minutes` (60):
+  - **Evaluation matches:** the latest network (kept in `checkpoints/step_N.pt`) against the random bot and the score-evaluator search (fixed anchors, so progress is absolute) and against the network from the last evaluation (relative progress). 64 games each by default, in pairs with the same map and tribes and the seats swapped; both sides search the same way, without root noise; a game cut off by the turn limit goes to the side ahead on score. No gating: the latest network always plays on. In C++, a session's two sides can each be a network, the score evaluator or the random bot (`SelfPlayConfig::sides`, `paired`).
+  - **Held-out loss:** one finished self-play game in 20 (`--holdout-every`) goes to `holdout.txt` instead of training, and each status line has the losses on a fixed sample of them. Rising while the training losses fall would mean overfitting.
+- **`measure.py`:** network speed by batch size, and self-play speed with the network.
+
+**Measured on MPS** (Apple Silicon): the network evaluates about 20,000 positions a second from batches of 64 up; self-play with it about 10,000. The first run's iterations took 30 to 50 minutes: the network's games run to about 1,000 decisions, twice the bootstrap's, and each training step spent nearly all of its ~290 ms replaying games on the CPU. What came of profiling it:
+- **The C++ side isn't the bottleneck:** one thread supplies about 49,000 positions a second. Spreading a session's games over threads made it slower (starting threads every batch costs more than the work), so a session defaults to one.
+- **Continuous self-play:** game lengths are heavy-tailed, and waiting for a whole set of games to finish spent most of an iteration on the last few, with tiny batches (128 games: 94 done in 10 minutes, the last few taking another 20). Now self-play keeps its games going across iterations: each iteration takes the first games to finish, a finished game's slot starts a new one at once, and unfinished games carry on with the next network.
+- **CPU and GPU overlap:** self-play splits its games between two sessions that take turns. While the GPU evaluates one session's batch (PyTorch on MPS runs asynchronously until results are copied back), the CPU advances and encodes the other's. Run one after the other, the GPU sat idle about half the time.
+- **Only the moves' logits leave the GPU:** each position's move slots are gathered on the GPU (`pending_slots`), a few KB a batch instead of every slot of every position, about 10 MB.
+- **Playout cap randomization** (KataGo): a random 25% of decisions get the full search with root noise and are recorded for the policy; the rest a quick 25-simulation search, only to play on. That's 83 evaluations a decision on average instead of 188.
+- **Training batches:** a game is replayed once for 4 positions sampled from it (`sample(per_game=4)`), replays skip the legality check, games are replayed in parallel, and the next batch is encoded in the background while the GPU trains. 309 ms a batch became about 30 ms, off the GPU's critical path.
 
 ## 8. Open questions
 
@@ -677,7 +715,7 @@ Task progress (kills, peaceful turns, lighthouses found) and units' kill counts 
 1. ~~Command numbering and state encoding, including the threat map, as specified in [`encoding.md`](encoding.md), with its tests.~~ **Done.**
 2. ~~`determinize()` with the baseline beliefs, plus the leak test.~~ **Done**, as a first version (section 5.5). Not yet fast enough to call per simulation (section 4.4).
 3. ~~The batched search (stage 1), with a dummy network to test the plumbing: across turn boundaries, with the horizon as a setting.~~ **Done**, with the score evaluator standing in (section 3.6).
-4. Recording (view, hidden truth) pairs from bot games, for the belief heads.
-5. A first PyTorch model with all heads, and the bootstrap training.
-6. The self-play loop.
+4. ~~Recording games, for every head's training targets.~~ **Done** (section 7.1).
+5. ~~A first PyTorch model with all heads, and the bootstrap training.~~ **Done** (section 7.2).
+6. ~~The self-play loop.~~ **Done** (section 7.2); next is running it, and measuring it on MPS.
 7. Stage 2: one shared tree with observation branching, and the particle filter between turns.

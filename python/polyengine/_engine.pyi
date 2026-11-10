@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 import enum
+from typing import Annotated
 
 import numpy
 from numpy.typing import NDArray
@@ -818,7 +819,7 @@ class PlayerView:
         """
 
     @property
-    def converted_away(self) -> list["std::__1::pair<UnitTypes::UnitType, UnitTypes::UnitType>"]:
+    def converted_away(self) -> list[tuple[UnitType, UnitType]]:
         """This player's units taken by conversion: (type, passenger)."""
 
     @property
@@ -892,6 +893,119 @@ class RandomBot:
 
     def play_turn(self, game: Game, max_commands: int = 200) -> list[Command]: ...
 
+class GameRecord:
+    """
+    A recorded game: its setup and commands, replayed to rebuild any position (docs/stockNavalon.md section 7).
+    """
+
+    @property
+    def map_size(self) -> int: ...
+
+    @property
+    def map_type(self) -> MapType: ...
+
+    @property
+    def tribes(self) -> list[Tribe]: ...
+
+    @property
+    def winner(self) -> int:
+        """-1 if the turn limit came first"""
+
+    @property
+    def turns(self) -> int: ...
+
+    @property
+    def final_scores(self) -> list[int]: ...
+
+    @property
+    def move_count(self) -> int: ...
+
+    @property
+    def searched(self) -> list[int]:
+        """The moves the search chose, which have a policy target"""
+
+    def start(self) -> Game:
+        """The game before any command."""
+
+    def result(self, player: int) -> float:
+        """+1 or -1 for a win or loss, 0 for a game cut off by the turn limit."""
+
+    def score_value(self, player: int, scale: float = 500.0) -> float:
+        """The final score lead, squashed into [-1, 1]."""
+
+def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11) -> list[GameRecord]:
+    """
+    Self-play games with the search on both seats, scored by the score lead until there's a network.
+    """
+
+class SelfPlaySession:
+    """
+    Many self-play games at once, their waiting positions evaluated together by the caller's network:
+
+        while not session.done():
+            planes, globals_, legal = session.pending_inputs(enc)
+            logits, values = model(planes, globals_)
+            session.submit_network(enc, logits, values)
+        records = session.take_finished()
+    """
+
+    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True) -> None: ...
+
+    def done(self) -> bool: ...
+
+    @property
+    def finished_games(self) -> int: ...
+
+    def pending_inputs(self, encoding: Encoding) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32], NDArray[numpy.uint8]]:
+        """
+        Advances every game to its next waiting positions and encodes them: (planes [B, C, N, N], globals [B, G], legal [B, A]).
+        """
+
+    def submit_network(self, encoding: Encoding, logits: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], values: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)]) -> None:
+        """
+        The network's policy logits [B, A] and values [B] for the pending positions.
+        """
+
+    def submit_scores(self) -> None:
+        """Evaluates the pending positions with the score evaluator instead."""
+
+    def take_finished(self) -> list[GameRecord]:
+        """The games finished since the last call."""
+
+class ReplayBuffer:
+    """
+    The recent games training draws from, held in C++: random positions across all of them, the oldest games dropped past max_positions.
+    """
+
+    def __init__(self, max_positions: int) -> None: ...
+
+    def add(self, games: Sequence[GameRecord]) -> None: ...
+
+    @property
+    def game_count(self) -> int: ...
+
+    @property
+    def positions(self) -> int:
+        """Positions with a policy target (moves the search chose)."""
+
+    @property
+    def decided_share(self) -> float:
+        """The share of games decided before the turn limit."""
+
+    def sample(self, count: int, seed: int) -> list[tuple[int, int]]:
+        """Random (game, move) positions with a policy target."""
+
+    def encode(self, encoding: Encoding, positions: Sequence[tuple[int, int]], score_weight: float = 1.0, value_scale: float = 500.0) -> dict:
+        """Training examples at those positions, like Encoding.encode_examples."""
+
+    def save(self, path: str) -> None:
+        """Appends the buffer's games to a record file."""
+
+def save_records(records: Sequence[GameRecord], path: str) -> None:
+    """Appends records to a text file."""
+
+def load_records(path: str) -> list[GameRecord]: ...
+
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:
     """
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
@@ -900,6 +1014,10 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
 ENCODING_VERSION: int = 4
 
 OPENING_CHANGES: int = 6
+
+SLOTS_PER_TILE: int = 218
+
+HIDDEN_UNIT_COUNT_CAP: int = 20
 
 class Encoding:
     """
@@ -951,6 +1069,11 @@ class Encoding:
     def encode_targets(self, games: Sequence[Game], players: Sequence[int]) -> tuple[NDArray[numpy.float32], NDArray[numpy.uint8]]:
         """
         The belief targets from the true games, and where each is trained: (targets [B, T], masks [B, T]). The value target is the game's result, added once it's over.
+        """
+
+    def encode_examples(self, records: Sequence[GameRecord], positions: Sequence[tuple[int, int]], score_weight: float = 1.0, value_scale: float = 500.0) -> dict:
+        """
+        Training examples at (record, move) positions, each the position just before that move, for the player to move: a dict of planes [B, C, N, N], globals [B, G], legal [B, A], policy [B, A] (the search's visits, normalized; all 0 for a move it didn't choose), value and value_weight [B] (score_weight x the score lead + the rest x the result; a game cut off by the turn limit has the score alone, weighted score_weight), targets and target_masks [B, T]. Copies the records: for training, use ReplayBuffer.encode.
         """
 
     def encode_command(self, game: Game, command: Command) -> int:

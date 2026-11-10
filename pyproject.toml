@@ -11,9 +11,11 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 test = ["pytest"]
+# stockNavalon's network and training (python/stocknavalon)
+train = ["torch"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/python/{wheel_tag}"
-wheel.packages = ["python/polyengine"]
+wheel.packages = ["python/polyengine", "python/stocknavalon"]
 cmake.build-type = "Release"

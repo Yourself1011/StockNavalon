@@ -123,6 +123,13 @@ if(POLYENGINE_PYTHON)
         get_filename_component(name ${file} NAME)
         configure_file(${file} "${PACKAGE_DIR}/${name}" COPYONLY)
     endforeach()
+    # stockNavalon's Python package (network and training) next to it
+    file(GLOB BOT_PACKAGE_FILES LIST_DIRECTORIES false CONFIGURE_DEPENDS
+         python/stocknavalon/*.py)
+    foreach(file ${BOT_PACKAGE_FILES})
+        get_filename_component(name ${file} NAME)
+        configure_file(${file} "${CMAKE_BINARY_DIR}/python/stocknavalon/${name}" COPYONLY)
+    endforeach()
 
     # A sanitized module can't be loaded into a normal Python, so the dev
     # build compiles it (for errors, and for the editor) without testing it

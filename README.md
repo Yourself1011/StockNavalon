@@ -112,6 +112,18 @@ results = pe.play_random_games(100, tribes)   # loops in C++
 
 A call into the engine costs about as much as a game step (a full step from Python is about 14 µs, against 6 µs in C++), so loops over many games or positions belong in C++ as single calls. The full guide is [`docs/python.md`](docs/python.md).
 
+## Training stockNavalon
+
+The network and training loop are in `python/stocknavalon` (PyTorch). Install them into the venv, then measure the machine and start a run:
+
+```bash
+uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
+.venv/bin/python -m stocknavalon.measure          # network and self-play speed
+.venv/bin/python -m stocknavalon.run --dir runs/first
+```
+
+A run bootstraps from score-evaluator games, then runs self-play and training at once, in two threads, with training held to `--reuse` samples per new position. It saves its games, checkpoint and log in the run directory; Ctrl-C stops it cleanly, and running it again resumes. Every hour it also plays evaluation matches (against the random bot, the score-evaluator search and its previous self) and logs the win rates; each status line includes the loss on held-out games. It uses Apple Silicon's GPU (MPS) when one is available. See `docs/stockNavalon.md` section 7.
+
 ## Editor setup
 
 `.clangd` points clangd at the dev build's `compile_commands.json`, which CMake writes and keeps up to date. Run `cmake --preset dev` once after cloning; with the venv set up, it covers the Python bindings too.
