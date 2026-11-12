@@ -187,3 +187,42 @@ TEST_CASE("tree reuse continues from the played move's subtree, within the budge
     }
     CHECK(total == config.simulations - 1);
 }
+
+TEST_CASE("the CLI bot asks for its beliefs once a turn when told to") {
+    // the score evaluator, answering belief requests with the prior
+    struct Asking : Evaluator {
+        ScoreEvaluator score;
+        int asked = 0;
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            std::vector<EvalRequest> rest;
+            for (const EvalRequest &r : requests) {
+                if (r.wantsBeliefs) {
+                    CHECK(r.moves == nullptr);
+                    asked++;
+                } else {
+                    rest.push_back(r);
+                }
+            }
+            score.evaluate(rest, results);
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                if (requests[i].wantsBeliefs) {
+                    Evaluation e;
+                    e.beliefs = priorBeliefs(makeView(*requests[i].game, requests[i].player));
+                    results.insert(results.begin() + static_cast<std::ptrdiff_t>(i), e);
+                }
+            }
+        }
+    };
+    SearchConfig config{.simulations = 20, .samples = 1};
+    for (bool network : {false, true}) {
+        CAPTURE(network);
+        Game game = makeGame(fieldMap());
+        Asking evaluator;
+        std::mt19937_64 rng(3);
+        for (int turn = 0; turn < 4; turn++) {
+            REQUIRE(!playTurn(game, evaluator, config, rng, network).empty());
+        }
+        CHECK(evaluator.asked == (network ? 4 : 0));
+    }
+}

@@ -13,10 +13,10 @@ What should work well on this machine first, so more compute is spent well.
   - [ ] Gumbel search at the root ([`design.md`](design.md), "Gumbel search, for small budgets")
   - [x] half-precision inference: float16 by default (network 2× faster on MPS, self-play +10%: the CPU side now dominates)
   - [x] the CPU side of self-play: bigger batches (`--parallel` 128), and each session's games advanced and encoded on a persistent thread pool (`--session-threads`, 4: about 2× the C++ side's throughput)
-  - [ ] check the thread pool's gain on a real run's games per minute (the stand-in measure only times the C++ side)
+  - [ ] check the thread pool's gain on a real run's games per minute (the stand-in measure only times the C++ side); the status line now splits self-play's time between CPU, GPU and the GPU lock
   - [x] tree reuse within a turn
 - [ ] **The rules are right:** differential testing against the real game (Playing the real game)
-- [ ] **Progress on one scale:** a rating (Elo-style) from all gate and anchor results
+- [x] **Progress on one scale:** a rating (Elo-style) from all gate and anchor results (`rating.py`, logged after gates and anchors)
 - [ ] **A loop that can use more hardware:** several self-play workers feeding one trainer on its own GPU; designed now, built when the hardware is there
 
 ## Next: the revised training plan
@@ -47,14 +47,14 @@ Why: [`runs.md`](runs.md), second run. Details: [`design.md`](design.md), "Train
   - [x] full-information encoding (`explored` keeps meaning tiles actually explored); belief targets masked; records keep `fog`
   - [x] gates follow `--fog-share`; anchors always with fog
   - [x] a fog schedule (`fog.py`): none until 50% of recent games end in a capture, then a 25,000-step ramp to all fog, paused by 3 failed gates in a row, never reversed
-  - [ ] run it: a new run with the schedule from `step_10001`
+  - [x] run it: the ninth run, from 18,001, reached 100% fog
   - [ ] phase 2: the fogged share rising from 0 to 100%, once the prerequisites below are done
-- [ ] **Start a new run** from `runs/second/checkpoints/step_10001.pt`, augmentation off.
+- [x] **Start a new run** (done by the later runs)
 
 ## Before fog comes back (phase 2)
 
 - [x] **`decodeBeliefs`:** the belief heads' raw outputs decoded into `Beliefs`; self-play and matches ask the network once per turn per player before searching (`--network-beliefs`, on by default).
-  - [ ] the CLI bot (`stocknavalon.play`) still uses `priorBeliefs`
+  - [x] the CLI bot (`stocknavalon.play`) uses them too (`--no-network-beliefs` for the priors)
 - [x] **A terrain head:** the map-wide `unexplored` belief head (terrain, resource, village/ruin per tile; encoding version 5), and determinization samples unexplored tiles from it within the generator's rules, now public in `mapgen.h`.
 - [ ] **Player memory** (`PlayerMemory`, `updateMemory`), for what the game doesn't show again: road builders, the score history, own effects on others' scores, attacks, conversions, first occupation. With a test that it matches the engine's fields after every command.
 - [ ] **Peace treaties back on, as a rules curriculum** like fog: off at first, then a growing share of games with treaties (a latched trigger, then a ramp by training steps; records already keep the setting per game), once the bot wins games reliably. Measure the churn (treaty breaks per player-turn) as the share rises. Possibly one trigger for both, treaties ramping before or after fog so the two don't arrive at once. Needed for more than two players.

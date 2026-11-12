@@ -86,7 +86,7 @@ The Python tests run against the module just built, not the pip-installed one. T
   .venv/bin/python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
   ```
 
-  It plays without peace treaties, as in training, unless given `--peace-treaties`. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
+  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
 
 ### CLI commands
 
@@ -130,6 +130,7 @@ The network and training loop are in `python/stocknavalon` (PyTorch). Install th
 ```bash
 uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.measure          # network and self-play speed
+.venv/bin/python -m stocknavalon.rating runs/NAME # Elo of each best network so far
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 

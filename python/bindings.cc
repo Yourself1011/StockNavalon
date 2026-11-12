@@ -62,9 +62,11 @@ nb::ndarray<nb::numpy, T> newArray(std::initializer_list<std::size_t> shape) {
 }
 
 // An evaluator that hands each batch to a Python function, the network:
-// evaluate(planes [B, C, N, N], globals [B, G], rows [K], slots [K]) returns
-// (logits[rows, slots] [K], values [B]), as with SelfPlaySession's
-// pending_slots and submit_move_logits. Called with the GIL held.
+// evaluate(planes [B, C, N, N], globals [B, G], rows [K], slots [K],
+// belief_rows [R]) returns (logits[rows, slots] [K], values [B]), plus the
+// raw belief outputs of the belief rows [R, beliefOutputCount] when R > 0, as
+// with SelfPlaySession's pending_slots, pending_belief_rows and
+// submit_move_logits. Called with the GIL held.
 class PythonEvaluator : public Evaluator {
   public:
     PythonEvaluator(const EncodingConfig &config, nb::callable evaluate)
@@ -86,7 +88,15 @@ class PythonEvaluator : public Evaluator {
             // -1 (no slot) reads slot 0; its logit is ignored
             k.data()[i] = std::max(0, slots[i]);
         }
-        auto out = nb::cast<nb::tuple>(function(planes, globals, r, k));
+        std::vector<std::int64_t> wanting;
+        for (std::size_t i = 0; i < b; i++) {
+            if (requests[i].wantsBeliefs) {
+                wanting.push_back(static_cast<std::int64_t>(i));
+            }
+        }
+        auto beliefRows = newArray<std::int64_t>({wanting.size()});
+        std::copy(wanting.begin(), wanting.end(), beliefRows.data());
+        auto out = nb::cast<nb::tuple>(function(planes, globals, r, k, beliefRows));
         auto logits = nb::cast<Floats>(out[0]);
         auto values = nb::cast<Floats>(out[1]);
         if (logits.size() != slots.size() || values.size() != b) {
@@ -94,6 +104,17 @@ class PythonEvaluator : public Evaluator {
                 "evaluate must return one logit per move and one value per position");
         }
         evaluationsFromMoveLogits(requests, slots, logits.data(), values.data(), results);
+        if (!wanting.empty()) {
+            if (out.size() < 3) {
+                throw std::invalid_argument("evaluate must return beliefs for belief_rows");
+            }
+            auto beliefs = nb::cast<Floats>(out[2]);
+            if (beliefs.size() != wanting.size() * beliefOutputCount(config)) {
+                throw std::invalid_argument(
+                    "evaluate must return [R, belief_output_count] beliefs");
+            }
+            attachBeliefs(requests, config, beliefs.data(), results);
+        }
     }
 
   private:
@@ -589,6 +610,8 @@ void bindSearch(nb::module_ &m) {
         .def_prop_ro("map_size", [](const GameRecord &r) { return r.map.size; })
         .def_prop_ro("map_type", [](const GameRecord &r) { return r.map.type; })
         .def_prop_ro("tribes", [](const GameRecord &r) { return r.map.tribes; })
+        .def_ro("game_seed", &GameRecord::gameSeed,
+                "The game's random seed: identifies it among the others.")
         .def_ro("winner", &GameRecord::winner, "-1 if the turn limit came first")
         .def_ro("turns", &GameRecord::turns)
         .def_ro("final_scores", &GameRecord::finalScores)
@@ -922,21 +945,37 @@ void bindSearch(nb::module_ &m) {
             "sample_examples",
             [](const ReplayBuffer &buffer, const EncodingConfig &c, int count,
                std::uint64_t seed, int perGame, int threads, bool augment,
-               double cityWeight, double cutOffWeight, double searchWeight) {
-                return exampleDict(c, static_cast<std::size_t>(count),
-                                   [&](const ExampleArrays &out) {
+               double cityWeight, double cutOffWeight, double searchWeight,
+               bool positions) {
+                std::vector<std::pair<std::uint64_t, int>> drawn;
+                ExampleDict d = exampleDict(c, static_cast<std::size_t>(count),
+                                            [&](const ExampleArrays &out) {
                     buffer.encodeSample(count, seed, perGame, c, out, threads, augment,
                                         {.cityWeight = cityWeight,
                                          .searchWeight = searchWeight,
-                                         .cutOffWeight = cutOffWeight});
+                                         .cutOffWeight = cutOffWeight},
+                                        positions ? &drawn : nullptr);
                 });
+                if (positions) {
+                    auto seeds = newArray<std::uint64_t>({drawn.size()});
+                    auto moves = newArray<std::int64_t>({drawn.size()});
+                    for (std::size_t i = 0; i < drawn.size(); i++) {
+                        seeds.data()[i] = drawn[i].first;
+                        moves.data()[i] = drawn[i].second;
+                    }
+                    d["game_seeds"] = seeds;
+                    d["moves"] = moves;
+                }
+                return d;
             },
             "encoding"_a, "count"_a, "seed"_a, "per_game"_a = 4, "threads"_a = 8,
             "augment"_a = false, "city_weight"_a = 0.0, "cut_off_weight"_a = 1.0, "search_weight"_a = 0.0,
+            "positions"_a = false,
             nb::sig("def sample_examples(self, encoding: Encoding, count: int, "
                     "seed: int, per_game: int = 4, threads: int = 8, "
                     "augment: bool = False, city_weight: float = 0.0, "
-                    "cut_off_weight: float = 1.0, search_weight: float = 0.0) "
+                    "cut_off_weight: float = 1.0, search_weight: float = 0.0, "
+                    "positions: bool = False) "
                     "-> dict[str, numpy.typing.NDArray[typing.Any]]"),
             "Random training examples, sampled and encoded at once, so safe "
             "while another thread adds games. With augment, each is seen "
@@ -944,7 +983,9 @@ void bindSearch(nb::module_ &m) {
             "reflections). city_weight blends the value target with the "
             "final city lead (early in a run); cut_off_weight is the "
             "value weight of positions from games cut off by the turn limit or "
-            "a stalemate.")
+            "a stalemate. With positions, the dict also has game_seeds and "
+            "moves [B]: which positions were drawn, to encode again later "
+            "(Encoding.encode_examples).")
         .def("save", [](const ReplayBuffer &b, const std::string &path) {
             nb::gil_scoped_release release;
             b.save(path);
@@ -966,7 +1007,8 @@ void bindSearch(nb::module_ &m) {
     m.def(
         "run_cli",
         [](std::vector<std::string> args, const EncodingConfig &encoding,
-           nb::callable evaluate, int simulations, int samples, int horizon) {
+           nb::callable evaluate, int simulations, int samples, int horizon,
+           bool networkBeliefs) {
             args.insert(args.begin(), "stocknavalon.play");
             std::vector<char *> argv;
             for (std::string &a : args) {
@@ -976,19 +1018,22 @@ void bindSearch(nb::module_ &m) {
             SearchConfig config{.simulations = simulations, .samples = samples,
                                 .horizon = horizon};
             return runCli(static_cast<int>(argv.size()), argv.data(),
-                          [config, evaluator](std::uint64_t seed) -> BotTurn {
+                          [config, evaluator, networkBeliefs](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
-                return [config, evaluator, rng](Game &game) {
-                    return playTurn(game, *evaluator, config, *rng);
+                return [config, evaluator, rng, networkBeliefs](Game &game) {
+                    return playTurn(game, *evaluator, config, *rng, networkBeliefs);
                 };
             });
         },
         "args"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
-        "horizon"_a = 1,
+        "horizon"_a = 1, "network_beliefs"_a = true,
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
-        "evaluate(planes, globals, rows, slots) -> (move logits, values), as "
-        "with SelfPlaySession.submit_move_logits. Returns the exit code.");
+        "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "
+        "values, raw belief outputs of belief_rows or None), as with "
+        "SelfPlaySession.submit_move_logits. With network_beliefs, each bot "
+        "turn samples the hidden state from the network's beliefs (asked once "
+        "per turn), else from the fixed priors. Returns the exit code.");
     m.def(
         "play_random_games",
         [](int games, std::vector<TribeTypes::Tribe> tribes,

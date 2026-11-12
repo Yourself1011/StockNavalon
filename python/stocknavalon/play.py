@@ -24,7 +24,7 @@ import torch
 
 import polyengine as pe
 
-from .model import Network, load_weights, pick_device
+from .model import Network, belief_outputs, load_weights, pick_device
 
 
 def load(path: str, device: torch.device, channels: int, blocks: int) -> Network:
@@ -57,6 +57,10 @@ def main():
                         help="determinized games per command")
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--network-beliefs", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="sample the hidden state from the network's belief "
+                             "heads, as in training with fog (else fixed priors)")
     parser.add_argument("--peace-treaties", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="allow peace treaties (off, as in training)")
@@ -71,15 +75,18 @@ def main():
     encoding = pe.Encoding()
 
     @torch.no_grad()
-    def evaluate(planes, globals_, rows, slots):
+    def evaluate(planes, globals_, rows, slots, belief_rows):
         out = model(torch.from_numpy(planes).to(device),
                     torch.from_numpy(globals_).to(device))
         logits = out["policy"][torch.from_numpy(rows).to(device),
                                torch.from_numpy(slots).to(device)]
-        return logits.float().cpu().numpy(), out["value"].float().cpu().numpy()
+        beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
+                   .float().cpu().numpy() if len(belief_rows) else None)
+        return logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs
 
     sys.exit(pe.run_cli(rest, encoding, evaluate, simulations=args.simulations,
-                        samples=args.samples, horizon=args.horizon))
+                        samples=args.samples, horizon=args.horizon,
+                        network_beliefs=args.network_beliefs))
 
 
 if __name__ == "__main__":

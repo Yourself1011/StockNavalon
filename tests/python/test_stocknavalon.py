@@ -208,3 +208,38 @@ def test_gate_stops_once_its_verdict_cannot_change():
     assert not settled(wins(10) + losses(9), 20)
     # too few decided games possible: inconclusive whatever happens
     assert settled(wins(3) + losses(3), 5)
+
+
+def test_held_out_set_keeps_its_positions_when_the_encoding_changes(tmp_path):
+    import numpy as np
+    from stocknavalon.run import load_heldout
+    enc = pe.Encoding()
+    records = pe.play_games(4, seed=5, threads=2, simulations=10, max_turns=4)
+    held = pe.ReplayBuffer(100_000)
+    held.add(records)
+    drawn = held.sample_examples(enc, 8, 0, per_game=1, positions=True)
+    path = str(tmp_path / "heldout.npz")
+    # saved by an older encoding: drawn again from the same positions
+    np.savez_compressed(path, **drawn, games=np.array(4), version=np.array(pe.ENCODING_VERSION - 1))
+    again = load_heldout(path, records, enc, str(tmp_path))
+    assert again is not None and "game_seeds" not in again
+    for key in ("planes", "globals", "policy", "value", "targets"):
+        assert np.array_equal(again[key], drawn[key]), key
+    # and saved under the current version from then on
+    with np.load(path) as saved:
+        assert int(saved["version"]) == pe.ENCODING_VERSION
+    assert load_heldout(path, records, enc, str(tmp_path)) is not None
+    # its games gone: a new set
+    np.savez_compressed(path, **drawn, games=np.array(4), version=np.array(pe.ENCODING_VERSION - 1))
+    assert load_heldout(path, records[:1], enc, str(tmp_path)) is None
+
+
+def test_ratings_put_networks_on_one_scale():
+    from stocknavalon.rating import fit
+    # b beats a 3 to 1, c beats b 3 to 1; a beats random 10 to 0
+    ratings = fit([("a", "random", 10, 0), ("b", "a", 30, 10), ("c", "b", 30, 10)])
+    assert ratings["random"] == 0
+    assert 0 < ratings["a"] < ratings["b"] < ratings["c"]
+    # 3 to 1 is about 190 Elo; the virtual draw pulls it in a little
+    assert 150 < ratings["b"] - ratings["a"] < 200
+    assert abs((ratings["c"] - ratings["b"]) - (ratings["b"] - ratings["a"])) < 15

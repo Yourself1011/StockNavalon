@@ -376,13 +376,27 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
 }
 
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
-                              const SearchConfig &config, std::mt19937_64 &rng) {
+                              const SearchConfig &config, std::mt19937_64 &rng,
+                              bool networkBeliefs) {
     std::vector<Command> played;
     int me = game.currentPlayer;
+    // once for the turn, as self-play does
+    std::optional<Beliefs> beliefs;
+    if (networkBeliefs) {
+        std::vector<Evaluation> results;
+        evaluator.evaluate({EvalRequest{.game = &game,
+                                        .player = me,
+                                        .moves = nullptr,
+                                        .wantsBeliefs = true}},
+                           results);
+        beliefs = std::move(results.at(0).beliefs);
+    }
+    if (!beliefs) {
+        beliefs = priorBeliefs(makeView(game, me));
+    }
     // a turn always ends, but cap it in case
     while (!game.gameOver() && game.currentPlayer == me && played.size() < 200) {
-        SearchResult result =
-            search(game, priorBeliefs(makeView(game, me)), evaluator, config, rng());
+        SearchResult result = search(game, *beliefs, evaluator, config, rng());
         Command command = result.choose(0, rng);
         if (result.moves.empty() || !game.isLegal(command)) {
             command = game.legalCommands().front();

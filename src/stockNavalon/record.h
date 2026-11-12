@@ -178,11 +178,14 @@ class ReplayBuffer {
     // writes exactly the buffer's games to `path`, replacing it
     void save(const std::string &path) const;
     // sample() and encode() together, with no add() in between; with
-    // `augment`, each example through a random symmetry of the map
+    // `augment`, each example through a random symmetry of the map. With
+    // `drawn`, also which positions they were, as (game seed, move): stable
+    // while games come and go, so the same positions can be encoded again.
     void encodeSample(int count, std::uint64_t seed, int perGame,
                       const EncodingConfig &config, const ExampleArrays &out,
                       int threads = 1, bool augment = false,
-                      const ValueTarget &value = {}) const;
+                      const ValueTarget &value = {},
+                      std::vector<std::pair<std::uint64_t, int>> *drawn = nullptr) const;
 
   private:
     std::vector<std::pair<int, int>> sampleUnlocked(int count, std::uint64_t seed,

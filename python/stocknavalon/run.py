@@ -43,6 +43,7 @@ from .model import DTYPES, NEWER_HEADS, Network, load_weights, pick_device
 from .selfplay import SelfPlay
 from .evaluate import gate_settled, gate_verdict, match
 from .fog import FogSchedule
+from .rating import run_ratings
 from .train import Trainer, heldout_losses
 from .train import learning_rate as learning_rate_at
 
@@ -99,6 +100,50 @@ def log(run_dir: str, entry: dict[str, Any]):
 _COLOUR = sys.stdout.isatty()
 
 
+# what heldout.npz keeps beside the examples
+HELDOUT_EXTRAS = ("games", "version", "game_seeds", "moves")
+
+
+def without_positions(saved: dict) -> dict:
+    """The held-out examples alone, as heldout_losses takes them."""
+    return {k: v for k, v in saved.items() if k not in HELDOUT_EXTRAS}
+
+
+def load_heldout(path: str, records: list[pe.GameRecord], encoding: pe.Encoding,
+                 run_dir: str) -> dict | None:
+    """The saved held-out set, or None to draw one. When the encoding has
+    changed, the same positions are encoded again from the held-out games
+    (`records`), so the numbers stay comparable; a set saved before positions
+    were kept, or whose games are gone, is drawn again (a new baseline)."""
+    if not os.path.exists(path):
+        return None
+    with np.load(path) as saved:
+        saved = dict(saved)
+    if "games" not in saved:
+        log(run_dir, {"event": "held-out set redrawn", "reason": "drawn from too few games"})
+        return None
+    # a set saved without its version can only be judged by its shapes
+    current = (int(saved.get("version", pe.ENCODING_VERSION)) == pe.ENCODING_VERSION
+               and saved["targets"].shape[1] == encoding.target_count
+               and saved["globals"].shape[1] == encoding.global_count)
+    if current:
+        return without_positions(saved)
+    if "game_seeds" in saved:
+        index = {r.game_seed: i for i, r in enumerate(records)}
+        seeds = [int(s) for s in saved["game_seeds"]]
+        if all(s in index for s in seeds):
+            positions = [(index[s], int(m)) for s, m in zip(seeds, saved["moves"])]
+            examples = encoding.encode_examples(records, positions)
+            np.savez_compressed(path, **examples, games=saved["games"],
+                                version=np.array(pe.ENCODING_VERSION),
+                                game_seeds=saved["game_seeds"], moves=saved["moves"])
+            log(run_dir, {"event": "held-out set encoded again",
+                          "version": pe.ENCODING_VERSION})
+            return examples
+    log(run_dir, {"event": "held-out set redrawn", "reason": "the encoding changed"})
+    return None
+
+
 def _style(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _COLOUR else text
 
@@ -122,7 +167,9 @@ def pretty(e: dict[str, Any]) -> str:
              f"train {_num(e['steps'])} steps ({_num(e['steps_per_minute'])}/min, "
              f"{_num(e['ms_per_step'])} ms, idle {_num(100 * e['training_waited'])}%)"),
             f"play {_num(e['games_per_minute'], 1)} games/min, "
-            f"{_num(e['positions_per_second'])} pos/s",
+            f"{_num(e['positions_per_second'])} pos/s" + (
+                " (CPU {cpu:.0%}, GPU {gpu:.0%}, lock {lock:.0%})".format(**e["selfplay_time"])
+                if e.get("selfplay_time") else ""),
             f"decided {_num(e.get('decided_recent_percent'))}% "
             f"(buffer {_num(e.get('decided_buffer_percent'))}%), "
             f"stalemate {_num(e.get('stalled_recent_percent'))}%",
@@ -156,6 +203,9 @@ def pretty(e: dict[str, Any]) -> str:
                 f"{_num(e['best'])}: {_style(e['verdict'], colour)}, won "
                 f"{e['captures']} of {e['captures'] + e['was_captured']} decided "
                 f"({e['games']} games, {_num(e['seconds'] / 60, 1)} min)")
+    if kind == "rating":
+        return (f"{when}  {_style('rating', '1;34')}  best {_num(e['best'])}: "
+                f"{_num(e['elo'])} Elo (random 0, score search {_num(e.get('score_bot'))})")
     if kind == "evaluation start":
         return (f"{when}  {_style('eval', '1;36')}    step {_num(e['steps'])}: "
                 f"{e['games']} games each against {', '.join(e['against'])}")
@@ -404,8 +454,10 @@ def main():
         buffer.add(recent)
     holdout_path = os.path.join(args.dir, "holdout.txt")
     holdout = pe.ReplayBuffer(100_000)
-    if os.path.exists(holdout_path):
-        holdout.add(pe.load_records(holdout_path))
+    # as loaded, before self-play adds to it: for encoding the held-out set
+    # again when the layout changes
+    holdout_records = pe.load_records(holdout_path) if os.path.exists(holdout_path) else []
+    holdout.add(holdout_records)
     log(
         args.dir,
         {
@@ -509,23 +561,8 @@ def main():
     began = last_log = last_checkpoint = time.perf_counter()
     window = Window()
     heldout_set_path = os.path.join(args.dir, "heldout.npz")
-    heldout_set = None
-    if os.path.exists(heldout_set_path):
-        with np.load(heldout_set_path) as saved:
-            heldout_set = dict(saved)
-        # drawn with an older target layout, or from too few games: draw it
-        # again (a new baseline)
-        reason = ("the target layout changed"
-                  if heldout_set["targets"].shape[1] != encoding.target_count
-                  else "the input layout changed"
-                  if heldout_set["globals"].shape[1] != encoding.global_count
-                  else "drawn from too few games" if "games" not in heldout_set
-                  else None)
-        if reason:
-            heldout_set = None
-            log(args.dir, {"event": "held-out set redrawn", "reason": reason})
-        else:
-            heldout_set.pop("games")
+    heldout_set = load_heldout(heldout_set_path, holdout_records, encoding, args.dir)
+    del holdout_records
     try:
         while time.perf_counter() - began < args.minutes * 60:
             if player.error is not None:
@@ -580,9 +617,11 @@ def main():
                     # objective, whatever the training targets are blended
                     # with; one position per game sampled, across all of them
                     heldout_set = holdout.sample_examples(
-                        encoding, HELDOUT_POSITIONS, 0, per_game=1)
+                        encoding, HELDOUT_POSITIONS, 0, per_game=1, positions=True)
                     np.savez_compressed(heldout_set_path, **heldout_set,
-                                        games=np.array(holdout.game_count))
+                                        games=np.array(holdout.game_count),
+                                        version=np.array(pe.ENCODING_VERSION))
+                    heldout_set = without_positions(heldout_set)
                     log(args.dir, {"event": "held-out set drawn",
                                    "games": holdout.game_count})
                 entry["heldout"] = heldout_losses(model, device, heldout_set, gpu_lock)
@@ -631,6 +670,8 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
         "losses": {k: round(v / steps, 4) for k, v in window.losses.items()} if steps else None,
         "games_per_minute": round(60 * played["games"] / seconds, 1),
         "positions_per_second": round(played["evaluated"] / seconds),
+        # where self-play's time went: the CPU, waiting for the GPU lock, the GPU
+        "selfplay_time": player.take_times(),
         # games ending in a capture rather than the turn limit: the latest
         # games, and the whole buffer
         "decided_recent_percent": round(100 * player.decided_recent(), 1),
@@ -676,6 +717,10 @@ class SelfPlayThread(threading.Thread):
         self._lock = threading.Lock()
         self._weights = None
         self._window = {"games": 0, "evaluated": 0}
+        # self-play's running time totals (SelfPlay.times), and where they
+        # stood at the last status line
+        self._runner = None
+        self._times_then = None
         # whether each of the latest games ended in a capture, starting from
         # the run's games so far
         self._decided = collections.deque((g.winner >= 0 for g in recent),
@@ -698,6 +743,19 @@ class SelfPlayThread(threading.Thread):
         with self._lock:
             window, self._window = self._window, {"games": 0, "evaluated": 0}
         return window
+
+    def take_times(self) -> dict[str, float] | None:
+        """The shares of self-play's time since the last call spent on the
+        CPU, waiting for the GPU lock and on the GPU (selfplay.TIMES)."""
+        if self._runner is None:
+            return None
+        now = dict(self._runner.times)
+        then, self._times_then = self._times_then, now
+        if then is None:
+            return None
+        spent = {k: now[k] - then[k] for k in now}
+        total = sum(spent.values())
+        return {k: round(v / total, 2) for k, v in spent.items()} if total > 0 else None
 
     def decided_recent(self) -> float:
         with self._lock:
@@ -726,6 +784,7 @@ class SelfPlayThread(threading.Thread):
         try:
             runner = SelfPlay(self.encoding, self.device, parallel=self.args.parallel,
                               seed=self.seed, gpu_lock=self.gpu_lock, **self.session)
+            self._runner = runner
             while not self.stop.is_set():
                 with self._lock:
                     weights, self._weights = self._weights, None
@@ -880,6 +939,15 @@ class EvaluationThread(threading.Thread):
             torch.save(self.best, self.best_path + ".tmp")
             os.replace(self.best_path + ".tmp", self.best_path)
             self.on_new_best(weights, steps)
+        self._log_rating()
+
+    def _log_rating(self):
+        """The best network's rating, refitted from every match so far."""
+        ratings = run_ratings(self.args.dir)
+        steps = str(self.best["steps"])
+        if steps in ratings:
+            log(self.args.dir, {"event": "rating", "best": self.best["steps"],
+                                "elo": ratings[steps], "score_bot": ratings.get("score")})
 
     def _run_anchors(self):
         steps = self.best["steps"]
@@ -902,6 +970,7 @@ class EvaluationThread(threading.Thread):
             result = self._match(model, opponent, name, steps, self.args.eval_games)
             log(self.args.dir, {"event": "evaluation", "steps": steps,
                                 "against": name, **result})
+        self._log_rating()
 
     def run(self):
         try:

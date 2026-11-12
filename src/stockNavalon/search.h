@@ -194,6 +194,9 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
 
 // Plays the whole of the current player's turn, each command the most
 // visited of a search on what that player can see; returns the commands. The
-// CLI's bot, with whichever evaluator.
+// CLI's bot, with whichever evaluator. With `networkBeliefs`, the hidden state
+// is sampled from beliefs the evaluator gives for the turn's first position
+// (a request that wantsBeliefs, as in self-play), else from priorBeliefs.
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
-                              const SearchConfig &config, std::mt19937_64 &rng);
+                              const SearchConfig &config, std::mt19937_64 &rng,
+                              bool networkBeliefs = false);

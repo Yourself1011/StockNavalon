@@ -909,6 +909,10 @@ class GameRecord:
     def tribes(self) -> list[Tribe]: ...
 
     @property
+    def game_seed(self) -> int:
+        """The game's random seed: identifies it among the others."""
+
+    @property
     def winner(self) -> int:
         """-1 if the turn limit came first"""
 
@@ -1094,9 +1098,9 @@ class ReplayBuffer:
         Training examples at those positions, like Encoding.encode_examples. The positions only hold until the next add(): from another thread than the one adding, use sample_examples.
         """
 
-    def sample_examples(self, encoding: Encoding, count: int, seed: int, per_game: int = 4, threads: int = 8, augment: bool = False, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0) -> dict[str, numpy.typing.NDArray[Any]]:
+    def sample_examples(self, encoding: Encoding, count: int, seed: int, per_game: int = 4, threads: int = 8, augment: bool = False, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0, positions: bool = False) -> dict[str, numpy.typing.NDArray[Any]]:
         """
-        Random training examples, sampled and encoded at once, so safe while another thread adds games. With augment, each is seen through a random one of the map's 8 symmetries (rotations and reflections). city_weight blends the value target with the final city lead (early in a run); cut_off_weight is the value weight of positions from games cut off by the turn limit or a stalemate.
+        Random training examples, sampled and encoded at once, so safe while another thread adds games. With augment, each is seen through a random one of the map's 8 symmetries (rotations and reflections). city_weight blends the value target with the final city lead (early in a run); cut_off_weight is the value weight of positions from games cut off by the turn limit or a stalemate. With positions, the dict also has game_seeds and moves [B]: which positions were drawn, to encode again later (Encoding.encode_examples).
         """
 
     def save(self, path: str) -> None:
@@ -1112,9 +1116,9 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1, network_beliefs: bool = True) -> int:
     """
-    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots) -> (move logits, values), as with SelfPlaySession.submit_move_logits. Returns the exit code.
+    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. Returns the exit code.
     """
 
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:

@@ -447,9 +447,16 @@ void ReplayBuffer::encode(const std::vector<std::pair<int, int>> &positions,
 void ReplayBuffer::encodeSample(int count, std::uint64_t seed, int perGame,
                                 const EncodingConfig &config,
                                 const ExampleArrays &out, int threads,
-                                bool augment, const ValueTarget &value) const {
+                                bool augment, const ValueTarget &value,
+                                std::vector<std::pair<std::uint64_t, int>> *drawn) const {
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<std::pair<int, int>> positions = sampleUnlocked(count, seed, perGame);
+    if (drawn) {
+        drawn->clear();
+        for (auto [record, move] : positions) {
+            drawn->push_back({records[record].gameSeed, move});
+        }
+    }
     std::vector<int> symmetries;
     if (augment) {
         // a different stream from the sample's own

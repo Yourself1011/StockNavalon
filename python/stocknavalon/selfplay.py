@@ -32,36 +32,63 @@ class _Pending:
         self.beliefs = beliefs
 
 
+# Where self-play's time goes, in seconds (SelfPlay.times): the CPU (advancing
+# games, encoding, handing results back), waiting for the GPU lock (training
+# or a gate using the GPU), and the GPU (queueing a batch and waiting for its
+# results). Mostly the CPU means more cores would help; mostly the GPU or the
+# lock, a faster GPU.
+TIMES = ("cpu", "lock", "gpu")
+
+
+class _Clock:
+    def __init__(self, times: dict[str, float]):
+        self.times, self.last = times, time.perf_counter()
+
+    def to(self, kind: str):
+        """The time since the last call goes to `kind`."""
+        now = time.perf_counter()
+        self.times[kind] += now - self.last
+        self.last = now
+
+
 @torch.no_grad()
 def _launch(model: Network, session: pe.SelfPlaySession, encoding: pe.Encoding,
-            device: torch.device, gpu_lock) -> _Pending | None:
+            device: torch.device, gpu_lock, clock: _Clock) -> _Pending | None:
     """Prepares the session's waiting positions on the CPU and starts the
     network on them, without waiting for it. Only each position's move
     logits are kept (logits[rows, slots]), so a few KB come back from the GPU
     instead of every slot of every position."""
     planes, globals_, _ = session.pending_inputs(encoding, legal=False)
     if len(planes) == 0:
+        clock.to("cpu")
         return None
     rows, slots = session.pending_slots(encoding)
     belief_rows = session.pending_belief_rows()
+    clock.to("cpu")
     with gpu_lock:
+        clock.to("lock")
         out = model(as_input(planes, model, device), as_input(globals_, model, device))
         moves = out["policy"][torch.from_numpy(rows).to(device),
                               torch.from_numpy(slots).to(device)]
         beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
                    if len(belief_rows) else None)
+        clock.to("gpu")
     return _Pending(moves, out["value"], len(planes), beliefs)
 
 
 def _collect(session: pe.SelfPlaySession, encoding: pe.Encoding,
-             pending: _Pending, gpu_lock):
+             pending: _Pending, gpu_lock, clock: _Clock):
     """Waits for the batch's results and gives them to the session."""
+    clock.to("cpu")
     with gpu_lock:
+        clock.to("lock")
         moves = pending.moves.float().cpu().numpy()
         values = pending.values.float().cpu().numpy()
         beliefs = (None if pending.beliefs is None
                    else np.ascontiguousarray(pending.beliefs.float().cpu().numpy()))
+        clock.to("gpu")
     session.submit_move_logits(encoding, moves, values, beliefs)
+    clock.to("cpu")
 
 
 class SelfPlay:
@@ -80,6 +107,8 @@ class SelfPlay:
         endless = 1 << 30
         self.sessions = [pe.SelfPlaySession(parallel, endless, seed=seed * 2 + i,
                                             **session_args) for i in range(2)]
+        # running totals over every call (TIMES)
+        self.times = dict.fromkeys(TIMES, 0.0)
 
     def set_fog_share(self, share: float):
         """The share of games started from now on that have fog."""
@@ -97,6 +126,7 @@ class SelfPlay:
         records = []
         evaluated = batches = 0
         start = reported = time.perf_counter()
+        clock = _Clock(self.times)
         current = 0
         while len(records) < games or any(p is not None for p in pending):
             now = time.perf_counter()
@@ -111,7 +141,7 @@ class SelfPlay:
             if pending[current] is None and len(records) < games:
                 # the CPU work outside the lock, queueing the GPU's inside
                 launched = _launch(model, sessions[current], encoding, device,
-                                   self.gpu_lock)
+                                   self.gpu_lock, clock)
                 pending[current] = launched
                 if launched is not None:
                     evaluated += launched.size
@@ -119,9 +149,10 @@ class SelfPlay:
             other = 1 - current
             waiting = pending[other]
             if waiting is not None:
-                _collect(sessions[other], encoding, waiting, self.gpu_lock)
+                _collect(sessions[other], encoding, waiting, self.gpu_lock, clock)
                 pending[other] = None
                 records.extend(sessions[other].take_finished())
+                clock.to("cpu")
             current = other
         return records, {"evaluated": evaluated, "batches": batches,
                          "seconds": time.perf_counter() - start}
