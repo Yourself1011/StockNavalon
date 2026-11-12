@@ -1,7 +1,7 @@
 #pragma once
 
-// stockNavalon's search, stage 1 (docs/stockNavalon.md sections 3, 4.3 and
-// 6.2): PUCT over commands, across turn boundaries up to a horizon, on
+// stockNavalon's search, stage 1 (docs/stockNavalon.md sections 3
+// and 4): PUCT over commands, across turn boundaries up to a horizon, on
 // several determinized games at once, with positions handed to an evaluator
 // in batches.
 
@@ -10,6 +10,7 @@
 #include "game.h"
 #include "legalMoves.h"
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -20,6 +21,14 @@ struct SearchConfig {
     int samples = 4;
     // c in Q + c * P * sqrt(N) / (1 + n)
     double exploration = 1.5;
+    // First-play urgency (as in Leela and KataGo): a move not tried yet
+    // counts as the node's own value estimate, less this times the square
+    // root of the prior already explored, rather than as 0. With 0, in a
+    // position that looks lost every untried move beat every tried one, so
+    // the search kept sampling moves it knew nothing about.
+    double fpuReduction = 0.2;
+    // off: untried moves count as 0, the old behaviour (for comparisons)
+    bool firstPlayUrgency = true;
     // How many turn changes a line may cross before it's scored without
     // looking further: 0 is the player's own turn only, 1 includes the
     // opponent's reply
@@ -28,6 +37,11 @@ struct SearchConfig {
     bool rootNoise = false;
     double noiseAlpha = 0.3, noiseWeight = 0.25;
     int determinizeTries = 20;
+    // Search the real game instead of determinized samples, for training
+    // without fog (docs/stockNavalon.md section 4): one tree, on a copy with
+    // the random state reseeded, so chance (ruins, Explorer paths) stays
+    // chance. The network's input is then encoded with full information.
+    bool fullInformation = false;
 };
 
 // A position to evaluate, for the player to move in it
@@ -37,6 +51,11 @@ struct EvalRequest {
     // the commands to give priors for; empty when only the value is needed
     // (a position at the horizon)
     const std::vector<Command> *moves;
+    // encode with full information (SearchConfig::fullInformation)
+    bool fullInformation = false;
+    // only the network's beliefs are wanted, not an evaluation: a
+    // self-play decision about to be searched (SelfPlayConfig::networkBeliefs)
+    bool wantsBeliefs = false;
 };
 
 struct Evaluation {
@@ -44,6 +63,8 @@ struct Evaluation {
     std::vector<float> priors;
     // the expected result for the player to move, in [-1, 1]
     float value = 0;
+    // for a request that wants beliefs: the network's, decoded
+    std::optional<Beliefs> beliefs;
 };
 
 class Evaluator {
@@ -104,6 +125,17 @@ class BatchedSearch {
 
     SearchResult result(int game) const;
 
+    // Tree reuse, for a search of one game: after `played` was played, each
+    // tree's root moves down to that move's child, keeping the subtree and
+    // its visits, and the next decision is searched with `next` (its
+    // simulations count the visits kept; root noise applied afresh). Only
+    // within the same player's turn, and only if every tree has that child,
+    // evaluated; false otherwise, and the search is then spent. The caller
+    // checks the new roots against the real game (rootGame).
+    bool reuse(const Command &played, const SearchConfig &next);
+    int treeCount() const { return static_cast<int>(trees.size()); }
+    const Game &rootGame(int tree) const { return trees.at(tree).nodes[0].game; }
+
   private:
     struct Node {
         Game game;
@@ -147,6 +179,7 @@ class BatchedSearch {
     // runs the tree's current simulation until it needs an evaluation (true)
     // or completes without one (false)
     bool descend(Tree &tree);
+    void addRootNoise(Tree &tree);
     void backup(Tree &tree, int leaf, float value);
     void expand(Tree &tree, int node, const Evaluation &evaluation);
 };
@@ -158,3 +191,9 @@ void run(BatchedSearch &search, Evaluator &evaluator);
 SearchResult search(const Game &game, const Beliefs &beliefs,
                     Evaluator &evaluator, const SearchConfig &config,
                     std::uint64_t seed);
+
+// Plays the whole of the current player's turn, each command the most
+// visited of a search on what that player can see; returns the commands. The
+// CLI's bot, with whichever evaluator.
+std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
+                              const SearchConfig &config, std::mt19937_64 &rng);

@@ -19,3 +19,9 @@ minimum-version = "build-system.requires"
 build-dir = "build/python/{wheel_tag}"
 wheel.packages = ["python/polyengine", "python/stocknavalon"]
 cmake.build-type = "Release"
+
+# Type checking (Pylance, pyright, basedpyright). The compiled module only
+# has a stub next to the sources (python/polyengine/_engine.pyi); the module
+# itself is in the build directory, which is expected.
+[tool.pyright]
+reportMissingModuleSource = "none"

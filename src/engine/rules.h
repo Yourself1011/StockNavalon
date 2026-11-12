@@ -107,6 +107,13 @@ constexpr int LIGHTHOUSE_POPULATION = 1;
 // one on each corner of the map
 constexpr int LIGHTHOUSE_COUNT = 4;
 
+// ---- boats ----
+
+// the only boat that upgrades (to the rest of its family, isRaftFamily),
+// inside its owner's borders; the upgrade is final and doesn't use the
+// unit's turn
+constexpr UnitTypes::UnitType UPGRADABLE_BOAT = UnitTypes::RAFT;
+
 // ---- ruins (GAME.md section 13) ----
 
 constexpr int RUIN_STARS = 10;

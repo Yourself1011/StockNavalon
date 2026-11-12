@@ -33,6 +33,10 @@ struct GameSettings {
     WinConditions::WinCondition winCondition = WinConditions::MIGHT;
     // seeds Game::rng
     std::uint64_t seed = 0;
+    // Peace treaties can be proposed, accepted and broken (GAME.md section
+    // 15). Off only for training a bot before it can use them; the rules are
+    // otherwise the same, and embassies stay.
+    bool peaceTreaties = true;
 };
 
 // The whole game state. Everything refers to everything else by index, so a

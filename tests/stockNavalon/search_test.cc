@@ -95,3 +95,95 @@ TEST_CASE("search bookkeeping") {
     CHECK(a.moves == b.moves);
     CHECK(a.visits == b.visits);
 }
+
+TEST_CASE("first-play urgency: in a position that looks lost, the search stays with what it knows") {
+    // a network that likes one move and thinks every position is lost
+    struct Gloomy : Evaluator {
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                std::size_t n = requests[i].moves ? requests[i].moves->size() : 0;
+                results[i].priors.assign(n, n > 1 ? 0.5f / (n - 1) : 1.0f);
+                if (n > 1) {
+                    results[i].priors[0] = 0.5f;
+                }
+                results[i].value = -0.6f;
+            }
+        }
+    } network;
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    REQUIRE(game.legalCommands().size() > 10);
+    struct Spread {
+        double favourite;
+        int tried;
+    };
+    auto spread = [&](bool urgency) {
+        SearchConfig config{.simulations = 200, .samples = 1,
+                            .firstPlayUrgency = urgency, .horizon = 0};
+        SearchResult r = search(game, priorBeliefs(makeView(game, 0)), network, config, 3);
+        int total = 0, tried = 0;
+        for (int v : r.visits) {
+            total += v;
+            tried += v > 0;
+        }
+        return Spread{static_cast<double>(r.visits[0]) / total, tried};
+    };
+    // untried moves count a little below the position's value, so the
+    // favourite keeps its share of the visits; counted optimistically (as 0
+    // used to), the untried moves beat it until each had its turn, and it
+    // ended up with hardly any (4% against 30% here)
+    Spread urgent = spread(true), optimistic = spread(false);
+    MESSAGE("favourite's share " << urgent.favourite << " against " << optimistic.favourite
+                                 << ", moves tried " << urgent.tried << " against "
+                                 << optimistic.tried);
+    CHECK(urgent.favourite > optimistic.favourite + 0.1);
+}
+
+TEST_CASE("tree reuse continues from the played move's subtree, within the budget") {
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    ScoreEvaluator evaluator;
+    SearchConfig config{.simulations = 120, .samples = 1, .horizon = 1,
+                        .fullInformation = true};
+    BatchedSearch search({&game}, {Beliefs{}}, config, 5);
+    run(search, evaluator);
+    SearchResult first = search.result(0);
+    // the most visited move that keeps it the player's turn
+    int best = -1;
+    for (std::size_t i = 0; i < first.moves.size(); i++) {
+        if (first.moves[i].type != CommandTypes::ENDTURN &&
+            (best < 0 || first.visits[i] > first.visits[best])) {
+            best = static_cast<int>(i);
+        }
+    }
+    REQUIRE(best >= 0);
+    REQUIRE(first.visits[best] > 1);
+    Command played = first.moves[best];
+    // a move never explored, or the end of the turn, can't be continued from
+    {
+        BatchedSearch other({&game}, {Beliefs{}}, config, 5);
+        run(other, evaluator);
+        CHECK_FALSE(other.reuse({CommandTypes::ENDTURN}, config));
+    }
+    REQUIRE(search.reuse(played, config));
+    Game after = game;
+    after.apply(played);
+    CHECK(search.rootGame(0).currentPlayer == after.currentPlayer);
+    // the kept visits are there before any new simulation
+    SearchResult kept = search.result(0);
+    int keptVisits = 0;
+    for (int v : kept.visits) {
+        keptVisits += v;
+    }
+    CHECK(keptVisits == first.visits[best] - 1);
+    // and the search finishes at the same budget, counting them
+    run(search, evaluator);
+    SearchResult second = search.result(0);
+    int total = 0;
+    for (int v : second.visits) {
+        total += v;
+    }
+    CHECK(total == config.simulations - 1);
+}

@@ -1,10 +1,11 @@
 #pragma once
 
-// Determinization (docs/stockNavalon.md section 5.5): from what one player
+// Determinization (docs/stockNavalon.md section 4): from what one player
 // knows, plus beliefs about the rest, a complete game to search in. Every
 // sample agrees exactly with the player's view; everything hidden is
 // sampled, never copied.
 
+#include "data/terrain.h"
 #include "data/tribeData.h"
 #include "data/unitData.h"
 #include <array>
@@ -34,9 +35,18 @@ struct OpponentBeliefs {
     std::vector<std::array<float, UnitTypes::UNIT_TYPE_SIZE>> unitType;
 };
 
+// what an unexplored tile holds besides its terrain and resource
+enum class TileFeature { NONE, VILLAGE, RUIN, FEATURE_SIZE };
+
 struct Beliefs {
     // by seat; the player's own entry is unused
     std::vector<OpponentBeliefs> players;
+    // The map's unexplored tiles, per tile: weights for its terrain, its
+    // resource and its feature. Empty without a network: unexplored tiles
+    // then come from a freshly generated map.
+    std::vector<std::array<float, TerrainTypes::TERRAIN_TYPE_SIZE>> terrain;
+    std::vector<std::array<float, ResourceTypes::RESOURCE_TYPE_SIZE>> resource;
+    std::vector<std::array<float, static_cast<int>(TileFeature::FEATURE_SIZE)>> feature;
 };
 
 // Beliefs with no model behind them: any possible tribe, a few techs, some

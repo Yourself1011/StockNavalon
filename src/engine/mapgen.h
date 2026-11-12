@@ -46,6 +46,28 @@ struct MapGenSettings {
 
 int ruinCountForSize(int size);
 
+// ---- placement rules, also read by stockNavalon's determinization ----
+
+// Each resource the generator can put on a terrain, with its share of
+// tiles next to a village (inner) and two away (outer). Starfish come
+// separately: any water tile can have one.
+struct ResourceRate {
+    ResourceTypes::ResourceType resource;
+    double inner, outer;
+};
+std::vector<ResourceRate> resourceRates(TerrainTypes::TerrainType terrain,
+                                        const MapGenSettings &settings = {});
+// whether a map can have this resource on this terrain (NONE fits anything)
+bool resourceFitsTerrain(ResourceTypes::ResourceType resource,
+                         TerrainTypes::TerrainType terrain);
+// corners are always a field with a lighthouse
+bool isCornerTile(int x, int y, int size);
+// ruins: never on shallow water, at least this far from a village or capital
+// on land and on ocean, and at least RUIN_SPACING from another ruin
+constexpr int RUIN_LAND_SETTLEMENT_DISTANCE = 2;
+constexpr int RUIN_OCEAN_SETTLEMENT_DISTANCE = 3;
+constexpr int RUIN_SPACING = 2;
+
 // villages on 1-tile islands: Continents, Pangea and Water World
 int tinyIslandCountForSize(int size);
 

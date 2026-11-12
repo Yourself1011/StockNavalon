@@ -19,7 +19,7 @@ using TribeSet = std::bitset<TribeTypes::TRIBE_SIZE>;
 struct TribeInferenceConfig {
     // How many of the opponent's score changes the search follows. Only
     // their turn 0 narrowed anything in measurements (docs/tribeInference.md
-    // section 10), so that's the default.
+    // section 9), so that's the default.
     int turns = 1;
     // States kept per turn, and the work (states made, at every stage) one
     // turn may take. Past either, the search stops reading and the tribe stays

@@ -5,8 +5,10 @@
 // whenever their meaning changes.
 
 #include "command.h"
+#include "determinize.h"
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 class Game;
@@ -21,7 +23,7 @@ struct EncodingConfig {
     bool operator==(const EncodingConfig &) const = default;
 };
 
-constexpr int ENCODING_VERSION = 4;
+constexpr int ENCODING_VERSION = 6;
 // how many of each opponent's first score changes are encoded
 constexpr int OPENING_CHANGES = 6;
 
@@ -60,7 +62,11 @@ int actionCount(const EncodingConfig &config);
 // their own units' moves. Throws std::invalid_argument if the game doesn't
 // fit the config.
 void encodeState(const Game &game, int player, const EncodingConfig &config,
-                 float *planes, float *globals);
+                 float *planes, float *globals, bool fullInformation = false);
+// fullInformation (for training without fog, docs/encoding.md section 10):
+// from the full view instead, every tile's contents and every opponent's
+// techs, stars and tribe, with `explored` still the tiles the player has
+// actually explored.
 
 // The slot of a command of the current player; -1 if it has none (Resign,
 // Stay, or a tile outside the config's map size).
@@ -89,6 +95,8 @@ constexpr int HIDDEN_UNIT_COUNT_CAP = 20;
 struct TargetHead {
     std::string name;
     int opponent, offset, size;
+    // per-tile heads: how many [N][N] layers they are; 0 for the rest
+    int tileLayers = 0;
 };
 // every head, for every opponent, in order
 std::vector<TargetHead> targetHeads(const EncodingConfig &config);
@@ -100,4 +108,80 @@ int targetCount(const EncodingConfig &config);
 // target is the game's result, so whoever records the game adds it at the
 // end. Throws std::invalid_argument if the game doesn't fit the config.
 void encodeTargets(const Game &game, int player, const EncodingConfig &config,
-                   float *targets, std::uint8_t *masks);
+                   float *targets, std::uint8_t *masks, bool fullInformation = false);
+// with fullInformation nothing is hidden, so every mask is 0
+
+// The map-wide belief head, of the unexplored tiles (opponent 0 in
+// targetHeads): per tile, a softmax over terrains, one over resources (NONE
+// first), and one over features (TileFeature), as [LAYERS][N][N]
+namespace UnexploredHead {
+constexpr int TERRAIN = 0;
+constexpr int RESOURCE = TERRAIN + TerrainTypes::TERRAIN_TYPE_SIZE;
+constexpr int FEATURE = RESOURCE + ResourceTypes::RESOURCE_TYPE_SIZE;
+constexpr int LAYERS = FEATURE + static_cast<int>(TileFeature::FEATURE_SIZE);
+} // namespace UnexploredHead
+
+// ---- reading the belief heads back (docs/encoding.md section 8.4) ----
+
+// the stars head: a mixture of this many negative binomials, each with a
+// weight, a mean and a spread (raw, before softmax and softplus)
+constexpr int STAR_COMPONENTS = 3;
+// the most stars a sample can have
+constexpr int STAR_COUNT_CAP = 60;
+
+// The network's raw belief outputs as one flat array per position: the same
+// heads and order as targetHeads, logits where those have probabilities,
+// and for the stars the mixture's 3 x STAR_COMPONENTS raw parameters
+std::vector<TargetHead> beliefOutputHeads(const EncodingConfig &config);
+int beliefOutputCount(const EncodingConfig &config);
+
+// The beliefs those outputs describe, for `view`'s player (Beliefs is by
+// seat; the player's own entry stays empty): softmaxes and sigmoids applied,
+// the stars mixture turned into a weight per count. What's impossible is
+// left to determinize(), which samples within the possible.
+Beliefs decodeBeliefs(const PlayerView &view, const EncodingConfig &config,
+                      const float *outputs);
+
+// ---- side targets (docs/encoding.md section 8.5) ----
+
+// Targets for side heads the search never reads, from how the game went: the
+// score lead a few turns later and at the end, squashed, and each tile's
+// owner when the game ended (mine, an opponent's, nobody's), as [3][N][N].
+namespace SideTargets {
+constexpr int SCORE_SOON = 0;
+constexpr int SCORE_END = 1;
+constexpr int TERRITORY = 2;
+constexpr int TERRITORY_CLASSES = 3;
+// how far ahead the first score lead looks
+constexpr int SOON_TURNS = 5;
+// the score lead's squash: tanh(lead / SCORE_SCALE)
+constexpr double SCORE_SCALE = 500;
+} // namespace SideTargets
+int sideTargetCount(const EncodingConfig &config);
+
+// ---- symmetries (docs/encoding.md section 9) ----
+
+// The square map's 8 symmetries, rotations and reflections; 0 is the
+// identity. The rules don't depend on direction, so a position and its
+// transform are equally good to train on.
+constexpr int SYMMETRIES = 8;
+
+// Where symmetry s takes tile (x, y) of a mapSize x mapSize map, and an
+// offset (dx, dy) between tiles
+std::pair<int, int> transformTile(int s, int x, int y, int mapSize);
+std::pair<int, int> transformOffset(int s, int dx, int dy);
+
+// Applies symmetry s in place to one encoded position, all of it seen
+// through the transformed map: the planes [C][N][N], any [A] command arrays
+// (the legal mask, the policy: tile slots move with their tile, and target
+// offsets turn with it), and the belief targets and masks [T]. The map is
+// mapSize x mapSize in the top-left corner; padding stays as it is. Any
+// pointer may be null.
+void applySymmetry(int s, int mapSize, const EncodingConfig &config,
+                   float *planes, std::uint8_t *legal, float *policy,
+                   float *targets, std::uint8_t *targetMasks);
+// The same for `layers` consecutive [N][N] layers of any per-tile array
+void applySymmetry(int s, int mapSize, const EncodingConfig &config, int layers,
+                   float *data);
+void applySymmetry(int s, int mapSize, const EncodingConfig &config, int layers,
+                   std::uint8_t *data);

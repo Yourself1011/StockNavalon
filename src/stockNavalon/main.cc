@@ -11,7 +11,6 @@
 #include "cli.h"
 #include "game.h"
 #include "search.h"
-#include "view.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,26 +37,7 @@ int main(int argc, char **argv) {
         auto rng = std::make_shared<std::mt19937_64>(seed);
         auto evaluator = std::make_shared<ScoreEvaluator>();
         return [config, rng, evaluator](Game &game) {
-            std::vector<Command> played;
-            int me = game.currentPlayer;
-            // a turn always ends, but cap it in case
-            while (!game.gameOver() && game.currentPlayer == me &&
-                   played.size() < 200) {
-                SearchResult result =
-                    search(game, priorBeliefs(makeView(game, me)), *evaluator,
-                           config, (*rng)());
-                Command command = result.choose(0, *rng);
-                if (result.moves.empty() || !game.isLegal(command)) {
-                    command = game.legalCommands().front();
-                }
-                game.apply(command);
-                played.push_back(command);
-            }
-            if (!game.gameOver() && game.currentPlayer == me) {
-                game.apply({CommandTypes::ENDTURN});
-                played.push_back({CommandTypes::ENDTURN});
-            }
-            return played;
+            return playTurn(game, *evaluator, config, *rng);
         };
     });
 }

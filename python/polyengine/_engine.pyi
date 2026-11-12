@@ -1,10 +1,11 @@
 """polyengine, a Polytopia engine"""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import enum
-from typing import Annotated
+from typing import Annotated, Any
 
 import numpy
+import numpy.typing
 from numpy.typing import NDArray
 
 
@@ -344,7 +345,7 @@ class Command:
     @arg.setter
     def arg(self, arg: int, /) -> None: ...
 
-    def __eq__(self, arg: Command, /) -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
 
     def __hash__(self) -> int: ...
 
@@ -365,7 +366,7 @@ class ScoreRecord:
     @property
     def score(self) -> int: ...
 
-    def __eq__(self, arg: ScoreRecord, /) -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
 
     def __repr__(self) -> str: ...
 
@@ -895,7 +896,7 @@ class RandomBot:
 
 class GameRecord:
     """
-    A recorded game: its setup and commands, replayed to rebuild any position (docs/stockNavalon.md section 7).
+    A recorded game: its setup and commands, replayed to rebuild any position (docs/stockNavalon.md section 5).
     """
 
     @property
@@ -918,6 +919,10 @@ class GameRecord:
     def final_scores(self) -> list[int]: ...
 
     @property
+    def seat_zero_side(self) -> int:
+        """In a match, the side that played seat 0."""
+
+    @property
     def move_count(self) -> int: ...
 
     @property
@@ -930,12 +935,62 @@ class GameRecord:
     def result(self, player: int) -> float:
         """+1 or -1 for a win or loss, 0 for a game cut off by the turn limit."""
 
+    @property
+    def final_territory(self) -> list[int]:
+        """
+        Each tile's owner when the game ended (-1 for nobody); empty in older records.
+        """
+
+    @property
+    def turn_scores(self) -> list[int]:
+        """
+        Each player's latest published score at each turn, flattened turns x players; empty in older records.
+        """
+
+    @property
+    def peace_treaties(self) -> bool:
+        """Whether peace treaties were allowed in the game."""
+
+    @property
+    def final_cities(self) -> list[int]:
+        """Each player's cities when the game ended; empty in older records."""
+
+    def city_value(self, player: int) -> float:
+        """The final city lead, (mine - the best opponent's) / their sum."""
+
+    @property
+    def fog(self) -> bool:
+        """
+        Played with fog; without it, its positions are encoded with full information.
+        """
+
+    @property
+    def stalled(self) -> bool:
+        """
+        Ended by the stalemate cutoff (stall_turns) rather than the turn limit; not saved with the record.
+        """
+
+    @property
+    def root_values(self) -> list[float]:
+        """Each move's search value for its player (NaN without one)."""
+
+    @property
+    def final_values(self) -> list[float]:
+        """
+        For a game cut off by the turn limit, each seat's last search value with the network (NaN if none); empty otherwise.
+        """
+
+    def value(self, player: int) -> float:
+        """
+        The value target: the result, or for a game cut off by the turn limit the player's final value (0 without one).
+        """
+
     def score_value(self, player: int, scale: float = 500.0) -> float:
         """The final score lead, squashed into [-1, 1]."""
 
-def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11) -> list[GameRecord]:
+def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, full_share: float = 0.25, quick_simulations: int = 25, stall_turns: int = 0, fog_share: float = 1.0, peace_treaties: bool = True) -> list[GameRecord]:
     """
-    Self-play games with the search on both seats, scored by the score lead until there's a network.
+    Self-play games with the search on both seats, scored by the score lead until there's a network. A full_share of decisions get the full search and are recorded for the policy; the rest a quick one.
     """
 
 class SelfPlaySession:
@@ -949,16 +1004,16 @@ class SelfPlaySession:
         records = session.take_finished()
     """
 
-    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True) -> None: ...
+    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True) -> None: ...
 
     def done(self) -> bool: ...
 
     @property
     def finished_games(self) -> int: ...
 
-    def pending_inputs(self, encoding: Encoding) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32], NDArray[numpy.uint8]]:
+    def pending_inputs(self, encoding: Encoding, legal: bool = True) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32], NDArray[numpy.uint8]]:
         """
-        Advances every game to its next waiting positions and encodes them: (planes [B, C, N, N], globals [B, G], legal [B, A]).
+        Advances every game to its next waiting positions and encodes them: (planes [B, C, N, N], globals [B, G], legal [B, A]). With legal=False the masks are skipped (empty): pending_slots gives what the search needs.
         """
 
     def submit_network(self, encoding: Encoding, logits: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], values: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)]) -> None:
@@ -966,8 +1021,41 @@ class SelfPlaySession:
         The network's policy logits [B, A] and values [B] for the pending positions.
         """
 
+    def pending_sides(self) -> NDArray[numpy.int64]:
+        """
+        For each pending position, the side (0 or 1) whose network evaluates it: in a match, only network sides' positions are pending. Call after pending_inputs.
+        """
+
+    def pending_slots(self, encoding: Encoding) -> tuple[NDArray[numpy.int64], NDArray[numpy.int64]]:
+        """
+        For the pending positions' moves, flattened: (rows, slots) to gather from the policy logits, logits[rows, slots], so only those leave the GPU. Call after pending_inputs.
+        """
+
+    def pending_belief_rows(self) -> NDArray[numpy.int64]:
+        """
+        The pending positions that want the network's beliefs (network_beliefs): give their raw belief outputs to submit_move_logits. Call after pending_inputs.
+        """
+
+    def submit_move_logits(self, encoding: Encoding, move_logits: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], values: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], beliefs: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)] | None = None) -> None:
+        """
+        The logits gathered at pending_slots, the values [B], and for the pending_belief_rows their raw belief outputs [R, belief_output_count] (without them, those take priorBeliefs).
+        """
+
     def submit_scores(self) -> None:
         """Evaluates the pending positions with the score evaluator instead."""
+
+    def finish_now(self) -> None:
+        """
+        Ends every game still being played, scored by the lead now, and starts no more. Call after submitting, before the next pending.
+        """
+
+    def set_fog_share(self, share: float) -> None:
+        """The share of games started from now on that have fog."""
+
+    def finish_after(self, moves: int) -> None:
+        """
+        Gives every game still being played this many more commands, then ends it scored by the lead; starts no more games.
+        """
 
     def take_finished(self) -> list[GameRecord]:
         """The games finished since the last call."""
@@ -989,33 +1077,76 @@ class ReplayBuffer:
         """Positions with a policy target (moves the search chose)."""
 
     @property
+    def added(self) -> int:
+        """Positions ever added, dropped ones included."""
+
+    @property
     def decided_share(self) -> float:
         """The share of games decided before the turn limit."""
 
-    def sample(self, count: int, seed: int) -> list[tuple[int, int]]:
-        """Random (game, move) positions with a policy target."""
+    def sample(self, count: int, seed: int, per_game: int = 1) -> list[tuple[int, int]]:
+        """
+        Random (game, move) positions with a policy target, in groups of per_game from the same game (replayed once for the group).
+        """
 
-    def encode(self, encoding: Encoding, positions: Sequence[tuple[int, int]], score_weight: float = 1.0, value_scale: float = 500.0) -> dict:
-        """Training examples at those positions, like Encoding.encode_examples."""
+    def encode(self, encoding: Encoding, positions: Sequence[tuple[int, int]], threads: int = 8, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0) -> dict[str, numpy.typing.NDArray[Any]]:
+        """
+        Training examples at those positions, like Encoding.encode_examples. The positions only hold until the next add(): from another thread than the one adding, use sample_examples.
+        """
+
+    def sample_examples(self, encoding: Encoding, count: int, seed: int, per_game: int = 4, threads: int = 8, augment: bool = False, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0) -> dict[str, numpy.typing.NDArray[Any]]:
+        """
+        Random training examples, sampled and encoded at once, so safe while another thread adds games. With augment, each is seen through a random one of the map's 8 symmetries (rotations and reflections). city_weight blends the value target with the final city lead (early in a run); cut_off_weight is the value weight of positions from games cut off by the turn limit or a stalemate.
+        """
 
     def save(self, path: str) -> None:
-        """Appends the buffer's games to a record file."""
+        """Writes exactly the buffer's games to a record file, replacing it."""
 
-def save_records(records: Sequence[GameRecord], path: str) -> None:
-    """Appends records to a text file."""
+def save_records(records: Sequence[GameRecord], path: str, append: bool = True) -> None:
+    """Appends records to a text file, or with append=False replaces it."""
 
 def load_records(path: str) -> list[GameRecord]: ...
+
+def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int = 0) -> list[GameRecord]:
+    """
+    Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
+    """
+
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1) -> int:
+    """
+    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots) -> (move logits, values), as with SelfPlaySession.submit_move_logits. Returns the exit code.
+    """
 
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:
     """
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
     """
 
-ENCODING_VERSION: int = 4
+ENCODING_VERSION: int = 6
+
+MAP_TYPE_COUNT: int = 6
 
 OPENING_CHANGES: int = 6
 
 SLOTS_PER_TILE: int = 218
+
+STAR_COMPONENTS: int = 3
+
+UNEXPLORED_TERRAIN: int = 0
+
+UNEXPLORED_RESOURCE: int = 5
+
+UNEXPLORED_FEATURE: int = 12
+
+UNEXPLORED_LAYERS: int = 15
+
+SIDE_SCORE_SOON: int = 0
+
+SIDE_SCORE_END: int = 1
+
+SIDE_TERRITORY: int = 2
+
+TERRITORY_CLASSES: int = 3
 
 HIDDEN_UNIT_COUNT_CAP: int = 20
 
@@ -1045,6 +1176,21 @@ class Encoding:
         """A"""
 
     @property
+    def belief_output_heads(self) -> list[tuple[str, int, int, int]]:
+        """
+        Where each belief head's raw outputs go in the array submit_move_logits takes: (name, opponent, offset, size), like target_heads but the stars as the mixture's 3 x STAR_COMPONENTS raw parameters (docs/encoding.md section 8.4).
+        """
+
+    @property
+    def belief_output_count(self) -> int: ...
+
+    @property
+    def side_target_count(self) -> int:
+        """
+        The side targets' length: the score lead soon and at the end, then [3][N][N] final territory (docs/encoding.md section 8.5)
+        """
+
+    @property
     def target_count(self) -> int:
         """The belief targets' length (docs/encoding.md section 8)"""
 
@@ -1054,8 +1200,10 @@ class Encoding:
         Each belief head's part of the targets: (name, opponent, offset, size), opponents counted from 1.
         """
 
-    def encode_state(self, game: Game, player: int) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
-        """The player's input: (planes [C, N, N], globals [G])."""
+    def encode_state(self, game: Game, player: int, full_information: bool = False) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
+        """
+        The player's input: (planes [C, N, N], globals [G]). With full_information, from the full view (every tile and opponent shown, `explored` still the player's own).
+        """
 
     def encode_states(self, games: Sequence[Game], players: Sequence[int]) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32]]:
         """A batch: (planes [B, C, N, N], globals [B, G])."""
@@ -1071,9 +1219,9 @@ class Encoding:
         The belief targets from the true games, and where each is trained: (targets [B, T], masks [B, T]). The value target is the game's result, added once it's over.
         """
 
-    def encode_examples(self, records: Sequence[GameRecord], positions: Sequence[tuple[int, int]], score_weight: float = 1.0, value_scale: float = 500.0) -> dict:
+    def encode_examples(self, records: Sequence[GameRecord], positions: Sequence[tuple[int, int]]) -> dict[str, numpy.typing.NDArray[Any]]:
         """
-        Training examples at (record, move) positions, each the position just before that move, for the player to move: a dict of planes [B, C, N, N], globals [B, G], legal [B, A], policy [B, A] (the search's visits, normalized; all 0 for a move it didn't choose), value and value_weight [B] (score_weight x the score lead + the rest x the result; a game cut off by the turn limit has the score alone, weighted score_weight), targets and target_masks [B, T]. Copies the records: for training, use ReplayBuffer.encode.
+        Training examples at (record, move) positions, each the position just before that move, for the player to move: a dict of planes [B, C, N, N], globals [B, G], legal [B, A], policy [B, A] (the search's visits, normalized; all 0 for a move it didn't choose), value and value_weight [B] (GameRecord.value: the result, or for a game cut off by the turn limit the player's final value; weights all 1), targets and target_masks [B, T], side_targets and side_masks [B, S]. Copies the records: for training, use ReplayBuffer.encode.
         """
 
     def encode_command(self, game: Game, command: Command) -> int:

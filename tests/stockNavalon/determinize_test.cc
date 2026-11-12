@@ -279,3 +279,87 @@ TEST_CASE("only what nothing else explains proves a tech") {
         CHECK(owning(own, roads) < 40);
     }
 }
+
+TEST_CASE("unexplored tiles sampled from beliefs follow the map generator's rules") {
+    using namespace TerrainTypes;
+    int checked = 0;
+    for (std::uint64_t seed = 1; seed <= 6; seed++) {
+        Game real = randomGame(seed, 40);
+        int player = real.currentPlayer;
+        PlayerView view = makeView(real, player);
+        Beliefs beliefs = priorBeliefs(view);
+        const int tiles = real.size * real.size;
+        // beliefs that push everything at once: villages and ruins
+        // everywhere, any terrain, every resource
+        beliefs.terrain.assign(tiles, {1, 1, 1, 1, 1});
+        beliefs.resource.assign(tiles, {1, 1, 1, 1, 1, 1, 1});
+        beliefs.feature.assign(tiles, {0.2f, 1, 1});
+        std::optional<Game> sample =
+            determinize(real, player, beliefs, seed, Detail::TILES_AND_UNITS);
+        REQUIRE(sample);
+        auto dist = [&](int a, int b) {
+            return std::max(std::abs(real.tileX(a) - real.tileX(b)),
+                            std::abs(real.tileY(a) - real.tileY(b)));
+        };
+        std::vector<int> settlements;
+        for (int t = 0; t < tiles; t++) {
+            const Tile &tile = sample->tiles[t];
+            if (tile.building == ImprovementTypes::VILLAGE ||
+                tile.building == ImprovementTypes::CITY) {
+                settlements.push_back(t);
+            }
+        }
+        for (int t = 0; t < tiles; t++) {
+            const Tile &tile = sample->tiles[t];
+            bool corner = isCornerTile(real.tileX(t), real.tileY(t), real.size);
+            if (view.tiles[t].explored) {
+                // the player's knowledge is untouched
+                CHECK(tile.terrain == real.tiles[t].terrain);
+                continue;
+            }
+            checked++;
+            CHECK(resourceFitsTerrain(tile.resource, tile.terrain));
+            if (corner) {
+                CHECK(tile.building == ImprovementTypes::LIGHTHOUSE);
+            } else if (tile.building == ImprovementTypes::VILLAGE) {
+                CHECK(tile.terrain == FIELD);
+                CHECK(tile.resource == ResourceTypes::NONE);
+                for (int s : settlements) {
+                    if (s != t && sample->tiles[s].building == ImprovementTypes::VILLAGE &&
+                        !view.tiles[s].explored) {
+                        CHECK(dist(s, t) >= MapGenSettings{}.settlementSpacing);
+                    }
+                }
+            } else if (tile.building == ImprovementTypes::RUIN) {
+                CHECK(tile.terrain != WATER);
+                CHECK(tile.resource == ResourceTypes::NONE);
+            }
+        }
+        // a valid game, that plays on
+        checkInvariants(*sample);
+        Game played = *sample;
+        RandomBot bot(seed);
+        for (int i = 0; i < 100 && !played.gameOver(); i++) {
+            played.apply(bot.choose(played));
+            checkInvariants(played);
+        }
+        // the same beliefs and seed give the same sample: nothing hidden leaks
+        Game other = real;
+        for (int t = 0; t < tiles; t++) {
+            if (!view.tiles[t].explored && !isCornerTile(real.tileX(t), real.tileY(t), real.size) &&
+                other.tiles[t].building == ImprovementTypes::NONE &&
+                other.unitAt(t) == nullptr) {
+                other.tiles[t].terrain = OCEAN;
+                other.tiles[t].resource = ResourceTypes::NONE;
+            }
+        }
+        std::optional<Game> again =
+            determinize(other, player, beliefs, seed, Detail::TILES_AND_UNITS);
+        REQUIRE(again);
+        for (int t = 0; t < tiles; t++) {
+            CHECK(again->tiles[t].terrain == sample->tiles[t].terrain);
+            CHECK(again->tiles[t].building == sample->tiles[t].building);
+        }
+    }
+    CHECK(checked > 0);
+}

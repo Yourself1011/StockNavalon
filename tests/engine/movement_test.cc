@@ -126,4 +126,11 @@ TEST_CASE("Raft upgrades inside your borders") {
     CHECK(game.units[raft].type == RAMMER);
     CHECK(game.players[0].stars == 0);
     CHECK(game.units[raft].canMove);
+    // the upgrade is final: the Rammer can't become another boat
+    game.players[0].techs.set(TechTypes::SAILING);
+    game.players[0].techs.set(TechTypes::NAVIGATION);
+    game.players[0].stars = 100;
+    for (UnitTypes::UnitType boat : {UnitTypes::SCOUT, RAMMER, BOMBER}) {
+        CHECK_FALSE(hasCommand(game, {CommandTypes::UPGRADE, game.index(2, 2), -1, boat}));
+    }
 }

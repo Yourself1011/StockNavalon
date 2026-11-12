@@ -1,4 +1,5 @@
 #include "search.h"
+#include "view.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -54,6 +55,18 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
     Detail detail = config.horizon > 0 ? Detail::EVERYTHING : Detail::TILES_AND_UNITS;
     for (int i = 0; i < games; i++) {
         const Game &real = *gameList[i];
+        if (config.fullInformation) {
+            // the real game, but not its future dice
+            Game copy = real;
+            copy.settings.seed = seeds();
+            copy.rng = seeds();
+            Tree tree{.game = i, .rng = std::mt19937_64(seeds())};
+            tree.nodes.reserve(config.simulations + 2);
+            LegalMoves legal(copy);
+            tree.nodes.push_back(makeNode(std::move(copy), legal, 0));
+            trees.push_back(std::move(tree));
+            continue;
+        }
         for (int k = 0; k < config.samples; k++) {
             std::uint64_t s = seeds();
             std::optional<Game> sample = determinize(
@@ -124,10 +137,24 @@ bool BatchedSearch::descend(Tree &tree) {
             // PUCT: the most promising move, balancing value and prior
             double scale = config.exploration *
                            std::sqrt(std::max(1, node.parentVisits));
+            // what a move not tried yet counts as: the node's value so far
+            // (its own evaluation and everything backed up through it), less
+            // a reduction growing with the prior already explored
+            double explored = 0, sum = node.value;
+            for (std::size_t a = 0; a < node.moves.size(); a++) {
+                if (node.visits[a]) {
+                    explored += node.prior[a];
+                    sum += node.total[a];
+                }
+            }
+            double untried = sum / (1 + node.parentVisits) -
+                             config.fpuReduction * std::sqrt(explored);
             int best = 0;
             double bestScore = -1e9;
             for (std::size_t a = 0; a < node.moves.size(); a++) {
-                double q = node.visits[a] ? node.total[a] / node.visits[a] : 0;
+                double q = node.visits[a]            ? node.total[a] / node.visits[a]
+                           : config.firstPlayUrgency ? untried
+                                                     : 0.0;
                 double u = scale * node.prior[a] / (1 + node.visits[a]);
                 if (q + u > bestScore) {
                     bestScore = q + u;
@@ -181,22 +208,87 @@ void BatchedSearch::expand(Tree &tree, int n, const Evaluation &evaluation) {
             }
         }
         if (n == 0 && config.rootNoise) {
-            std::gamma_distribution<double> gamma(config.noiseAlpha, 1.0);
-            std::vector<double> noise(node.moves.size());
-            double sum = 0;
-            for (double &x : noise) {
-                x = gamma(tree.rng);
-                sum += x;
-            }
-            for (std::size_t a = 0; a < node.moves.size(); a++) {
-                node.prior[a] = static_cast<float>(
-                    (1 - config.noiseWeight) * node.prior[a] +
-                    config.noiseWeight * (sum > 0 ? noise[a] / sum : 0));
-            }
+            addRootNoise(tree);
         }
     }
     backup(tree, n, node.value);
     tree.simulations++;
+}
+
+void BatchedSearch::addRootNoise(Tree &tree) {
+    Node &node = tree.nodes[0];
+    std::gamma_distribution<double> gamma(config.noiseAlpha, 1.0);
+    std::vector<double> noise(node.moves.size());
+    double sum = 0;
+    for (double &x : noise) {
+        x = gamma(tree.rng);
+        sum += x;
+    }
+    for (std::size_t a = 0; a < node.moves.size(); a++) {
+        node.prior[a] = static_cast<float>(
+            (1 - config.noiseWeight) * node.prior[a] +
+            config.noiseWeight * (sum > 0 ? noise[a] / sum : 0));
+    }
+}
+
+bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
+    if (games != 1 || !done()) {
+        return false;
+    }
+    // every tree must have the child, evaluated, with the same player to move
+    std::vector<int> roots;
+    for (const Tree &tree : trees) {
+        const Node &root = tree.nodes[0];
+        auto it = std::find(root.moves.begin(), root.moves.end(), played);
+        if (it == root.moves.end()) {
+            return false;
+        }
+        int child = root.child[it - root.moves.begin()];
+        if (child < 0) {
+            return false;
+        }
+        const Node &c = tree.nodes[child];
+        if (!c.evaluated || c.terminal || c.atHorizon || c.toMove != root.toMove ||
+            c.crossed != 0) {
+            return false;
+        }
+        roots.push_back(child);
+    }
+    config = next;
+    for (std::size_t t = 0; t < trees.size(); t++) {
+        Tree &tree = trees[t];
+        // the subtree, renumbered from 0 in breadth-first order
+        std::vector<int> order{roots[t]};
+        std::vector<int> index(tree.nodes.size(), -1);
+        index[roots[t]] = 0;
+        for (std::size_t k = 0; k < order.size(); k++) {
+            for (int c : tree.nodes[order[k]].child) {
+                if (c >= 0 && index[c] < 0) {
+                    index[c] = static_cast<int>(order.size());
+                    order.push_back(c);
+                }
+            }
+        }
+        std::vector<Node> kept;
+        kept.reserve(std::max<std::size_t>(order.size(), config.simulations + 2) +
+                     config.simulations + 2);
+        for (int n : order) {
+            Node node = std::move(tree.nodes[n]);
+            for (int &c : node.child) {
+                c = c >= 0 ? index[c] : -1;
+            }
+            kept.push_back(std::move(node));
+        }
+        tree.nodes = std::move(kept);
+        // the visits kept count towards the next decision's simulations
+        tree.simulations = tree.nodes[0].parentVisits + 1;
+        tree.path.clear();
+        tree.waiting = -1;
+        if (config.rootNoise) {
+            addRootNoise(tree);
+        }
+    }
+    return true;
 }
 
 bool BatchedSearch::done() const {
@@ -215,7 +307,8 @@ const std::vector<EvalRequest> &BatchedSearch::pending() {
         }
         const Node &node = tree.nodes[tree.waiting];
         requests.push_back({&node.game, node.toMove,
-                            node.atHorizon ? nullptr : &node.moves});
+                            node.atHorizon ? nullptr : &node.moves,
+                            config.fullInformation});
         requestTree.push_back(static_cast<int>(i));
     }
     return requests;
@@ -280,4 +373,26 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
     BatchedSearch batched({&game}, {beliefs}, config, seed);
     run(batched, evaluator);
     return batched.result(0);
+}
+
+std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
+                              const SearchConfig &config, std::mt19937_64 &rng) {
+    std::vector<Command> played;
+    int me = game.currentPlayer;
+    // a turn always ends, but cap it in case
+    while (!game.gameOver() && game.currentPlayer == me && played.size() < 200) {
+        SearchResult result =
+            search(game, priorBeliefs(makeView(game, me)), evaluator, config, rng());
+        Command command = result.choose(0, rng);
+        if (result.moves.empty() || !game.isLegal(command)) {
+            command = game.legalCommands().front();
+        }
+        game.apply(command);
+        played.push_back(command);
+    }
+    if (!game.gameOver() && game.currentPlayer == me) {
+        game.apply({CommandTypes::ENDTURN});
+        played.push_back({CommandTypes::ENDTURN});
+    }
+    return played;
 }

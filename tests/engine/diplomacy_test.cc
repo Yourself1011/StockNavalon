@@ -222,3 +222,24 @@ TEST_CASE("the player view has the player's tasks and diplomacy") {
     CHECK(makeView(game, 0).relations[1].peace);
     CHECK(makeView(game, 1).relations[0].peace);
 }
+
+TEST_CASE("without peace treaties, none can be proposed, answered or broken") {
+    Game game = makeGame(bigMap());
+    game.settings.peaceTreaties = false;
+    game.players[0].techs.set(TechTypes::STRATEGY);
+    game.players[0].techs.set(TechTypes::DIPLOMACY);
+    game.players[0].stars = 100;
+    auto treaties = [&] {
+        int n = 0;
+        for (const Command &c : game.legalCommands()) {
+            n += c.type == PEACETREATY || c.type == PEACEREQUESTRESPONSE ||
+                 c.type == BREAKPEACE;
+        }
+        return n;
+    };
+    CHECK(treaties() == 0);
+    // a request from before is left unanswerable, and embassies still work
+    game.players[0].peaceRequests |= 1u << 1;
+    CHECK(treaties() == 0);
+    CHECK(hasCommand(game, {ESTABLISHEMBASSY, -1, -1, 1}));
+}

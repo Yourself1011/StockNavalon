@@ -155,7 +155,7 @@ What the player knows. `everything=True` ignores fog.
 
 | | |
 | --- | --- |
-| `plane_count`, `global_count`, `action_count` | C, G and A (88, 84 and 26,410 for 11×11, 1v1) |
+| `plane_count`, `global_count`, `action_count` | C, G and A (100, 133 and 26,410 for 11×11, 1v1) |
 | `encode_state(game, player)` | `(planes, globals)`: float32 `[C, N, N]` and `[G]`, from what the player knows |
 | `encode_states(games, players)` | a batch: `[B, C, N, N]` and `[B, G]`, encoded in C++ without the GIL |
 | `legal_mask(game)`, `legal_masks(games)` | uint8 `[A]` or `[B, A]`: 1 for each legal command's slot |

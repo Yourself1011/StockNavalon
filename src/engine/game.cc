@@ -296,7 +296,7 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
     if (player.hasTech(Rules::DISBAND_TECH)) {
         out.push_back({DISBAND, from});
     }
-    if (isRaftFamily(unit.type) && tileOwner(from) == unit.owner) {
+    if (unit.type == Rules::UPGRADABLE_BOAT && tileOwner(from) == unit.owner) {
         for (UnitTypes::UnitType boat :
              {UnitTypes::SCOUT, UnitTypes::RAMMER, UnitTypes::BOMBER}) {
             int price = std::max(0, unitInfo(boat).cost - unit.data().cost);

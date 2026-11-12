@@ -1,6 +1,6 @@
 # Encoding: states and commands as arrays
 
-The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network (design in [`stockNavalon.md`](stockNavalon.md)). Status: input and commands **implemented** (version 4) in `src/stockNavalon/encoding.h`, with Python access through `polyengine.Encoding`. Of the outputs (section 8), the belief targets are **implemented**; reading the network's beliefs back (`decodeBeliefs`) comes with determinization.
+The spec for turning game states into network input, and network output back into commands. It's the contract between polyengine and stockNavalon's network ([`stockNavalon.md`](stockNavalon.md)). Version 4, in `src/stockNavalon/encoding.h`, with Python access through `polyengine.Encoding`. Planned changes are in [`notes/design.md`](../notes/design.md).
 
 ## 1. Configuration and versioning
 
@@ -9,17 +9,19 @@ struct EncodingConfig {
     int mapSize = 11;       // N: every map is padded to N x N
     int players = 2;        // P: seats encoded, the player to move first
 };
-constexpr int ENCODING_VERSION = 4;
+constexpr int ENCODING_VERSION = 6;
 ```
 
 - **First target: 11×11 (Tiny), 1v1.** That's the smallest game that still has the whole game in it, so it's the fastest way to find out whether the architecture learns at all. Every number in this document is derived from the config; the concrete counts shown are for N = 11, P = 2.
 - **Expanding later:**
-  - **A larger N:** nothing changes but the padding. Every per-tile part of the layout is the same at any size. A fully convolutional trunk with pooled heads (section 2 of the design doc) runs at any N, so a model trained at 11 can be fine-tuned at 14 or 16 rather than retrained from scratch.
+  - **A larger N:** nothing changes but the padding. Every per-tile part of the layout is the same at any size. A fully convolutional trunk with pooled heads runs at any N, so a model trained at 11 can be fine-tuned at 14 or 16 rather than retrained from scratch.
   - **More players:** the planes and slots that exist once per player grow, so the network's first and last layers change shape. The trunk can still be carried over.
 - **Versioning:** `ENCODING_VERSION` goes up whenever the meaning of any plane or slot changes. Saved training data and model checkpoints record the version and the config, so mismatches fail loudly instead of training on misread data.
   - Version 2: an opponent's tribe is hidden until met, and each opponent's starting score was added.
   - Version 3: climate planes, the tribes each opponent could be, and the climates seen.
   - Version 4: each opponent's opening score changes, and where each tribe they could be puts their capital (section 4.2).
+  - Version 5: the map-wide `unexplored` belief head (section 8.2).
+  - Version 6: the map type, at the end of the global vector. A network saved before it loads with zeros for the new inputs, so it plays exactly as before until it learns them (`load_weights`).
 
 ## 2. Conventions
 
@@ -90,7 +92,7 @@ Computed from the view alone. Enemy reach assumes the opponent owns every moveme
 
 ## 4. Global vector: `[G]`
 
-G = 58 + 15P + 45(P − 1), which is **133** for P = 2.
+G = 58 + 6 + 15P + 45(P − 1), which is **139** for P = 2.
 
 | Features | Count | Value |
 | --- | --- | --- |
@@ -116,10 +118,11 @@ G = 58 + 15P + 45(P − 1), which is **133** for P = 2.
 | task progress | 3 | kills ÷ 10, peaceful turns ÷ 5, lighthouses found ÷ 4 |
 | diplomacy | 5(P − 1) | per opponent: at peace, they asked for peace, we asked, our embassy there, their embassy here |
 | reward pending | 1 | 1 if a city level-up reward must be chosen now |
+| map type | 6 | one-hot: drylands, lakes, pangea, continents, archipelago, waterworld. Public from the start, and what the unexplored tiles are likely to be. Last, so older networks load with zero weights for it. |
 
 ### 4.1 Score features: exact numbers, not raw history
 
-Reading a score change is exact arithmetic: breaking a number into a sum of known amounts. Networks are bad at that, especially on scaled-down floats. So the engine does the arithmetic, and the network gets exact summaries. The full score history isn't encoded. It stays in `PlayerView.scoreHistory` for the parts of stockNavalon that calculate score exactly: the score check in determinization, and the particle filter ([`stockNavalon.md`](stockNavalon.md) section 5.5). The two divide the work: the network says which explanations are likely, and the exact check makes samples add up.
+Reading a score change is exact arithmetic: breaking a number into a sum of known amounts. Networks are bad at that, especially on scaled-down floats. So the engine does the arithmetic, and the network gets exact summaries. The full score history isn't encoded. It stays in `PlayerView.scoreHistory` for the parts of stockNavalon that calculate score exactly: the score check in determinization ([`stockNavalon.md`](stockNavalon.md) section 4), and later a particle filter ([`notes/design.md`](../notes/design.md)). The two divide the work: the network says which explanations are likely, and the exact check makes samples add up.
 
 **Explained score:** the score the player can account for from what they see of that opponent, computed with the engine's score formula:
 - visible cities: level, population, parks
@@ -141,7 +144,7 @@ If the belief network later needs more history than this, a small sequence model
 
 ### 4.2 The opening
 
-The exact side ([`tribeInference.md`](tribeInference.md)) only rules out what's impossible. Most of what an opening says is likelihood instead. A +25 on turn 0 fits a Rider or a Climbing tribe, and a +15 on turn 1 is more typical of some tribes than others. The belief head learns those patterns, inside the exact set, from the tribe target (`stockNavalon.md` section 5), but only if it sees the evidence. So the first 6 changes are encoded as they are, not only summarized.
+The exact side ([`tribeInference.md`](tribeInference.md)) only rules out what's impossible. Most of what an opening says is likelihood instead. A +25 on turn 0 fits a Rider or a Climbing tribe, and a +15 on turn 1 is more typical of some tribes than others. The belief head learns those patterns, inside the exact set, from the tribe target (section 8.2), but only if it sees the evidence. So the first 6 changes are encoded as they are, not only summarized.
 
 **Capital position:** a tribe's starting score fixes how many tiles of its 5×5 start were on the map: 25 at least 2 tiles from every edge, 20 or 15 next to an edge, fewer near a corner. That depends on the tribe hypothesis, so it's given per possible tribe. It feeds the belief model's guess at where their capital is.
 
@@ -240,7 +243,7 @@ In `tests/stockNavalon/encoding_test.cc` and `tests/python/test_engine.py`. They
 
 ## 8. Outputs: value and beliefs
 
-What the network's other heads output, and the training targets the engine builds for them from the true game. Like the input, both sides depend on the layout: C++ writes the targets and reads the belief outputs back for `determinize()` ([`stockNavalon.md`](stockNavalon.md) section 5.5), and Python trains on them. The policy is section 5. Status: the belief targets are **implemented** (`encodeTargets`); `decodeBeliefs` comes with determinization.
+What the network's other heads output, and the training targets the engine builds for them from the true game. Like the input, both sides depend on the layout: C++ writes the targets (`encodeTargets`), Python trains on them, and C++ reads the network's outputs back for `determinize()` (`decodeBeliefs`). The policy is section 5.
 
 ### 8.1 Value
 
@@ -251,8 +254,8 @@ What the network's other heads output, and the training targets the engine build
 - **Relative to the player to move**, like the input.
 - **Known only at the end:** the result isn't part of a position, so `encodeTargets` doesn't write it. Whoever records a game adds it to every position once the game is over.
 - **No draws.** In Might, the winner is the player holding every capital, and the game can't end any other way.
-- **The turn limit** is a self-play setting, not a rule: early games between weak players can go on forever. A game that hits it has no winner. Whether those games are dropped or given a soft target (from the score lead) is decided in training, not here.
-- **No score head in the first version.** The loser keeps their score (techs, other cities, exploration), so a final-score target isn't the same thing as the result. It could still help as a denser signal than one bit per game, so it stays an option if value training is slow.
+- **The turn limit** is a self-play setting, not a rule: early games between weak players can go on forever. A game that hits it has no winner; it's truncated, not drawn, and its positions learn from each player's final search value ([`stockNavalon.md`](stockNavalon.md) section 6).
+- **The result, not the score.** The loser keeps their score (techs, other cities, exploration), so score isn't the result.
 
 ### 8.2 Beliefs
 
@@ -267,19 +270,16 @@ Per opponent, so `P − 1` of each in general; one in 1v1. A belief head's targe
 | hidden unit type | `[T, N, N]`, softmax over the T = 20 unit types per tile | that unit's type, as it is now (a boat is its boat type) | tiles that have a hidden unit |
 | hidden unit count | softmax over 0 to 20, the last meaning 20 or more | how many of their units the player can't see | always |
 | opponent's exploration | softmax over 0 to N² | how many tiles they've explored | always |
+| unexplored (the map's, not per opponent: opponent 0, after the others) | `[15, N, N]`: per tile a softmax over the 5 terrains, one over the 7 resources (none first), one over the features (none, village, ruin) | what the tile holds now | tiles the player hasn't explored, except corners (always a lighthouse) and cities (determinization places those) |
 
 - **"Can't see"** means on an unexplored tile, or hidden (a Cloak or Dagger) anywhere.
-- **The joint for one tile:** P(a Rider here) = P(unit here) × P(Rider | unit here). The two are separate heads so the "here" loss can weight the rare tiles with units without distorting the type proportions (`stockNavalon.md` section 5.3).
-- **Not in the first version:** enemy cities in the fog, unexplored terrain, and a boat's passenger. Determinization fills those from simple priors until there are heads for them.
+- **The joint for one tile:** P(a Rider here) = P(unit here) × P(Rider | unit here). The two are separate heads so the "here" loss can weight the rare tiles with units without distorting the type proportions ([`notes/design.md`](../notes/design.md) section 5).
+- **Not in the first version:** enemy cities in the fog and a boat's passenger. Determinization fills those from simple priors until there are heads for them.
+- **Read back** by `decodeBeliefs` (section 8.4), for determinization in self-play and matches (`network_beliefs`).
 
-### 8.3 Counts: to experiment with
+### 8.3 Counts
 
-The count heads above are a first choice, not a measured one:
-- **Exact integers with a cap** (unit count, exploration): the only choice is the cap, and they can put weight on several values at once.
-- **A mixture of negative binomials** (stars): a distribution over counts of any size, with no bins. A single one can't have two peaks ("spent everything" against "saving up"), hence the mixture.
-- **Alternatives:** fixed-width buckets, a single negative binomial, or exact integers for stars too (0 to 60, then "more").
-
-To be compared once training runs, by the held-out log-likelihood of the true counts, and by how well `determinize()` samples match real games.
+Exact integers with a cap for the unit count and exploration; a mixture of 3 negative binomials for stars, which covers any count without bins and can have two peaks ("spent everything" against "saving up"). A first choice, not a measured one: alternatives to compare are in [`notes/todo.md`](../notes/todo.md).
 
 ### 8.4 Interfaces
 
@@ -295,14 +295,49 @@ int targetCount(const EncodingConfig &);                       // 2,722 for N = 
 void encodeTargets(const Game &game, int player, const EncodingConfig &,
                    float *targets, std::uint8_t *masks);
 
-// planned, with determinize(): the belief heads' output in engine terms
-Beliefs decodeBeliefs(const PlayerView &view, const float *outputs,
-                      const EncodingConfig &);
 ```
 
 From Python: `enc.target_count`, `enc.target_heads` (a list of `(name, opponent, offset, size)`), and `enc.encode_targets(games, players)`, which returns `(targets [B, T], masks [B, T])`.
 
+**Reading the heads back:** `decodeBeliefs(view, config, outputs)` turns the network's raw belief outputs into `Beliefs` for `determinize()` to sample from. The outputs are one flat array per position, laid out like the targets (`beliefOutputHeads`, `enc.belief_output_heads`), except that each head holds its logits, and the stars head the mixture's `3 × STAR_COMPONENTS` raw parameters (weights, means, spreads, before the softmax and softplus). Decoding applies the softmaxes and sigmoids and turns the mixture into a weight for each count from 0 to `STAR_COUNT_CAP` (60), the same distribution the loss trains. Ruling out the impossible (tribes, proven techs) is left to `determinize()`.
+
 **Tested** (`tests/stockNavalon/encoding_test.cc`) over random games: the hidden-unit masks are 0 exactly where the player sees a unit, so no target repeats what the input already shows. The type target is one-hot exactly where a hidden unit is, the per-tile targets add up to the count, and the tribe target is only trained while unmet, over the possible set.
 
 An output layout change bumps `ENCODING_VERSION` like an input change, since a checkpoint is only valid against both.
+
+
+### 8.5 Side targets
+
+For side heads the search never reads, from how the game went: denser targets than one result per game, for the shared trunk to learn from (`encodeSideTargets` in `record.h`, layout in `encoding.h`'s `SideTargets`). A separate array per example, `[S]` with S = 2 + 3N² (365 for N = 11):
+
+| Offset | Target | Mask |
+| --- | --- | --- |
+| 0 | the score lead 5 turns later: `tanh((the player's score − the best opponent's) / 500)`, from each player's latest published score at that turn, or the final scores if the game ends sooner | the record has a score table |
+| 1 | the same with the final scores | always |
+| 2 … | `[3][N][N]`: each map tile's owner when the game ended, one-hot over mine, an opponent's, nobody's | map tiles, where the record has the final territory |
+
+- **From the record:** self-play stores the final territory (`finalTerritory`) and each player's latest published score at every turn (`turnScores`) when a game ends, so no extra replay is needed. Older records have neither, and train only the final lead.
+- **Relative to the player to move**, like everything else.
+- **Spatial,** so the territory moves with the map under a symmetry (section 9).
+
+## 9. Symmetries
+
+The rules don't depend on direction: the grid is square, movement and attack ranges count diagonal steps like straight ones, and map generation favours no side. So a position seen through any of the square's 8 symmetries (4 rotations, each optionally mirrored) is just as real, with the same value and the transformed policy. Training uses that to see each position in a random one of the 8 (`ReplayBuffer.sample_examples(augment=True)`).
+
+| What | How it transforms |
+| --- | --- |
+| planes | each map tile's values move to the transformed tile; padding stays where it is |
+| per-tile command slots (legal mask, policy) | move with their tile; a target offset slot `(dx, dy)` becomes the transformed offset's, so it still points at the transformed destination |
+| global slots, global features | unchanged: none of them has a direction (the capital position features are counts of tiles) |
+| per-tile belief targets and masks (hidden unit here, hidden unit type), the final territory side target | move with their tile |
+| other belief targets, the value | unchanged |
+
+Symmetry `s` (0 to 7, 0 the identity) swaps x and y if bit 4 is set, then mirrors x if bit 1 is and y if bit 2 is, within the map's own size (`transformTile`, `transformOffset`, `applySymmetry`). A new feature with a direction, or a command slot naming one, has to be added to the transform.
+
+## 10. Full information
+
+For training without fog first ([`stockNavalon.md`](stockNavalon.md) section 4), `encodeState(..., fullInformation = true)` encodes from `makeView(game, player, everything = true)`: every tile's terrain, resources, buildings and units, and every opponent's techs, stars, live score and tribe.
+- **`explored` keeps its meaning:** the tiles the player has actually explored, since exploring still counts for score and the rules don't change. Every other per-tile plane shows the tile's true contents, explored or not.
+- **Belief targets:** `encodeTargets(..., fullInformation = true)` masks everything (nothing is hidden).
+- **Per game:** a record says whether the game was played with fog (`GameRecord::fog`), and training encodes its positions the same way.
 

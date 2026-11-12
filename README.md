@@ -1,9 +1,11 @@
 # stockNavalon
 
-stockNavalon is a Polytopia bot (designed in [`docs/stockNavalon.md`](docs/stockNavalon.md), not built yet). This repository also holds **polyengine**, the C++ game engine it's built on: the rules, a playable CLI, a Python package (`polyengine`), and building blocks for search.
+stockNavalon is a Polytopia bot: AlphaZero-style search with a neural network, playing through fog by sampling the hidden state ([`docs/stockNavalon.md`](docs/stockNavalon.md)). This repository also holds **polyengine**, the C++ game engine it's built on: the rules, a playable CLI, a Python package (`polyengine`), and building blocks for search.
 
 - `src/engine/`: polyengine, the game. It doesn't depend on any bot.
-- `src/stockNavalon/`: the bot's code, built on the engine: the network encoding and tribe inference so far.
+- `src/stockNavalon/`: the bot's C++ code, built on the engine: encoding, tribe inference, determinization, the search, game records and self-play.
+- `python/stocknavalon/`: the network and training loop (PyTorch).
+- `notes/`: working notes for development: the to-do list, designs not built yet, and what training runs showed.
 - `tests/engine/`, `tests/stockNavalon/`: their tests, in one doctest binary; `tests/python/`: the Python package's.
 
 ## Setup
@@ -58,6 +60,8 @@ The Python tests run against the module just built, not the pip-installed one. T
 - **The map:** a map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `waterworld`) generates a map of that type, 14x14 unless `--size` says otherwise. Otherwise it loads a map file (format in `src/engine/map.h`), by default `src/engine/map.txt`.
 - **Players:** every player defaults to Imperius.
 - **`--bot N`** makes seat N a random bot; repeat it for more bots. It plays its whole turn as soon as yours ends. With every seat a bot, the game plays itself, stopping after 300 turns, and shows the final map.
+- **`--watch`:** in a game of bots only, shows the board after every turn and waits for Enter (`q` to stop). **`--delay S`** does the same without waiting, S seconds a turn.
+- **`--no-treaties`:** no peace treaties (training games are played without them).
 - **The map display:** drawn with emojis. Add `--ascii` for a letter view, if your terminal shows emojis badly.
 - **`--reveal`:** the map only shows what the current player has explored; this shows everything, including the bot's commands, which would otherwise give away what's in the fog.
 
@@ -75,7 +79,14 @@ The Python tests run against the module just built, not the pip-installed one. T
 
 - **Fair play:** it searches on determinized games, so it only knows what its own player could.
 - **Its options:** `--simulations N` per determinized game (default 200), `--samples N` determinized games per command (default 4), and `--horizon N`, the turn changes its search looks across (default 1, so it considers your reply).
-- **How it plays for now:** until it has a trained network it judges positions by the score lead, so expect it to build up score rather than attack. A turn takes it about a third of a second.
+- **How it plays:** `play_stocknavalon` judges positions by the score lead, so expect it to build up score rather than attack. A turn takes it about a third of a second.
+- **Against a trained network:** `stocknavalon.play` runs the same CLI with the network's search, from a run directory (its best network, `best.pt`) or a `.pt` snapshot, with the same options plus `--device`:
+
+  ```bash
+  .venv/bin/python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
+  ```
+
+  It plays without peace treaties, as in training, unless given `--peace-treaties`. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
 
 ### CLI commands
 
@@ -119,10 +130,10 @@ The network and training loop are in `python/stocknavalon` (PyTorch). Install th
 ```bash
 uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.measure          # network and self-play speed
-.venv/bin/python -m stocknavalon.run --dir runs/first
+.venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 
-A run bootstraps from score-evaluator games, then runs self-play and training at once, in two threads, with training held to `--reuse` samples per new position. It saves its games, checkpoint and log in the run directory; Ctrl-C stops it cleanly, and running it again resumes. Every hour it also plays evaluation matches (against the random bot, the score-evaluator search and its previous self) and logs the win rates; each status line includes the loss on held-out games. It uses Apple Silicon's GPU (MPS) when one is available. See `docs/stockNavalon.md` section 7.
+A run bootstraps from score-evaluator games, then runs self-play and training at once, in two threads, with training held to `--reuse` samples per new position. It saves its games, checkpoint and log in the run directory; Ctrl-C stops it cleanly, and running it again resumes. Every 5,000 training steps (about an hour) it also plays evaluation matches (against the random bot, the score-evaluator search and its previous self) and logs the win rates; each status line includes the loss on held-out games. It uses Apple Silicon's GPU (MPS) when one is available. See `docs/stockNavalon.md` section 6.
 
 ## Editor setup
 
@@ -130,10 +141,12 @@ A run bootstraps from score-evaluator games, then runs self-play and training at
 
 ## Docs
 
-- [`docs/stockNavalon.md`](docs/stockNavalon.md): the design of stockNavalon, the bot (network, search, fog, belief model, training plan)
+- [`docs/stockNavalon.md`](docs/stockNavalon.md): how stockNavalon, the bot, works (network, search, determinization, self-play, training)
 - [`docs/tribeInference.md`](docs/tribeInference.md): the spec for working out an unmet opponent's possible tribes exactly from their opening score changes
 - [`docs/encoding.md`](docs/encoding.md): the spec for encoding states and commands as arrays for the network
 - [`docs/cpp.md`](docs/cpp.md): using the engine as a C++ library (linking, commands, fog, `LegalMoves` for search, threads), with compiled examples in `examples/`
 - [`docs/python.md`](docs/python.md): the `polyengine` Python package (setup, commands, full API reference, speed)
 - [`src/engine/GAME.md`](src/engine/GAME.md): the rules spec
 - [`src/engine/ENGINE.md`](src/engine/ENGINE.md): how the engine implements it, and the assumptions made
+
+Working notes, for development rather than reference: [`notes/todo.md`](notes/todo.md) (the checklist), [`notes/design.md`](notes/design.md) (designs not built yet, and why), [`notes/runs.md`](notes/runs.md) (what training runs showed).

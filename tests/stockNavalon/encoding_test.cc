@@ -7,6 +7,7 @@
 #include "tribeInference.h"
 #include "view.h"
 #include <map>
+#include <numeric>
 #include <set>
 #include <sstream>
 
@@ -91,9 +92,28 @@ Game scrambleHidden(const Game &game, int viewer) {
 TEST_CASE("encoding sizes follow the spec") {
     EncodingConfig config;
     CHECK(planeCount(config) == 100);
-    CHECK(globalCount(config) == 133);
+    CHECK(globalCount(config) == 139);
     CHECK(actionCount(config) == 26410);
     CHECK(EncodingSlots::PER_TILE == 218);
+}
+
+TEST_CASE("the map type is the global vector's last one-hot") {
+    EncodingConfig config;
+    const int G = globalCount(config), types = MapTypes::MAP_TYPE_SIZE;
+    for (int type = 0; type < types; type++) {
+        CAPTURE(type);
+        MapGenSettings settings{.size = 11,
+                                .type = static_cast<MapTypes::MapType>(type),
+                                .tribes = {TribeTypes::XINXI, TribeTypes::BARDUR},
+                                .seed = 5};
+        Game game(generateMap(settings), settings.tribes, {.seed = 5});
+        for (int player : {0, 1}) {
+            Encoded e = encode(game, player, config);
+            for (int t = 0; t < types; t++) {
+                CHECK(e.globals[G - types + t] == (t == type ? 1.0f : 0.0f));
+            }
+        }
+    }
 }
 
 TEST_CASE("every legal command has its own slot, and decodes back") {
@@ -361,7 +381,8 @@ TEST_CASE("belief targets only cover what the player can't see") {
     const int N = config.mapSize, area = N * N;
     CHECK(targetCount(config) == 12 + 25 + 1 + area +
                                      UnitTypes::UNIT_TYPE_SIZE * area +
-                                     HIDDEN_UNIT_COUNT_CAP + 1 + area + 1);
+                                     HIDDEN_UNIT_COUNT_CAP + 1 + area + 1 +
+                                     UnexploredHead::LAYERS * area);
     std::map<std::string, TargetHead> head;
     for (const TargetHead &h : targetHeads(config)) {
         head[h.name] = h;
@@ -435,4 +456,266 @@ TEST_CASE("belief targets only cover what the player can't see") {
     }
     MESSAGE(checked << " positions, " << hiddenSeen << " hidden units");
     CHECK(hiddenSeen > 0);
+}
+
+TEST_CASE("a symmetry moves the whole position with the map") {
+    using namespace EncodingSlots;
+    // Tiny maps at their own size, and padded to 16
+    for (int n : {11, 16}) {
+        EncodingConfig config{.mapSize = n};
+        const int area = n * n, size = 11, A = actionCount(config),
+                  C = planeCount(config), T = targetCount(config);
+        CAPTURE(n);
+
+        // the 8 are distinct, and each has an inverse among them
+        std::set<std::vector<std::pair<int, int>>> maps;
+        std::vector<int> inverse(SYMMETRIES, -1);
+        for (int s = 0; s < SYMMETRIES; s++) {
+            std::vector<std::pair<int, int>> tiles;
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    tiles.push_back(transformTile(s, x, y, size));
+                }
+            }
+            maps.insert(tiles);
+            for (int t = 0; t < SYMMETRIES; t++) {
+                bool back = true;
+                for (int y = 0; y < size; y++) {
+                    for (int x = 0; x < size; x++) {
+                        auto [sx, sy] = transformTile(s, x, y, size);
+                        back &= transformTile(t, sx, sy, size) == std::pair{x, y};
+                    }
+                }
+                if (back) {
+                    inverse[s] = t;
+                }
+            }
+            REQUIRE(inverse[s] >= 0);
+        }
+        CHECK(maps.size() == SYMMETRIES);
+
+        std::vector<TribeTypes::Tribe> lineup = {TribeTypes::IMPERIUS, TribeTypes::OUMAJI};
+        Game game(generateMap({.size = size, .type = MapTypes::LAKES, .tribes = lineup,
+                               .seed = 3}),
+                  lineup, {.seed = 3});
+        RandomBot bot(3);
+        int checked = 0;
+        for (int step = 0; step < 400 && !game.gameOver(); step++) {
+            game.apply(bot.choose(game));
+            if (step % 40 != 0) {
+                continue;
+            }
+            int player = game.currentPlayer;
+            std::vector<float> planes(C * area), globals(globalCount(config)),
+                targets(T);
+            std::vector<std::uint8_t> legal(A), masks(T);
+            encodeState(game, player, config, planes.data(), globals.data());
+            legalMask(game, config, legal.data());
+            encodeTargets(game, player, config, targets.data(), masks.data());
+            for (int s = 0; s < SYMMETRIES; s++) {
+                CAPTURE(s);
+                auto p = planes;
+                auto l = legal;
+                auto t = targets;
+                auto m = masks;
+                applySymmetry(s, size, config, p.data(), l.data(), nullptr, t.data(),
+                              m.data());
+
+                // every plane's tile moves where the map's does; padding stays
+                for (int c = 0; c < C; c++) {
+                    for (int y = 0; y < n; y++) {
+                        for (int x = 0; x < n; x++) {
+                            auto [tx, ty] = x < size && y < size
+                                                ? transformTile(s, x, y, size)
+                                                : std::pair{x, y};
+                            REQUIRE(p[(c * n + ty) * n + tx] ==
+                                    planes[(c * n + y) * n + x]);
+                        }
+                    }
+                }
+
+                // each legal command lands on its transformed tile, and a
+                // move's slot points at the transformed destination
+                CHECK(std::count(l.begin(), l.end(), 1) ==
+                      std::count(legal.begin(), legal.end(), 1));
+                for (const Command &command : game.legalCommands()) {
+                    int index = encodeCommand(game, command, config);
+                    if (index < 0) {
+                        continue;
+                    }
+                    int expected = index;
+                    if (index < PER_TILE * area) {
+                        int slot = index / area;
+                        auto [fx, fy] = transformTile(s, game.tileX(command.from),
+                                                      game.tileY(command.from), size);
+                        if (slot < UNIT_ACTION) {
+                            auto [tx, ty] = transformTile(s, game.tileX(command.to),
+                                                          game.tileY(command.to), size);
+                            slot = (ty - fy + OFFSET_RADIUS) * OFFSET_SIDE +
+                                   (tx - fx + OFFSET_RADIUS);
+                        }
+                        expected = slot * area + fy * n + fx;
+                    }
+                    REQUIRE(l[expected] == 1);
+                }
+
+                // the per-tile beliefs move too, the rest stay
+                for (const TargetHead &head : targetHeads(config)) {
+                    for (int i = 0; i < head.size; i++) {
+                        int to = i;
+                        if (head.tileLayers > 0 && i % area / n < size &&
+                            i % area % n < size) {
+                            auto [tx, ty] = transformTile(s, i % area % n,
+                                                          i % area / n, size);
+                            to = i / area * area + ty * n + tx;
+                        }
+                        REQUIRE(t[head.offset + to] == targets[head.offset + i]);
+                        REQUIRE(m[head.offset + to] == masks[head.offset + i]);
+                    }
+                }
+
+                // and the inverse brings it all back
+                applySymmetry(inverse[s], size, config, p.data(), l.data(), nullptr,
+                              t.data(), m.data());
+                CHECK(p == planes);
+                CHECK(l == legal);
+                CHECK(t == targets);
+                CHECK(m == masks);
+                checked++;
+            }
+        }
+        CHECK(checked >= 40);
+    }
+}
+
+TEST_CASE("full information shows every tile, keeps what was explored, and hides no targets") {
+    // plane 1 is `explored`, planes 2 to 6 the terrain (docs/encoding.md section 3)
+    const int explored = 1, terrain = 2, terrains = 5;
+    EncodingConfig config;
+    const int n = config.mapSize, area = n * n;
+    std::vector<TribeTypes::Tribe> lineup = {TribeTypes::IMPERIUS, TribeTypes::BARDUR};
+    Game game(generateMap({.size = 11, .type = MapTypes::LAKES, .tribes = lineup, .seed = 4}),
+              lineup, {.seed = 4});
+    RandomBot bot(4);
+    for (int step = 0; step < 60; step++) {
+        game.apply(bot.choose(game));
+    }
+    int player = game.currentPlayer;
+    std::vector<float> fogged(planeCount(config) * area), full(planeCount(config) * area),
+        g1(globalCount(config)), g2(globalCount(config));
+    encodeState(game, player, config, fogged.data(), g1.data());
+    encodeState(game, player, config, full.data(), g2.data(), true);
+    int unexplored = 0;
+    for (int t = 0; t < game.size * game.size; t++) {
+        int at = game.tileY(t) * n + game.tileX(t);
+        // `explored` is the same either way: the player's own exploration
+        CHECK(full[explored * area + at] == fogged[explored * area + at]);
+        CHECK(full[explored * area + at] == game.explored(player, t));
+        // every tile's terrain shows with full information
+        float shown = 0;
+        for (int k = 0; k < terrains; k++) {
+            shown += full[(terrain + k) * area + at];
+        }
+        CHECK(shown == 1);
+        unexplored += !game.explored(player, t);
+    }
+    REQUIRE(unexplored > 0);
+    // so the two differ, where the fog was
+    CHECK(fogged != full);
+
+    std::vector<float> targets(targetCount(config));
+    std::vector<std::uint8_t> masks(targetCount(config));
+    encodeTargets(game, player, config, targets.data(), masks.data(), true);
+    CHECK(std::count(masks.begin(), masks.end(), 1) == 0);
+}
+
+TEST_CASE("the network's raw belief outputs decode into beliefs to sample from") {
+    EncodingConfig config;
+    const int n = config.mapSize, area = n * n;
+    Game game = makeFogGame(tinyMap());
+    PlayerView view = makeView(game, 0);
+    std::vector<float> raw(beliefOutputCount(config), 0.0f);
+    std::map<std::string, TargetHead> head;
+    for (const TargetHead &h : beliefOutputHeads(config)) {
+        head[h.name] = h;
+    }
+    // the layout is the targets' with the stars as the mixture's parameters
+    CHECK(beliefOutputCount(config) ==
+          targetCount(config) - 1 + 3 * STAR_COMPONENTS);
+    raw[head["tribe"].offset + TribeTypes::VENGIR] = 8;
+    raw[head["techs"].offset + TechTypes::ARCHERY - 1] = 8;
+    raw[head["techs"].offset + TechTypes::CLIMBING - 1] = -8;
+    // all three components around 10 stars, tightly
+    for (int c = 0; c < STAR_COMPONENTS; c++) {
+        raw[head["stars"].offset + STAR_COMPONENTS + c] = 10;
+        raw[head["stars"].offset + 2 * STAR_COMPONENTS + c] = 50;
+    }
+    int tile = game.index(4, 6);
+    raw[head["hidden_unit_here"].offset + 6 * n + 4] = 8;
+    raw[head["hidden_unit_type"].offset + UnitTypes::RIDER * area + 6 * n + 4] = 8;
+    raw[head["hidden_unit_count"].offset + 2] = 8;
+
+    Beliefs beliefs = decodeBeliefs(view, config, raw.data());
+    REQUIRE(beliefs.players.size() == 2);
+    const OpponentBeliefs &b = beliefs.players[1];
+    CHECK(b.tribe[TribeTypes::VENGIR] > 0.9);
+    CHECK(b.tech[TechTypes::BASIC] == 1);
+    CHECK(b.tech[TechTypes::ARCHERY] > 0.99);
+    CHECK(b.tech[TechTypes::CLIMBING] < 0.01);
+    // a distribution over 0 to the cap, peaked near 10
+    float sum = std::accumulate(b.stars.begin(), b.stars.end(), 0.0f);
+    CHECK(b.stars.size() == STAR_COUNT_CAP + 1);
+    CHECK(sum == doctest::Approx(1).epsilon(0.01));
+    CHECK(std::max_element(b.stars.begin(), b.stars.end()) - b.stars.begin() >= 8);
+    CHECK(std::max_element(b.stars.begin(), b.stars.end()) - b.stars.begin() <= 11);
+    CHECK(b.unitHere.size() == static_cast<std::size_t>(game.size * game.size));
+    CHECK(b.unitHere[tile] > 0.99);
+    CHECK(b.unitHere[game.index(5, 5)] == doctest::Approx(0.5));
+    CHECK(b.unitType[tile][UnitTypes::RIDER] > 0.9);
+    CHECK(b.hiddenUnitCount[2] > 0.9);
+    // the player's own entry stays empty
+    CHECK(beliefs.players[0].stars.empty());
+}
+
+TEST_CASE("the unexplored head's targets are the true contents of tiles the player hasn't explored") {
+    using namespace UnexploredHead;
+    EncodingConfig config;
+    const int n = config.mapSize, area = n * n;
+    std::vector<TribeTypes::Tribe> lineup = {TribeTypes::KICKOO, TribeTypes::ZEBASI};
+    Game game(generateMap({.size = 11, .type = MapTypes::ARCHIPELAGO, .tribes = lineup, .seed = 9}),
+              lineup, {.seed = 9});
+    RandomBot bot(9);
+    for (int step = 0; step < 80; step++) {
+        game.apply(bot.choose(game));
+    }
+    TargetHead head;
+    for (const TargetHead &h : targetHeads(config)) {
+        if (h.name == "unexplored") {
+            head = h;
+        }
+    }
+    REQUIRE(head.opponent == 0);
+    CHECK(head.tileLayers == LAYERS);
+    std::vector<float> t(targetCount(config));
+    std::vector<std::uint8_t> m(targetCount(config));
+    int player = 0, trained = 0;
+    encodeTargets(game, player, config, t.data(), m.data());
+    for (int tile = 0; tile < game.size * game.size; tile++) {
+        int at = game.tileY(tile) * n + game.tileX(tile);
+        const Tile &real = game.tiles[tile];
+        bool skip = game.explored(player, tile) || real.building == ImprovementTypes::CITY ||
+                    isCornerTile(game.tileX(tile), game.tileY(tile), game.size);
+        CHECK(m[head.offset + at] == !skip);
+        if (skip) {
+            continue;
+        }
+        trained++;
+        CHECK(t[head.offset + (TERRAIN + real.terrain) * area + at] == 1);
+        CHECK(t[head.offset + (RESOURCE + real.resource) * area + at] == 1);
+        int feature = real.building == ImprovementTypes::VILLAGE ? 1
+                      : real.building == ImprovementTypes::RUIN  ? 2
+                                                                 : 0;
+        CHECK(t[head.offset + (FEATURE + feature) * area + at] == 1);
+    }
+    CHECK(trained > 0);
 }

@@ -4,11 +4,13 @@
 #include "view.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <array>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -306,9 +308,11 @@ void printTile(const Game &game, int tile, int viewer, bool everything) {
 
 int runCli(int argc, char **argv, const BotMaker &makeBot) {
     // --ascii switches to the letter map, --reveal turns fog off, --seed and
-    // --size set up a generated map, --bot N makes seat N a bot; the rest is
-    // positional
-    bool ascii = false, reveal = false;
+    // --size set up a generated map, --bot N makes seat N a bot, --watch
+    // shows a bots-only game turn by turn (--delay S: on its own, S seconds
+    // apart), --no-treaties leaves out peace treaties; the rest is positional
+    bool ascii = false, reveal = false, watch = false, treaties = true;
+    double delay = -1;
     std::vector<int> botSeats;
     MapGenSettings generate;
     std::vector<std::string> args;
@@ -318,6 +322,13 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
             ascii = true;
         } else if (arg == "--reveal") {
             reveal = true;
+        } else if (arg == "--no-treaties") {
+            treaties = false;
+        } else if (arg == "--watch") {
+            watch = true;
+        } else if (arg == "--delay" && i + 1 < argc) {
+            watch = true;
+            delay = std::stod(argv[++i]);
         } else if (arg == "--bot" && i + 1 < argc) {
             botSeats.push_back(std::stoi(argv[++i]));
         } else if ((arg == "--seed" || arg == "--size") && i + 1 < argc) {
@@ -358,7 +369,7 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
     if (tribes.empty()) {
         tribes.assign(map.capitals.size(), TribeTypes::IMPERIUS);
     }
-    Game game(map, tribes, {.seed = generate.seed});
+    Game game(map, tribes, {.seed = generate.seed, .peaceTreaties = treaties});
     for (int seat : botSeats) {
         if (seat < 0 || seat >= static_cast<int>(tribes.size())) {
             std::cerr << "No seat " << seat << " for a bot\n";
@@ -385,7 +396,8 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
     // what's in the fog.
     // random games can go on forever, so bot-only games stop at a turn limit
     constexpr int BOT_GAME_TURNS = 300;
-    auto runBots = [&] {
+    // after each bot turn: false stops the game there
+    auto runBots = [&](const std::function<bool()> &afterTurn) {
         bool played = false;
         while (!game.gameOver() && isBot[game.currentPlayer] &&
                game.turn < BOT_GAME_TURNS) {
@@ -402,22 +414,44 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
                 }
             }
             played = true;
+            if (afterTurn && !afterTurn()) {
+                break;
+            }
         }
         return played;
     };
 
     if (allBots) {
-        runBots();
+        // watching: the board after every turn, then Enter for the next (q
+        // to stop), or the delay
+        std::function<bool()> afterTurn;
+        if (watch) {
+            afterTurn = [&] {
+                if (game.gameOver()) {
+                    return true;
+                }
+                printStatus(game);
+                show();
+                if (delay >= 0) {
+                    std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+                    return true;
+                }
+                std::cout << "Enter for the next turn, q to stop: " << std::flush;
+                std::string line;
+                return std::getline(std::cin, line) && line != "q";
+            };
+        }
+        runBots(afterTurn);
         show();
         if (game.gameOver()) {
             std::cout << "Player " << game.winner << " wins on turn "
                       << game.turn << '\n';
         } else {
-            std::cout << "No winner after " << BOT_GAME_TURNS << " turns\n";
+            std::cout << "No winner after " << game.turn << " turns\n";
         }
         return 0;
     }
-    runBots();
+    runBots(nullptr);
     printStatus(game);
     show();
     std::string cmd;
@@ -444,7 +478,7 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
                     command = legal[n];
                 }
                 game.apply(command);
-                runBots();
+                runBots(nullptr);
                 if (!game.gameOver()) {
                     printStatus(game);
                     show();

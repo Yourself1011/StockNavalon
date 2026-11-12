@@ -3,16 +3,41 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 
 Game GameRecord::start() const {
-    return Game(generateMap(map), map.tribes, {.seed = gameSeed});
+    return Game(generateMap(map), map.tribes,
+                {.seed = gameSeed, .peaceTreaties = peaceTreaties});
+}
+
+float GameRecord::cityValue(int player) const {
+    if (player >= static_cast<int>(finalCities.size())) {
+        return 0;
+    }
+    int best = 0;
+    for (std::size_t p = 0; p < finalCities.size(); p++) {
+        if (static_cast<int>(p) != player) {
+            best = std::max(best, finalCities[p]);
+        }
+    }
+    int sum = finalCities[player] + best;
+    return sum > 0 ? static_cast<float>(finalCities[player] - best) / sum : 0.0f;
 }
 
 float GameRecord::result(int player) const {
     return winner < 0 ? 0.0f : winner == player ? 1.0f : -1.0f;
+}
+
+float GameRecord::value(int player) const {
+    if (winner >= 0 || player >= static_cast<int>(finalValues.size()) ||
+        std::isnan(finalValues[player])) {
+        return result(player);
+    }
+    return finalValues[player];
 }
 
 float GameRecord::scoreValue(int player, double scale) const {
@@ -41,6 +66,11 @@ Command readCommand(std::istream &in) {
 // Format, per game:
 //   game <size> <map type> <map seed> <candidates> <tribes> <tribe>...
 //        <game seed> <winner> <turns> <scores> <score>...
+//        [<values> <value>... <tiles> <owner>... <scores> <score>... <fog>
+//         <peace treaties> <cities> <city count>...]
+//        (final values, final territory, the score table, whether it was
+//        played with fog and peace treaties, and the final city counts;
+//        absent in older files)
 //   <moves>
 //   <player> <command> <visits> (<command> <count>)...   one line per move
 // where a command is <type> <from> <to> <arg>. The map is regenerated from
@@ -62,6 +92,24 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
         for (int s : r.finalScores) {
             out << ' ' << s;
         }
+        out << ' ' << r.finalValues.size();
+        for (float v : r.finalValues) {
+            out << ' ' << v;
+        }
+        out << ' ' << r.finalTerritory.size();
+        for (int owner : r.finalTerritory) {
+            out << ' ' << owner;
+        }
+        out << ' ' << r.turnScores.size();
+        for (int score : r.turnScores) {
+            out << ' ' << score;
+        }
+        out << ' ' << r.fog << ' ' << r.peaceTreaties << ' ' << r.finalCities.size();
+        for (int cities : r.finalCities) {
+            out << ' ' << cities;
+        }
+        // each move line ends with its root value
+        out << " 1";
         out << '\n' << r.moves.size() << '\n';
         for (const RecordedMove &m : r.moves) {
             out << m.player;
@@ -71,7 +119,7 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
                 writeCommand(out, command);
                 out << ' ' << count;
             }
-            out << '\n';
+            out << ' ' << m.rootValue << '\n';
         }
     }
 }
@@ -89,18 +137,66 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         }
         GameRecord r;
         int type;
-        std::size_t tribes, scores, moves;
-        in >> r.map.size >> type >> r.map.seed >> r.map.candidates >> tribes;
+        std::size_t tribes, scores, values, moves;
+        // the header is one line, its final values optional
+        std::string line;
+        std::getline(in, line);
+        std::istringstream header(line);
+        header >> r.map.size >> type >> r.map.seed >> r.map.candidates >> tribes;
         r.map.type = static_cast<MapTypes::MapType>(type);
         for (std::size_t i = 0; i < tribes; i++) {
             int t;
-            in >> t;
+            header >> t;
             r.map.tribes.push_back(static_cast<TribeTypes::Tribe>(t));
         }
-        in >> r.gameSeed >> r.winner >> r.turns >> scores;
+        header >> r.gameSeed >> r.winner >> r.turns >> scores;
         r.finalScores.resize(scores);
         for (int &s : r.finalScores) {
-            in >> s;
+            header >> s;
+        }
+        if (!header) {
+            throw std::runtime_error("Bad record header in " + path);
+        }
+        if (header >> values) {
+            r.finalValues.resize(values);
+            for (float &v : r.finalValues) {
+                // "nan" doesn't parse as a float, so read words
+                std::string word;
+                header >> word;
+                v = word == "nan" ? std::nanf("") : std::stof(word);
+            }
+        }
+        std::size_t count;
+        if (header >> count) {
+            r.finalTerritory.resize(count);
+            for (int &owner : r.finalTerritory) {
+                header >> owner;
+            }
+        }
+        if (header >> count) {
+            r.turnScores.resize(count);
+            for (int &score : r.turnScores) {
+                header >> score;
+            }
+        }
+        if (int fog; header >> fog) {
+            r.fog = fog != 0;
+        }
+        if (int peace; header >> peace) {
+            r.peaceTreaties = peace != 0;
+        }
+        if (header >> count) {
+            r.finalCities.resize(count);
+            for (int &cities : r.finalCities) {
+                header >> cities;
+            }
+        }
+        bool rootValues = false;
+        if (int flag; header >> flag) {
+            rootValues = flag != 0;
+        }
+        if (!header && !header.eof()) {
+            throw std::runtime_error("Bad record header in " + path);
         }
         in >> moves;
         r.moves.resize(moves);
@@ -114,6 +210,11 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
                 command = readCommand(in);
                 in >> count;
             }
+            if (rootValues) {
+                std::string word;
+                in >> word;
+                m.rootValue = word == "nan" ? std::nanf("") : std::stof(word);
+            }
         }
         if (!in) {
             throw std::runtime_error("Truncated record file " + path);
@@ -125,13 +226,18 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
 
 void encodeExamples(const std::vector<GameRecord> &records,
                     const std::vector<std::pair<int, int>> &positions,
-                    const EncodingConfig &config, const ValueTarget &value,
-                    const ExampleArrays &out, int threads) {
+                    const EncodingConfig &config, const ExampleArrays &out,
+                    int threads, const std::vector<int> &symmetries,
+                    const ValueTarget &value) {
+    if (!symmetries.empty() && symmetries.size() != positions.size()) {
+        throw std::invalid_argument("Need one symmetry per position");
+    }
     const std::size_t n = config.mapSize,
                       planes = planeCount(config) * n * n,
                       globals = globalCount(config),
                       actions = actionCount(config),
-                      targets = targetCount(config);
+                      targets = targetCount(config),
+                      side = sideTargetCount(config);
     // each record replayed once, in order, stopping at the positions asked for
     std::map<int, std::vector<std::pair<int, std::size_t>>> byRecord;
     for (std::size_t i = 0; i < positions.size(); i++) {
@@ -163,8 +269,9 @@ void encodeExamples(const std::vector<GameRecord> &records,
             if (player != m.player) {
                 throw std::runtime_error("Record doesn't replay: wrong player");
             }
+            // a game played without fog is seen the way it was played
             encodeState(game, player, config, out.planes + i * planes,
-                        out.globals + i * globals);
+                        out.globals + i * globals, !record.fog);
             legalMask(game, config, out.legal + i * actions);
             float *policy = out.policy + i * actions;
             std::fill(policy, policy + actions, 0.0f);
@@ -181,15 +288,92 @@ void encodeExamples(const std::vector<GameRecord> &records,
                     policy[a] = static_cast<float>(policy[a] / total);
                 }
             }
-            // a game cut off by the turn limit has a result of 0
+            // the result, partly the position's own search value
+            double result = record.value(player);
+            if (value.searchWeight > 0 && !std::isnan(m.rootValue)) {
+                result = (1 - value.searchWeight) * result + value.searchWeight * m.rootValue;
+            }
             out.value[i] = static_cast<float>(
-                value.scoreWeight * record.scoreValue(player, value.scale) +
-                (1 - value.scoreWeight) * record.result(player));
-            out.valueWeight[i] = 1;
+                (1 - value.cityWeight) * result +
+                value.cityWeight * record.cityValue(player));
+            out.valueWeight[i] = record.winner >= 0 ? 1.0f
+                                                    : static_cast<float>(value.cutOffWeight);
             encodeTargets(game, player, config, out.targets + i * targets,
-                          out.targetMasks + i * targets);
+                          out.targetMasks + i * targets, !record.fog);
+            if (out.sideTargets) {
+                encodeSideTargets(record, game.turn, player, config,
+                                  out.sideTargets + i * side, out.sideMasks + i * side);
+            }
+            if (!symmetries.empty()) {
+                applySymmetry(symmetries[i], game.size, config,
+                              out.planes + i * planes, out.legal + i * actions,
+                              policy, out.targets + i * targets,
+                              out.targetMasks + i * targets);
+                if (out.sideTargets) {
+                    using namespace SideTargets;
+                    applySymmetry(symmetries[i], game.size, config, TERRITORY_CLASSES,
+                                  out.sideTargets + i * side + TERRITORY);
+                    applySymmetry(symmetries[i], game.size, config, TERRITORY_CLASSES,
+                                  out.sideMasks + i * side + TERRITORY);
+                }
+            }
         }
     });
+}
+
+void thinPolicyTargets(std::vector<GameRecord> &records, double share,
+                       std::uint64_t seed) {
+    std::mt19937_64 rng(seed);
+    std::bernoulli_distribution keep(share);
+    for (GameRecord &r : records) {
+        for (RecordedMove &m : r.moves) {
+            if (!m.visits.empty() && !keep(rng)) {
+                m.visits.clear();
+            }
+        }
+    }
+}
+
+void encodeSideTargets(const GameRecord &record, int turn, int player,
+                       const EncodingConfig &config, float *targets,
+                       std::uint8_t *masks) {
+    using namespace SideTargets;
+    const int n = config.mapSize, count = sideTargetCount(config),
+              players = static_cast<int>(record.finalScores.size());
+    std::fill(targets, targets + count, 0.0f);
+    std::fill(masks, masks + count, std::uint8_t{0});
+    // the player's lead over the best opponent, squashed
+    auto lead = [&](const int *scores) {
+        int best = std::numeric_limits<int>::min();
+        for (int q = 0; q < players; q++) {
+            if (q != player) {
+                best = std::max(best, scores[q]);
+            }
+        }
+        return static_cast<float>(std::tanh((scores[player] - best) / SCORE_SCALE));
+    };
+    targets[SCORE_END] = lead(record.finalScores.data());
+    masks[SCORE_END] = 1;
+    if (!record.turnScores.empty()) {
+        int rows = static_cast<int>(record.turnScores.size()) / players;
+        int soon = turn + SOON_TURNS;
+        targets[SCORE_SOON] = soon < rows ? lead(&record.turnScores[soon * players])
+                                          : targets[SCORE_END];
+        masks[SCORE_SOON] = 1;
+    }
+    const int size = record.map.size;
+    if (static_cast<int>(record.finalTerritory.size()) == size * size && size <= n) {
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int owner = record.finalTerritory[y * size + x];
+                int cls = owner == player ? 0 : owner < 0 ? 2 : 1;
+                targets[TERRITORY + cls * n * n + y * n + x] = 1;
+                for (int c = 0; c < TERRITORY_CLASSES; c++) {
+                    masks[TERRITORY + c * n * n + y * n + x] = 1;
+                }
+            }
+        }
+    }
 }
 
 namespace {
@@ -254,19 +438,28 @@ std::vector<std::pair<int, int>> ReplayBuffer::sample(int count,
 }
 
 void ReplayBuffer::encode(const std::vector<std::pair<int, int>> &positions,
-                          const EncodingConfig &config, const ValueTarget &value,
-                          const ExampleArrays &out, int threads) const {
+                          const EncodingConfig &config, const ExampleArrays &out,
+                          int threads, const ValueTarget &value) const {
     std::lock_guard<std::mutex> lock(mutex);
-    encodeExamples(records, positions, config, value, out, threads);
+    encodeExamples(records, positions, config, out, threads, {}, value);
 }
 
 void ReplayBuffer::encodeSample(int count, std::uint64_t seed, int perGame,
                                 const EncodingConfig &config,
-                                const ValueTarget &value, const ExampleArrays &out,
-                                int threads) const {
+                                const ExampleArrays &out, int threads,
+                                bool augment, const ValueTarget &value) const {
     std::lock_guard<std::mutex> lock(mutex);
-    encodeExamples(records, sampleUnlocked(count, seed, perGame), config, value,
-                   out, threads);
+    std::vector<std::pair<int, int>> positions = sampleUnlocked(count, seed, perGame);
+    std::vector<int> symmetries;
+    if (augment) {
+        // a different stream from the sample's own
+        std::mt19937_64 rng(seed ^ 0x9e3779b97f4a7c15ULL);
+        std::uniform_int_distribution<int> pick(0, SYMMETRIES - 1);
+        for (std::size_t i = 0; i < positions.size(); i++) {
+            symmetries.push_back(pick(rng));
+        }
+    }
+    encodeExamples(records, positions, config, out, threads, symmetries, value);
 }
 
 std::vector<std::pair<int, int>> ReplayBuffer::sampleUnlocked(int count,

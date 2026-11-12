@@ -1,6 +1,6 @@
 # Tribe inference: ruling tribes out from the opening
 
-The spec for working out which tribes an unmet opponent could be, from public information. It's part of stockNavalon (design in [`stockNavalon.md`](stockNavalon.md), sections 4 and 5). Status: **implemented** in `src/stockNavalon/tribeInference.h`: the starting-score filter, the climate filter and the search over score changes (section 10 has what's built and the measurements). Its coverage test is built too.
+The spec for working out which tribes an unmet opponent could be, from public information. It's part of stockNavalon ([`stockNavalon.md`](stockNavalon.md)), in `src/stockNavalon/tribeInference.h`: a starting-score filter, a climate filter, and a search over score changes. Section 9 has what's built and the measurements; open items are in [`notes/todo.md`](../notes/todo.md).
 
 ## 1. Why exact, and what it guarantees
 
@@ -34,7 +34,7 @@ std::bitset<TribeTypes::TRIBE_SIZE> possibleTribes(const PlayerView &view, int o
 
 **Output:** the set of possible tribes. A met opponent's set is just their tribe.
 
-**Turn horizon:** only the first `turns` changes are searched, by default just 1: the opponent's turn 0. Measured at 1 to 6 turns, only turn 0 ruled anything out (section 10). From turn 1 on, their units could be anywhere within reach, so later changes are too ambiguous, and the search grows each turn. The search handles longer horizons if a stronger opponent's later turns turn out to say more.
+**Turn horizon:** only the first `turns` changes are searched, by default just 1: the opponent's turn 0. Measured at 1 to 6 turns, only turn 0 ruled anything out (section 9). From turn 1 on, their units could be anywhere within reach, so later changes are too ambiguous, and the search grows each turn. The search handles longer horizons if a stronger opponent's later turns turn out to say more.
 
 ## 3. The opponent's state, as searched
 
@@ -174,20 +174,14 @@ The tribe stays possible if any path matches all `turns` changes.
 
 1. **Never wrong** (a hard test): across thousands of self-play games on every map type and every tribe matchup, the true tribe is always in the possible set, at every turn. Random bots are good at this, since they do odd things a real player wouldn't. A failure means a missing event or a bound that's too tight.
 2. **Coverage,** linking the search to the engine (section 4): across long random games, after every command, the search's model of each player's score, built from the true state (`searchModelScore`), must equal `Game::score`. A way of scoring the search doesn't model breaks it, even one too rare or too late for the soundness test to reach. It covers the score formula. Whether the search's moves cover every action the engine allows is what the soundness test checks.
-3. **Usefulness,** per horizon (3, 4, 5, 6):
-   - the average size of the set, and how often it's down to one tribe, turn by turn
-   - for the random bot and for the stronger bots once they exist, since real players' openings are more distinctive
-4. **Cost:** time per call, per horizon. It runs once per turn per unmet opponent, so even a few milliseconds is fine.
-
-Then pick the horizon from those numbers.
+3. **Usefulness and cost,** per horizon: the average size of the set, how often it's down to one tribe, and the time per call. Measured in section 9; the horizon was chosen from it.
 
 ## 8. Where the result goes
 
-- **Encoding:** a per-opponent "could be this tribe" flag for each of the 12 tribes, replacing the opening-change features considered earlier. It's an encoding change, so the version goes up.
+- **Encoding:** a per-opponent "could be this tribe" flag for each of the 12 tribes ([`encoding.md`](encoding.md) section 4).
 - **Determinization:** the tribe is sampled only from the possible set.
-- **Belief model:** only has to say which of the possible tribes is likely. There's no hand-set prior: it learns which tribes opponents tend to pick from its training games. Those picks should come from stockNavalon's own tribe choice, made as part of playing well, so the prior follows what's actually strong to play.
+- **Belief model:** the tribe head is masked to the possible set, so it only has to say which of them is likely, learned from its training games.
 - **Climate,** as a filter on the same set (section 8.1).
-- **Later:** seen units or buildings that a tribe couldn't have yet.
 
 ### 8.1 Climate
 
@@ -198,13 +192,7 @@ Each tile shows its tribe's climate, unambiguously (GAME.md section 16). For the
 
 Climates also say roughly where the opponent is. Regions are roughly Voronoi-like around capitals, with deviation (GAME.md section 18), so a climate boundary is around the halfway line between capitals. That's useful for determinization and the belief model, but not exact enough to use as a hard rule.
 
-## 9. Open questions
-
-1. **Stronger opponents:** the measurements in section 10 are against the random bot. A purposeful opening (scouting with a Rider at once, a road on turn 1) should be more distinctive. Measure again once stockNavalon plays.
-2. **Later turns:** nothing past the first change ruled anything out in random games. The bound from turn 1 on is looser, since units could be anywhere within reach. Tracking where each unit could be, not just the furthest, would tighten it.
-3. **Rules the engine itself doesn't have yet:** the coverage test links the event list to the engine, so the inference is exactly as right as the engine's score rules. Mid-game score rules still need checking against the real game (`stockNavalon.md` section 5.1).
-
-## 10. Implemented
+## 9. Implemented
 
 `possibleTribes(view, opponent, config)` applies three exact filters:
 

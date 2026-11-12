@@ -130,9 +130,7 @@ class Generator {
         return std::min({x(t), y(t), n - 1 - x(t), n - 1 - y(t)});
     }
     bool land(int t) const { return !isWater(tiles[t].terrain); }
-    bool corner(int t) const {
-        return (x(t) == 0 || x(t) == n - 1) && (y(t) == 0 || y(t) == n - 1);
-    }
+    bool corner(int t) const { return isCornerTile(x(t), y(t), n); }
     template <typename F> void forEachNeighbour(int t, F f) const {
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
@@ -449,27 +447,7 @@ void Generator::placeTerrain() {
 void Generator::placeResources() {
     // shares of all tiles of each terrain: inner (next to a village) and
     // outer (two away)
-    struct Rate {
-        ResourceType resource;
-        double inner, outer;
-    };
-    auto rates = [&](TerrainType terrain) -> std::vector<Rate> {
-        switch (terrain) {
-        case FIELD:
-            return {{ResourceTypes::FRUIT, 0.18 / 0.48, 0.06 / 0.48},
-                    {ResourceTypes::CROP, 0.18 / 0.48, 0.06 / 0.48}};
-        case FOREST:
-            return {{ResourceTypes::GAME, 0.19 / 0.38, 0.06 / 0.38}};
-        case MOUNTAIN:
-            return {{ResourceTypes::METAL, 0.11 / 0.14, 0.03 / 0.14}};
-        case WATER:
-            return {{ResourceTypes::FISH, 0.5, 0.5}};
-        case OCEAN:
-            return {{ResourceTypes::FISH, s.oceanFishInner, s.oceanFishOuter}};
-        default:
-            return {};
-        }
-    };
+    auto rates = [&](TerrainType terrain) { return resourceRates(terrain, s); };
 
     for (int t = 0; t < n * n; t++) {
         int d = nearestSettlement(t);
@@ -477,12 +455,12 @@ void Generator::placeResources() {
             continue;
         }
         const TribeData &tribe = tribeData[s.tribes[region[t]]];
-        std::vector<Rate> options = rates(tiles[t].terrain);
+        std::vector<ResourceRate> options = rates(tiles[t].terrain);
         // each chance times the tribe modifier, scaled down to fit if they
         // add up to more than 1
         std::vector<double> chances;
         double sum = 0;
-        for (const Rate &r : options) {
+        for (const ResourceRate &r : options) {
             double chance = (d == 1 ? r.inner : r.outer) *
                             tribe.resourceModifiers[r.resource];
             chances.push_back(chance);
@@ -575,11 +553,12 @@ void Generator::placeRuins() {
             // ocean ruins at least 2 tiles from any village
             if (tile.terrain == WATER || (ocean && onWater >= maxOnWater) ||
                 tile.resource != ResourceTypes::NONE || corner(t) ||
-                nearestSettlement(t) < (ocean ? 3 : 2)) {
+                nearestSettlement(t) < (ocean ? RUIN_OCEAN_SETTLEMENT_DISTANCE
+                                              : RUIN_LAND_SETTLEMENT_DISTANCE)) {
                 return false;
             }
             return std::none_of(ruins.begin(), ruins.end(),
-                                [&](int r) { return dist(r, t) < 2; });
+                                [&](int r) { return dist(r, t) < RUIN_SPACING; });
         });
         if (options.empty()) {
             return;
@@ -1001,6 +980,42 @@ int Generator::fairnessGap() const {
 }
 
 } // namespace
+
+std::vector<ResourceRate> resourceRates(TerrainType terrain,
+                                        const MapGenSettings &s) {
+    switch (terrain) {
+    case FIELD:
+        return {{ResourceTypes::FRUIT, 0.18 / 0.48, 0.06 / 0.48},
+                {ResourceTypes::CROP, 0.18 / 0.48, 0.06 / 0.48}};
+    case FOREST:
+        return {{ResourceTypes::GAME, 0.19 / 0.38, 0.06 / 0.38}};
+    case MOUNTAIN:
+        return {{ResourceTypes::METAL, 0.11 / 0.14, 0.03 / 0.14}};
+    case WATER:
+        return {{ResourceTypes::FISH, 0.5, 0.5}};
+    case OCEAN:
+        return {{ResourceTypes::FISH, s.oceanFishInner, s.oceanFishOuter}};
+    default:
+        return {};
+    }
+}
+
+bool resourceFitsTerrain(ResourceType resource, TerrainType terrain) {
+    if (resource == ResourceTypes::NONE) {
+        return true;
+    }
+    // starfish go on any water (placeStarfish)
+    if (resource == ResourceTypes::STARFISH) {
+        return isWater(terrain);
+    }
+    std::vector<ResourceRate> rates = resourceRates(terrain);
+    return std::any_of(rates.begin(), rates.end(),
+                       [&](const ResourceRate &r) { return r.resource == resource; });
+}
+
+bool isCornerTile(int x, int y, int size) {
+    return (x == 0 || x == size - 1) && (y == 0 || y == size - 1);
+}
 
 int ruinCountForSize(int size) {
     switch (size) {

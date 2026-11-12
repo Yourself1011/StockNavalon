@@ -54,6 +54,90 @@ int pick(const Weights &weights, std::mt19937_64 &rng) {
     return last;
 }
 
+// Unexplored tiles from the network's beliefs (Beliefs::terrain and the
+// rest), within the map generator's rules (mapgen.h): first each tile's
+// feature, then its terrain (a village's is a field, a ruin's never shallow
+// water), then a resource that fits it. Villages and ruins too close to a
+// settlement or each other are dropped, as the generator would never place
+// them; corners stay the generated map's lighthouses.
+template <typename Known>
+void sampleUnexplored(Game &g, const Beliefs &beliefs, const Known &known,
+                      std::mt19937_64 &rng) {
+    using namespace TerrainTypes;
+    const int tiles = g.size * g.size;
+    auto dist = [&](int a, int b) {
+        return std::max(std::abs(g.tileX(a) - g.tileX(b)),
+                        std::abs(g.tileY(a) - g.tileY(b)));
+    };
+    std::vector<int> villages, ruins;
+    for (int t = 0; t < tiles; t++) {
+        if (known(t) || isCornerTile(g.tileX(t), g.tileY(t), g.size)) {
+            continue;
+        }
+        Tile &tile = g.tiles[t];
+        auto feature = static_cast<TileFeature>(std::max(0, pick(beliefs.feature[t], rng)));
+        std::array<float, TERRAIN_TYPE_SIZE> terrain = beliefs.terrain[t];
+        if (feature == TileFeature::VILLAGE) {
+            terrain.fill(0);
+            terrain[FIELD] = 1;
+        } else if (feature == TileFeature::RUIN) {
+            terrain[WATER] = 0;
+        }
+        int sampled = pick(terrain, rng);
+        tile.terrain = sampled >= 0 ? static_cast<TerrainType>(sampled) : FIELD;
+        std::array<float, ResourceTypes::RESOURCE_TYPE_SIZE> resource = beliefs.resource[t];
+        for (int r = 0; r < ResourceTypes::RESOURCE_TYPE_SIZE; r++) {
+            // a village or ruin has no resource
+            if (!resourceFitsTerrain(static_cast<ResourceTypes::ResourceType>(r), tile.terrain) ||
+                (feature != TileFeature::NONE && r != ResourceTypes::NONE)) {
+                resource[r] = 0;
+            }
+        }
+        int r = pick(resource, rng);
+        tile.resource = r >= 0 ? static_cast<ResourceTypes::ResourceType>(r)
+                               : ResourceTypes::NONE;
+        tile.building = ImprovementTypes::NONE;
+        if (feature == TileFeature::VILLAGE) {
+            villages.push_back(t);
+        } else if (feature == TileFeature::RUIN) {
+            ruins.push_back(t);
+        }
+    }
+    // the settlements already there: known villages and every city
+    std::vector<int> settlements;
+    for (int t = 0; t < tiles; t++) {
+        if (g.tiles[t].building == ImprovementTypes::VILLAGE ||
+            g.tiles[t].building == ImprovementTypes::CITY) {
+            settlements.push_back(t);
+        }
+    }
+    auto nearest = [&](int t) {
+        int best = g.size;
+        for (int s : settlements) {
+            best = std::min(best, dist(s, t));
+        }
+        return best;
+    };
+    const int spacing = MapGenSettings{}.settlementSpacing;
+    for (int v : villages) {
+        if (nearest(v) >= spacing) {
+            g.tiles[v].building = ImprovementTypes::VILLAGE;
+            settlements.push_back(v);
+        }
+    }
+    std::vector<int> kept;
+    for (int t : ruins) {
+        bool ocean = g.tiles[t].terrain == OCEAN;
+        if (nearest(t) >= (ocean ? RUIN_OCEAN_SETTLEMENT_DISTANCE
+                                 : RUIN_LAND_SETTLEMENT_DISTANCE) &&
+            std::none_of(kept.begin(), kept.end(),
+                         [&](int k) { return dist(k, t) < RUIN_SPACING; })) {
+            g.tiles[t].building = ImprovementTypes::RUIN;
+            kept.push_back(t);
+        }
+    }
+}
+
 // Renumbers units and cities by tile, dropping dead units, so a sample
 // carries nothing of the order things happened in the real game
 void canonicalize(Game &g) {
@@ -197,6 +281,9 @@ std::optional<Game> sample(const Game &real, int player,
         tile.road = false;
         tile.roadBuilder = -1;
         tile.territory = -1;
+    }
+    if (!beliefs.terrain.empty()) {
+        sampleUnexplored(g, beliefs, known, rng);
     }
     // on explored tiles the player knows which roads are theirs, and in 1v1
     // on a map that started without roads, who built the rest

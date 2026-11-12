@@ -56,6 +56,8 @@ struct PlayerView {
 
     int player;
     int size;
+    // the kind of map, public from the start
+    MapTypes::MapType mapType;
     int turn, currentPlayer, winner;
     // the player's own
     int stars;

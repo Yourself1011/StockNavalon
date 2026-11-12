@@ -1,6 +1,6 @@
 """Self-play with the network: many games at once in C++, every waiting
 position across them evaluated in one batch (docs/stockNavalon.md section
-6.2).
+5).
 
 The games are split between two sessions that take turns, so the CPU and the
 GPU work at the same time: while the GPU evaluates one session's batch, the
@@ -19,14 +19,17 @@ import torch
 
 import polyengine as pe
 
-from .model import Network
+from .model import Network, as_input, belief_outputs
 
 
 class _Pending:
     """A batch launched on the GPU, not yet collected."""
 
-    def __init__(self, moves: torch.Tensor, values: torch.Tensor, size: int):
+    def __init__(self, moves: torch.Tensor, values: torch.Tensor, size: int,
+                 beliefs: torch.Tensor | None = None):
         self.moves, self.values, self.size = moves, values, size
+        # raw belief outputs for the positions that want them
+        self.beliefs = beliefs
 
 
 @torch.no_grad()
@@ -40,12 +43,14 @@ def _launch(model: Network, session: pe.SelfPlaySession, encoding: pe.Encoding,
     if len(planes) == 0:
         return None
     rows, slots = session.pending_slots(encoding)
+    belief_rows = session.pending_belief_rows()
     with gpu_lock:
-        out = model(torch.from_numpy(planes).to(device),
-                    torch.from_numpy(globals_).to(device))
+        out = model(as_input(planes, model, device), as_input(globals_, model, device))
         moves = out["policy"][torch.from_numpy(rows).to(device),
                               torch.from_numpy(slots).to(device)]
-    return _Pending(moves, out["value"], len(planes))
+        beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
+                   if len(belief_rows) else None)
+    return _Pending(moves, out["value"], len(planes), beliefs)
 
 
 def _collect(session: pe.SelfPlaySession, encoding: pe.Encoding,
@@ -54,7 +59,9 @@ def _collect(session: pe.SelfPlaySession, encoding: pe.Encoding,
     with gpu_lock:
         moves = pending.moves.float().cpu().numpy()
         values = pending.values.float().cpu().numpy()
-    session.submit_move_logits(encoding, moves, values)
+        beliefs = (None if pending.beliefs is None
+                   else np.ascontiguousarray(pending.beliefs.float().cpu().numpy()))
+    session.submit_move_logits(encoding, moves, values, beliefs)
 
 
 class SelfPlay:
@@ -74,8 +81,13 @@ class SelfPlay:
         self.sessions = [pe.SelfPlaySession(parallel, endless, seed=seed * 2 + i,
                                             **session_args) for i in range(2)]
 
+    def set_fog_share(self, share: float):
+        """The share of games started from now on that have fog."""
+        for session in self.sessions:
+            session.set_fog_share(share)
+
     def play(self, model: Network, games: int, progress=None,
-             progress_seconds: float = 30.0) -> tuple:
+             progress_seconds: float = 30.0) -> tuple[list[pe.GameRecord], dict[str, float]]:
         """Plays until at least `games` more have finished (games finishing in
         the same batch all come back), with this network. Returns those
         records, and stats: positions evaluated, batches, seconds."""
@@ -98,14 +110,16 @@ class SelfPlay:
             # collected, so the sessions are left with nothing pending
             if pending[current] is None and len(records) < games:
                 # the CPU work outside the lock, queueing the GPU's inside
-                pending[current] = _launch(model, sessions[current], encoding,
-                                           device, self.gpu_lock)
-                if pending[current] is not None:
-                    evaluated += pending[current].size
+                launched = _launch(model, sessions[current], encoding, device,
+                                   self.gpu_lock)
+                pending[current] = launched
+                if launched is not None:
+                    evaluated += launched.size
                     batches += 1
             other = 1 - current
-            if pending[other] is not None:
-                _collect(sessions[other], encoding, pending[other], self.gpu_lock)
+            waiting = pending[other]
+            if waiting is not None:
+                _collect(sessions[other], encoding, waiting, self.gpu_lock)
                 pending[other] = None
                 records.extend(sessions[other].take_finished())
             current = other
@@ -115,7 +129,8 @@ class SelfPlay:
 
 def play(model: Network, encoding: pe.Encoding, device: torch.device,
          games: int, parallel: int = 64, seed: int = 0, progress=None,
-         progress_seconds: float = 30.0, **session_args) -> tuple:
+         progress_seconds: float = 30.0,
+         **session_args) -> tuple[list[pe.GameRecord], dict[str, float]]:
     """`games` self-play games from scratch (see SelfPlay for continuous
     self-play). Returns the records, and stats."""
     runner = SelfPlay(encoding, device, parallel=parallel, seed=seed, **session_args)

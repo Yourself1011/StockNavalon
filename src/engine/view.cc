@@ -4,6 +4,7 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     PlayerView view;
     view.player = player;
     view.size = game.size;
+    view.mapType = game.mapType;
     view.turn = game.turn;
     view.currentPlayer = game.currentPlayer;
     view.winner = game.winner;

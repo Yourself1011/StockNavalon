@@ -1,5 +1,6 @@
 #include "encoding.h"
 #include "game.h"
+#include "mapgen.h"
 #include "tribeInference.h"
 #include "view.h"
 #include <algorithm>
@@ -233,7 +234,8 @@ int planeCount(const EncodingConfig &config) {
 }
 
 int globalCount(const EncodingConfig &config) {
-    return 58 + 15 * config.players + 45 * (config.players - 1);
+    return 58 + MapTypes::MAP_TYPE_SIZE + 15 * config.players +
+           45 * (config.players - 1);
 }
 
 int actionCount(const EncodingConfig &config) {
@@ -280,9 +282,9 @@ int explainedScore(const PlayerView &view, int player) {
 }
 
 void encodeState(const Game &game, int player, const EncodingConfig &config,
-                 float *planes, float *globals) {
+                 float *planes, float *globals, bool fullInformation) {
     checkFits(game, config);
-    const PlayerView view = makeView(game, player);
+    const PlayerView view = makeView(game, player, fullInformation);
     const int N = config.mapSize, P = config.players, size = view.size;
     const Layout layout{P};
     std::fill(planes, planes + layout.count() * N * N, 0.0f);
@@ -300,7 +302,9 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         if (!tile.explored) {
             continue;
         }
-        at(Layout::EXPLORED, t) = 1;
+        // with full information every tile shows, but exploring still counts
+        // for score, so this stays what the player has explored
+        at(Layout::EXPLORED, t) = fullInformation ? game.explored(player, t) : 1;
         at(Layout::TERRAIN + tile.terrain, t) = 1;
         if (tile.resource != ResourceTypes::NONE) {
             at(Layout::RESOURCE + tile.resource - ResourceTypes::FRUIT, t) = 1;
@@ -560,6 +564,9 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
                        [&](const City &c) {
                            return c.owner == player && c.pendingRewards > 0;
                        });
+    // the map type, public: what the unexplored tiles are likely to be
+    g[view.mapType] = 1;
+    g += MapTypes::MAP_TYPE_SIZE;
     if (g != globals + globalCount(config)) {
         throw std::logic_error("Global vector layout doesn't match its size");
     }
@@ -725,11 +732,134 @@ std::vector<TargetHead> targetHeads(const EncodingConfig &config) {
     int offset = 0;
     for (int k = 1; k < config.players; k++) {
         for (const auto &[name, size] : sizes) {
-            heads.push_back({name, k, offset, size});
+            bool perTile = name == "hidden_unit_here" || name == "hidden_unit_type";
+            heads.push_back({name, k, offset, size, perTile ? size / area : 0});
             offset += size;
         }
     }
+    // the map's, not an opponent's
+    heads.push_back({"unexplored", 0, offset, UnexploredHead::LAYERS * area,
+                     UnexploredHead::LAYERS});
     return heads;
+}
+
+std::vector<TargetHead> beliefOutputHeads(const EncodingConfig &config) {
+    std::vector<TargetHead> heads;
+    int offset = 0;
+    for (TargetHead head : targetHeads(config)) {
+        if (head.name == "stars") {
+            head.size = 3 * STAR_COMPONENTS;
+        }
+        head.offset = offset;
+        offset += head.size;
+        heads.push_back(head);
+    }
+    return heads;
+}
+
+int beliefOutputCount(const EncodingConfig &config) {
+    std::vector<TargetHead> heads = beliefOutputHeads(config);
+    return heads.empty() ? 0 : heads.back().offset + heads.back().size;
+}
+
+namespace {
+float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
+float softplus(float x) { return x > 20 ? x : std::log1p(std::exp(x)); }
+// a softmax of `n` logits into out
+template <typename Out>
+void softmax(const float *logits, int n, Out &out) {
+    float most = *std::max_element(logits, logits + n);
+    double sum = 0;
+    for (int i = 0; i < n; i++) {
+        out[i] = std::exp(logits[i] - most);
+        sum += out[i];
+    }
+    for (int i = 0; i < n; i++) {
+        out[i] = static_cast<float>(out[i] / sum);
+    }
+}
+} // namespace
+
+Beliefs decodeBeliefs(const PlayerView &view, const EncodingConfig &config,
+                      const float *outputs) {
+    const int N = config.mapSize, size = view.size, P = config.players;
+    const int players = static_cast<int>(view.tribes.size());
+    Beliefs beliefs;
+    beliefs.players.resize(players);
+    auto padded = [&](int tile) { return (tile / size) * N + tile % size; };
+    for (const TargetHead &head : beliefOutputHeads(config)) {
+        int q = (view.player + head.opponent) % P;
+        if (q >= players) {
+            continue;
+        }
+        OpponentBeliefs &b = beliefs.players[q];
+        const float *o = outputs + head.offset;
+        if (head.name == "tribe") {
+            softmax(o, head.size, b.tribe);
+        } else if (head.name == "techs") {
+            // Basic, left out of the head, everyone owns
+            b.tech[0] = 1;
+            for (int i = 0; i < head.size; i++) {
+                b.tech[i + 1] = sigmoid(o[i]);
+            }
+        } else if (head.name == "stars") {
+            // the mixture of negative binomials, as the loss reads it
+            std::array<float, STAR_COMPONENTS> weight;
+            softmax(o, STAR_COMPONENTS, weight);
+            b.stars.assign(STAR_COUNT_CAP + 1, 0.0f);
+            for (int c = 0; c < STAR_COMPONENTS; c++) {
+                double mean = softplus(o[STAR_COMPONENTS + c]) + 1e-3;
+                double spread = softplus(o[2 * STAR_COMPONENTS + c]) + 1e-3;
+                for (int k = 0; k <= STAR_COUNT_CAP; k++) {
+                    double logPmf = std::lgamma(k + spread) - std::lgamma(spread) -
+                                    std::lgamma(k + 1.0) +
+                                    spread * std::log(spread / (spread + mean)) +
+                                    k * std::log(mean / (spread + mean));
+                    b.stars[k] += static_cast<float>(weight[c] * std::exp(logPmf));
+                }
+            }
+        } else if (head.name == "hidden_unit_count") {
+            b.hiddenUnitCount.resize(head.size);
+            softmax(o, head.size, b.hiddenUnitCount);
+        } else if (head.name == "hidden_unit_here") {
+            b.unitHere.resize(size * size);
+            for (int t = 0; t < size * size; t++) {
+                b.unitHere[t] = sigmoid(o[padded(t)]);
+            }
+        } else if (head.name == "unexplored") {
+            using namespace UnexploredHead;
+            beliefs.terrain.resize(size * size);
+            beliefs.resource.resize(size * size);
+            beliefs.feature.resize(size * size);
+            for (int t = 0; t < size * size; t++) {
+                auto group = [&](int first, int count, auto &out) {
+                    std::array<float, LAYERS> logits;
+                    for (int l = 0; l < count; l++) {
+                        logits[l] = o[(first + l) * N * N + padded(t)];
+                    }
+                    softmax(logits.data(), count, out);
+                };
+                group(TERRAIN, TerrainTypes::TERRAIN_TYPE_SIZE, beliefs.terrain[t]);
+                group(RESOURCE, ResourceTypes::RESOURCE_TYPE_SIZE, beliefs.resource[t]);
+                group(FEATURE, static_cast<int>(TileFeature::FEATURE_SIZE), beliefs.feature[t]);
+            }
+        } else if (head.name == "hidden_unit_type") {
+            b.unitType.resize(size * size);
+            std::array<float, UnitTypes::UNIT_TYPE_SIZE> logits;
+            for (int t = 0; t < size * size; t++) {
+                for (int u = 0; u < UnitTypes::UNIT_TYPE_SIZE; u++) {
+                    logits[u] = o[u * N * N + padded(t)];
+                }
+                softmax(logits.data(), UnitTypes::UNIT_TYPE_SIZE, b.unitType[t]);
+            }
+        }
+    }
+    return beliefs;
+}
+
+int sideTargetCount(const EncodingConfig &config) {
+    return SideTargets::TERRITORY +
+           SideTargets::TERRITORY_CLASSES * config.mapSize * config.mapSize;
 }
 
 int targetCount(const EncodingConfig &config) {
@@ -738,13 +868,16 @@ int targetCount(const EncodingConfig &config) {
 }
 
 void encodeTargets(const Game &game, int player, const EncodingConfig &config,
-                   float *targets, std::uint8_t *masks) {
+                   float *targets, std::uint8_t *masks, bool fullInformation) {
     checkFits(game, config);
+    std::fill(targets, targets + targetCount(config), 0.0f);
+    std::fill(masks, masks + targetCount(config), std::uint8_t{0});
+    if (fullInformation) {
+        return;  // nothing hidden, nothing to learn
+    }
     const PlayerView view = makeView(game, player);
     const int N = config.mapSize, size = game.size, P = config.players;
     const int players = static_cast<int>(game.players.size());
-    std::fill(targets, targets + targetCount(config), 0.0f);
-    std::fill(masks, masks + targetCount(config), std::uint8_t{0});
     auto padded = [&](int tile) { return (tile / size) * N + tile % size; };
 
     for (const TargetHead &head : targetHeads(config)) {
@@ -804,6 +937,27 @@ void encodeTargets(const Game &game, int player, const EncodingConfig &config,
             }
             t[std::min(hidden, HIDDEN_UNIT_COUNT_CAP)] = 1;
             std::fill(m, m + head.size, std::uint8_t{1});
+        } else if (head.name == "unexplored") {
+            // each unexplored tile's contents, except a corner (always a
+            // lighthouse) and a city (determinization places those itself)
+            using namespace UnexploredHead;
+            for (int tile = 0; tile < size * size; tile++) {
+                const Tile &real = game.tiles[tile];
+                if (view.tiles[tile].explored || real.building == ImprovementTypes::CITY ||
+                    isCornerTile(game.tileX(tile), game.tileY(tile), size)) {
+                    continue;
+                }
+                int at = padded(tile);
+                TileFeature feature = real.building == ImprovementTypes::VILLAGE ? TileFeature::VILLAGE
+                                      : real.building == ImprovementTypes::RUIN  ? TileFeature::RUIN
+                                                                                 : TileFeature::NONE;
+                t[(TERRAIN + real.terrain) * N * N + at] = 1;
+                t[(RESOURCE + real.resource) * N * N + at] = 1;
+                t[(FEATURE + static_cast<int>(feature)) * N * N + at] = 1;
+                for (int l = 0; l < LAYERS; l++) {
+                    m[l * N * N + at] = 1;
+                }
+            }
         } else if (head.name == "exploration") {
             int explored = 0;
             for (int tile = 0; tile < size * size; tile++) {
@@ -812,5 +966,113 @@ void encodeTargets(const Game &game, int player, const EncodingConfig &config,
             t[explored] = 1;
             std::fill(m, m + head.size, std::uint8_t{1});
         }
+    }
+}
+
+// ---- symmetries ----
+
+std::pair<int, int> transformOffset(int s, int dx, int dy) {
+    if (s & 4) {
+        std::swap(dx, dy);
+    }
+    return {s & 1 ? -dx : dx, s & 2 ? -dy : dy};
+}
+
+std::pair<int, int> transformTile(int s, int x, int y, int mapSize) {
+    if (s & 4) {
+        std::swap(x, y);
+    }
+    return {s & 1 ? mapSize - 1 - x : x, s & 2 ? mapSize - 1 - y : y};
+}
+
+namespace {
+// Moves `layers` consecutive [N][N] layers' map tiles to their transformed
+// places
+template <typename T>
+void transformLayers(int s, int mapSize, int n, int layers, T *data) {
+    std::vector<T> copy(data, data + static_cast<std::size_t>(layers) * n * n);
+    for (int l = 0; l < layers; l++) {
+        const T *from = copy.data() + static_cast<std::size_t>(l) * n * n;
+        T *to = data + static_cast<std::size_t>(l) * n * n;
+        for (int y = 0; y < mapSize; y++) {
+            for (int x = 0; x < mapSize; x++) {
+                auto [tx, ty] = transformTile(s, x, y, mapSize);
+                to[ty * n + tx] = from[y * n + x];
+            }
+        }
+    }
+}
+
+// A command array [A]: each per-tile slot's layer moves like a plane, and a
+// target offset's slot becomes the transformed offset's
+template <typename T>
+void transformCommands(int s, int mapSize, int n, T *data) {
+    using namespace EncodingSlots;
+    const std::size_t area = static_cast<std::size_t>(n) * n;
+    std::vector<T> copy(data, data + PER_TILE * area);
+    std::fill(data, data + PER_TILE * area, T{});
+    for (int slot = 0; slot < PER_TILE; slot++) {
+        int to = slot;
+        if (slot < UNIT_ACTION) {
+            auto [dx, dy] = transformOffset(s, slot % OFFSET_SIDE - OFFSET_RADIUS,
+                                            slot / OFFSET_SIDE - OFFSET_RADIUS);
+            to = (dy + OFFSET_RADIUS) * OFFSET_SIDE + (dx + OFFSET_RADIUS);
+        }
+        for (int y = 0; y < n; y++) {
+            for (int x = 0; x < n; x++) {
+                // padding has no legal commands, so it stays where it is
+                auto [tx, ty] = x < mapSize && y < mapSize
+                                    ? transformTile(s, x, y, mapSize)
+                                    : std::pair<int, int>{x, y};
+                data[to * area + ty * n + tx] = copy[slot * area + y * n + x];
+            }
+        }
+    }
+}
+} // namespace
+
+void applySymmetry(int s, int mapSize, const EncodingConfig &config,
+                   float *planes, std::uint8_t *legal, float *policy,
+                   float *targets, std::uint8_t *targetMasks) {
+    if (s < 0 || s >= SYMMETRIES || mapSize > config.mapSize) {
+        throw std::invalid_argument("No such symmetry, or the map doesn't fit");
+    }
+    if (s == 0) {
+        return;
+    }
+    const int n = config.mapSize;
+    if (planes) {
+        transformLayers(s, mapSize, n, planeCount(config), planes);
+    }
+    if (legal) {
+        transformCommands(s, mapSize, n, legal);
+    }
+    if (policy) {
+        transformCommands(s, mapSize, n, policy);
+    }
+    for (const TargetHead &head : targetHeads(config)) {
+        if (head.tileLayers == 0) {
+            continue;
+        }
+        if (targets) {
+            transformLayers(s, mapSize, n, head.tileLayers, targets + head.offset);
+        }
+        if (targetMasks) {
+            transformLayers(s, mapSize, n, head.tileLayers, targetMasks + head.offset);
+        }
+    }
+}
+
+void applySymmetry(int s, int mapSize, const EncodingConfig &config, int layers,
+                   float *data) {
+    if (s != 0) {
+        transformLayers(s, mapSize, config.mapSize, layers, data);
+    }
+}
+
+void applySymmetry(int s, int mapSize, const EncodingConfig &config, int layers,
+                   std::uint8_t *data) {
+    if (s != 0) {
+        transformLayers(s, mapSize, config.mapSize, layers, data);
     }
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-// Game records for training (docs/stockNavalon.md section 7). A record is
+// Game records for training (docs/stockNavalon.md section 5). A record is
 // the game's setup and its commands, not encoded positions: the engine is
 // deterministic, so replaying the commands rebuilds every position exactly.
 // That keeps a game to a few KB, and the records outlive encoding changes:
@@ -10,6 +10,7 @@
 #include "encoding.h"
 #include "game.h"
 #include "mapgen.h"
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -22,6 +23,10 @@ struct RecordedMove {
     // the search's root visits, for the policy target; empty for a command
     // the search didn't choose (a random bot's)
     std::vector<std::pair<Command, int>> visits;
+    // the search's value of the position for the player to move (its root
+    // moves' values, weighted by visits), for the value target's search
+    // term; NaN without one (a score evaluator's search, older records)
+    float rootValue = std::nanf("");
 };
 
 struct GameRecord {
@@ -32,53 +37,112 @@ struct GameRecord {
     // and each player's score
     int winner = -1, turns = 0;
     std::vector<int> finalScores;
+    // For a game cut off by the turn limit, each seat's estimate of its
+    // chances at the end: the root value of the search at its last decision
+    // with the network, in [-1, 1]. NaN for a seat without one (a score
+    // evaluator's searches estimate the score lead, not winning), and empty
+    // for a decided game or an older record.
+    std::vector<float> finalValues;
+    // For the side targets (docs/encoding.md section 8.5), filled in when a
+    // game ends; empty in older records:
+    // the owner of each tile when the game ended, -1 for nobody (size x size)
+    std::vector<int> finalTerritory;
+    // each player's latest published score at each turn, turns x players
+    std::vector<int> turnScores;
+    // whether the game was played with fog; without it, its positions are
+    // encoded with full information (SelfPlayConfig::fogShare)
+    bool fog = true;
+    // whether peace treaties were allowed (GameSettings::peaceTreaties), so
+    // a replay has the same legal commands
+    bool peaceTreaties = true;
+    // each player's cities when the game ended, for the early city term of
+    // the value target; empty in older records
+    std::vector<int> finalCities;
     // in a match, the side that played seat 0 (the other side played seat
     // 1); not saved with the record
     int seatZeroSide = 0;
+    // ended by the stalemate cutoff (SelfPlayConfig::stallTurns) rather than
+    // the turn limit; not saved with the record
+    bool stalled = false;
 
     // the game before any command
     Game start() const;
     // +1 or -1 for a win or loss, 0 for a game cut off by the turn limit
     float result(int player) const;
+    // The value target: the result if the game was decided; if it was cut
+    // off, the player's final value, as a truncated game rather than a draw
+    // (or 0 without one)
+    float value(int player) const;
     // the final score lead, squashed into [-1, 1]
     float scoreValue(int player, double scale) const;
+    // the final city lead: (the player's cities - the best opponent's) /
+    // (their sum), in [-1, 1]; 0 without the counts
+    float cityValue(int player) const;
 };
+
+// Keeps the search's visits (the policy target, and what makes a move a
+// training position) on a random `share` of each record's moves, and drops
+// them on the rest: a match's games, where every move had a full search, at
+// self-play's density (SelfPlayConfig::fullShare)
+void thinPolicyTargets(std::vector<GameRecord> &records, double share,
+                       std::uint64_t seed);
 
 // Records as text, one game after another; appends to the file, or replaces it
 void saveRecords(const std::vector<GameRecord> &records, const std::string &path,
                  bool append = true);
 std::vector<GameRecord> loadRecords(const std::string &path);
 
-// The value target (docs/stockNavalon.md section 7): mostly the result, with
-// a small score term,
-//   (1 - scoreWeight) x the result + scoreWeight x the score value,
-// where a game cut off by the turn limit has a result of 0, a draw. Kept
-// small, the score term breaks ties without making a lead at the limit look
-// nearly as good as a win, so winning stays worth playing for.
+// How the value target and its weight are made (docs/stockNavalon.md section
+// 6). The target is about winning, GameRecord::value, blended with the final
+// city lead only while `cityWeight` is above 0 (early in a run, while true
+// results are scarce; cities are what a capture takes):
+//   (1 - cityWeight) x value + cityWeight x GameRecord::cityValue.
+// A position of a game cut off by the turn limit or a stalemate weighs
+// `cutOffWeight`, a decided game's 1: cut-off targets carry little
+// information but far outnumber real results.
 struct ValueTarget {
-    double scoreWeight = 0.1;
-    double scale = 500;
+    double cityWeight = 0;
+    // the share of the target from the position's own search value
+    // (RecordedMove::rootValue), where there is one: (1 - searchWeight) x
+    // the result + searchWeight x the search value, before the city term
+    double searchWeight = 0;
+    double cutOffWeight = 1;
 };
 
 // Training examples: positions picked as (record, move) pairs, each the
 // position just before that move, for the player to move there. Arrays as
 // in docs/encoding.md: planes [B][C][N][N], globals [B][G], legal [B][A],
-// policy [B][A] (the visits, normalized), value and its weight [B], and the
+// policy [B][A] (the visits, normalized), the value (GameRecord::value; about
+// winning only, never the score: docs/stockNavalon.md section 6) and its
+// weight [B], and the
 // belief targets and masks [B][T].
 struct ExampleArrays {
     float *planes, *globals;
     std::uint8_t *legal;
     float *policy, *value, *valueWeight, *targets;
     std::uint8_t *targetMasks;
+    // the side targets and their masks [B][S]; skipped if null
+    float *sideTargets = nullptr;
+    std::uint8_t *sideMasks = nullptr;
 };
+
+// The side targets for `player` at game turn `turn` of a recorded game
+// ([sideTargetCount] each): the score leads from its score table and final
+// scores, the territory from its final map. Masked where the record has none.
+void encodeSideTargets(const GameRecord &record, int turn, int player,
+                       const EncodingConfig &config, float *targets,
+                       std::uint8_t *masks);
 // Each position's game is replayed to it, so the games are spread over
-// `threads` threads.
+// `threads` threads. With `symmetries` (one per position), each example is
+// seen through that symmetry of the map (applySymmetry).
 void encodeExamples(const std::vector<GameRecord> &records,
                     const std::vector<std::pair<int, int>> &positions,
-                    const EncodingConfig &config, const ValueTarget &value,
-                    const ExampleArrays &out, int threads = 1);
+                    const EncodingConfig &config, const ExampleArrays &out,
+                    int threads = 1,
+                    const std::vector<int> &symmetries = {},
+                    const ValueTarget &value = {});
 
-// The recent games training draws from (docs/stockNavalon.md section 7.1):
+// The recent games training draws from (docs/stockNavalon.md section 5):
 // positions are sampled across all of them, so a minibatch isn't dominated
 // by the neighbouring positions of one game, and the oldest games drop out
 // as new ones come in.
@@ -109,14 +173,16 @@ class ReplayBuffer {
     std::vector<std::pair<int, int>> sample(int count, std::uint64_t seed,
                                             int perGame = 1) const;
     void encode(const std::vector<std::pair<int, int>> &positions,
-                const EncodingConfig &config, const ValueTarget &value,
-                const ExampleArrays &out, int threads = 1) const;
+                const EncodingConfig &config, const ExampleArrays &out,
+                int threads = 1, const ValueTarget &value = {}) const;
     // writes exactly the buffer's games to `path`, replacing it
     void save(const std::string &path) const;
-    // sample() and encode() together, with no add() in between
+    // sample() and encode() together, with no add() in between; with
+    // `augment`, each example through a random symmetry of the map
     void encodeSample(int count, std::uint64_t seed, int perGame,
-                      const EncodingConfig &config, const ValueTarget &value,
-                      const ExampleArrays &out, int threads = 1) const;
+                      const EncodingConfig &config, const ExampleArrays &out,
+                      int threads = 1, bool augment = false,
+                      const ValueTarget &value = {}) const;
 
   private:
     std::vector<std::pair<int, int>> sampleUnlocked(int count, std::uint64_t seed,

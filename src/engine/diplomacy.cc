@@ -37,7 +37,9 @@ void Game::addDiplomacyCommands(std::vector<Command> &out) const {
             continue;
         }
 
-        if (atPeace(currentPlayer, other)) {
+        if (!settings.peaceTreaties) {
+            // no treaties to make or break
+        } else if (atPeace(currentPlayer, other)) {
             out.push_back({BREAKPEACE, -1, -1, other});
         } else if (me.peaceRequests & bit(other)) {
             // arg: the proposer times 2, plus 1 to accept
