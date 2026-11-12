@@ -1,6 +1,7 @@
 """Play against a trained network in the terminal: the engine's CLI (README
 "Run"), with the network's search in the seats given with --bot. It searches
-on determinized games, so it only knows what its own player could.
+on determinized games, so it only knows what its own player could. Without
+--seed, each game gets a random one, printed so it can be played again.
 
     python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 
 import torch
@@ -69,6 +71,11 @@ def main():
     parser.add_argument("--channels", type=int, default=64)
     parser.add_argument("--blocks", type=int, default=6)
     args, rest = parser.parse_known_args()
+    # a new game each time unless a seed is given; printed, to play it again
+    if "--seed" not in rest:
+        seed = random.randrange(2**32)
+        rest += ["--seed", str(seed)]
+        print(f"seed {seed}", file=sys.stderr)
     if not args.peace_treaties:
         rest.append("--no-treaties")
 

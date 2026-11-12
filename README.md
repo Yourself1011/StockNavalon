@@ -86,7 +86,7 @@ The Python tests run against the module just built, not the pip-installed one. T
   .venv/bin/python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
   ```
 
-  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
+  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). Without `--seed` it picks a random one and prints it, so a game can be replayed. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
 
 ### CLI commands
 
