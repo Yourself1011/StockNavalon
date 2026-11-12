@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <set>
 #include <tuple>
 
@@ -70,6 +72,40 @@ TEST_CASE("recorded games replay exactly, and survive a save and load") {
     }
     CHECK(loaded[0].finalValues[0] == doctest::Approx(0.25));
     CHECK(std::isnan(loaded[0].finalValues[1]));
+    // games recorded now keep the rule that diplomacy introduces the sender
+    for (const GameRecord &r : loaded) {
+        CHECK(r.diplomacyMeets);
+    }
+}
+
+TEST_CASE("a record saved before diplomacy introduced the sender replays without it") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.maxTurns = 2;
+    std::vector<GameRecord> records = playGames(config, 1, 4, 1);
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_old_records_test.txt";
+    saveRecords(records, path.string(), false);
+    // drop the header's last token, as files written before it were
+    std::string text;
+    {
+        std::ifstream in(path);
+        std::stringstream all;
+        all << in.rdbuf();
+        text = all.str();
+    }
+    std::size_t end = text.find('\n');
+    REQUIRE(text.compare(end - 4, 4, " 1 1") == 0);
+    text.erase(end - 2, 2);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << text;
+    }
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK_FALSE(loaded[0].diplomacyMeets);
+    CHECK_FALSE(loaded[0].start().settings.diplomacyMeets);
+    CHECK(sameMoves(loaded[0], records[0]));
 }
 
 TEST_CASE("training examples from records") {
@@ -738,5 +774,18 @@ TEST_CASE("self-play with Gumbel search records the improved policy as the targe
             sum += policy[i * a + s];
         }
         CHECK(sum == doctest::Approx(1).epsilon(0.01));
+    }
+}
+
+TEST_CASE("a record replays legally only under the rules it was played with") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.maxTurns = 3;
+    std::vector<GameRecord> records = playGames(config, 2, 6, 1);
+    for (GameRecord &r : records) {
+        CHECK(r.replaysLegally());
+        // a command that was never legal
+        r.moves.insert(r.moves.begin(), {.player = 0, .command = {CommandTypes::CAPTURE, 0}});
+        CHECK_FALSE(r.replaysLegally());
     }
 }

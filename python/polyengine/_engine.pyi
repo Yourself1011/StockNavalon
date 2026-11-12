@@ -913,6 +913,20 @@ class GameRecord:
         """The game's random seed: identifies it among the others."""
 
     @property
+    def diplomacy_meets(self) -> bool:
+        """
+        Whether an embassy or peace offer introduced the sender (GameSettings::diplomacyMeets); false for older records.
+        """
+
+    @diplomacy_meets.setter
+    def diplomacy_meets(self, arg: bool, /) -> None: ...
+
+    def replays_legally(self) -> bool:
+        """
+        Whether every command is legal when replayed, and no player's stars go below zero.
+        """
+
+    @property
     def winner(self) -> int:
         """-1 if the turn limit came first"""
 

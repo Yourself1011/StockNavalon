@@ -243,3 +243,34 @@ TEST_CASE("without peace treaties, none can be proposed, answered or broken") {
     CHECK(treaties() == 0);
     CHECK(hasCommand(game, {ESTABLISHEMBASSY, -1, -1, 1}));
 }
+
+TEST_CASE("an embassy or a peace offer reveals the sender to the other tribe") {
+    for (CommandType type : {ESTABLISHEMBASSY, PEACETREATY}) {
+        CAPTURE(type);
+        Game game = makeFogGame(bigMap());
+        Player &sender = game.players[0];
+        sender.techs.set(TechTypes::DIPLOMACY);
+        sender.techs.set(TechTypes::STRATEGY);
+        sender.stars = 10;
+        // the sender has met them, but not the other way round
+        sender.met |= std::uint32_t{1} << 1;
+        REQUIRE_FALSE(game.players[1].hasMet(0));
+        int stars = game.players[1].stars;
+        game.apply({type, -1, -1, 1});
+        CHECK(game.players[1].hasMet(0));
+        // with the meeting stars
+        CHECK(game.players[1].stars == stars + Rules::meetingBonus(game.score(0)));
+        // and once only
+        game.players[1].stars = stars;
+        game.meet(1, 0);
+        CHECK(game.players[1].stars == stars);
+    }
+    // replaying a game recorded before the rule: no meeting
+    Game game = makeFogGame(bigMap());
+    game.settings.diplomacyMeets = false;
+    game.players[0].techs.set(TechTypes::DIPLOMACY);
+    game.players[0].stars = 10;
+    game.players[0].met |= std::uint32_t{1} << 1;
+    game.apply({ESTABLISHEMBASSY, -1, -1, 1});
+    CHECK_FALSE(game.players[1].hasMet(0));
+}

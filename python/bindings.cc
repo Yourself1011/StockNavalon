@@ -612,6 +612,12 @@ void bindSearch(nb::module_ &m) {
         .def_prop_ro("tribes", [](const GameRecord &r) { return r.map.tribes; })
         .def_ro("game_seed", &GameRecord::gameSeed,
                 "The game's random seed: identifies it among the others.")
+        .def_rw("diplomacy_meets", &GameRecord::diplomacyMeets,
+                "Whether an embassy or peace offer introduced the sender "
+                "(GameSettings::diplomacyMeets); false for older records.")
+        .def("replays_legally", &GameRecord::replaysLegally,
+             "Whether every command is legal when replayed, and no player's "
+             "stars go below zero.")
         .def_ro("winner", &GameRecord::winner, "-1 if the turn limit came first")
         .def_ro("turns", &GameRecord::turns)
         .def_ro("final_scores", &GameRecord::finalScores)

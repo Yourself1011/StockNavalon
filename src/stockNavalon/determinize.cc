@@ -782,8 +782,11 @@ std::optional<Game> sample(const Game &real, int player,
                                  (g.tiles[t].explored & bit);
     }
 
-    // whether they've met the player: seen one of their cities or units
-    bool met = false;
+    // whether they've met the player: seen one of their cities or units, or
+    // been sent the player's embassy or peace offer, which the player knows
+    const std::uint32_t playerBit = std::uint32_t{1} << player;
+    bool met = g.players[player].hasEmbassyWith(q) || (them.peaceRequests & playerBit) ||
+               (them.peace & playerBit);
     for (int t = 0; t < tiles; t++) {
         if (!(g.tiles[t].explored & bit)) {
             continue;
@@ -793,8 +796,7 @@ std::optional<Game> sample(const Game &real, int player,
         int c = g.cities.empty() ? -1 : g.cityAt(t);
         met |= c >= 0 && g.cities[c].owner == player;
     }
-    them.met = (them.met & ~(std::uint32_t{1} << player)) |
-               (met ? std::uint32_t{1} << player : 0);
+    them.met = (them.met & ~playerBit) | (met ? playerBit : 0);
 
     // where their units and cities first stood is theirs to know
     for (int t = 0; t < tiles; t++) {

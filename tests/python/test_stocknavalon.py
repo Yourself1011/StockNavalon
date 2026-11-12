@@ -243,3 +243,26 @@ def test_ratings_put_networks_on_one_scale():
     # 3 to 1 is about 190 Elo; the virtual draw pulls it in a little
     assert 150 < ratings["b"] - ratings["a"] < 200
     assert abs((ratings["c"] - ratings["b"]) - (ratings["b"] - ratings["a"])) < 15
+
+
+def test_a_step_with_a_loss_that_is_not_finite_is_skipped(buffer, monkeypatch):
+    import stocknavalon.train as train
+    enc = pe.Encoding()
+    model = sn.Network(enc, channels=16, blocks=2)
+    trainer = train.Trainer(model, enc, torch.device("cpu"))
+    # the trained weights (the forward pass still updates BatchNorm's statistics)
+    before = {k: v.clone() for k, v in model.named_parameters()}
+    real = train.losses
+
+    def broken(*args, **kwargs):
+        result = real(*args, **kwargs)
+        result["total"] = result["total"] * float("inf")
+        return result
+
+    monkeypatch.setattr(train, "losses", broken)
+    assert trainer.step(buffer, 8) == {}
+    assert trainer.skipped == 1
+    assert all(torch.equal(before[k], v) for k, v in model.named_parameters())
+    monkeypatch.setattr(train, "losses", real)
+    assert trainer.step(buffer, 8)
+    assert all(torch.isfinite(v).all() for v in model.state_dict().values() if v.is_floating_point())

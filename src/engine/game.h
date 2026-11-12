@@ -37,6 +37,11 @@ struct GameSettings {
     // 15). Off only for training a bot before it can use them; the rules are
     // otherwise the same, and embassies stay.
     bool peaceTreaties = true;
+    // An embassy or a peace offer introduces the sender to the other tribe,
+    // as in the real game. Off only to replay games recorded before the
+    // engine had this rule, which would otherwise replay into states that
+    // never happened (the meeting stars come at a different time).
+    bool diplomacyMeets = true;
 };
 
 // The whole game state. Everything refers to everything else by index, so a
@@ -234,6 +239,9 @@ class Game {
     int templeTurnsToLevelUp(int tile) const;
     // meets every tribe the player can now see; called after every command
     void checkMeetings();
+    // `player` meets `other`, with the meeting stars, unless they already
+    // have (or either is gone)
+    void meet(int player, int other);
 
     // ---- tasks and monuments (tasks.cc) ----
     // whether the task's goal holds right now (GAME.md section 14)

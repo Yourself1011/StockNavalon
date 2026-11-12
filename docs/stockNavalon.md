@@ -74,6 +74,7 @@ The search can't run on the real `Game`: a scout's move would reveal real tiles 
 - **The replay buffer** (`ReplayBuffer`, C++, thread-safe) holds recent games up to a number of positions, samples positions across them (`per_game` from each sampled game, which is replayed once for them all), and encodes minibatches in one locked step.
 - **`SelfPlaySession`** (`selfPlay.h`) plays many games at once and hands every waiting position across them to the caller in one batch: `pending_inputs`, then `pending_slots` (the moves' slots, so only their logits leave the GPU), then `submit_move_logits`. A finished game's slot starts a new one at once. Each side can be the network, the score evaluator or the random bot, and games can come in seat-swapped pairs (for matches).
 - **Peace treaties off** (`peace_treaties`, the game setting `GameSettings::peaceTreaties`; `--peace-treaties` to allow them): a bot that can't use treaties yet proposes, accepts and breaks them every few turns, and each break freezes its army and disbands its units inside the other's borders. The rules are otherwise the same, embassies included; records keep the setting so replays match.
+- **Rules per game:** records keep the settings that change how commands play out, so replays rebuild the positions as they were played: peace treaties (above) and whether diplomacy introduces the sender (`GameSettings::diplomacyMeets`; records from before the rule load without it). `GameRecord::replaysLegally` checks a record against its rules.
 - **Fog per game:** a `fog_share` of games are played with fog, the rest with full information (section 4). The record keeps which (`fog`), and training encodes its positions the same way.
 - **Side-target data:** when a game ends, its final territory and each player's published score at every turn go into the record.
 - **Final values:** for a game the turn limit cuts off, each seat's last root value from a network search is kept in the record, as the value target in place of a draw (section 6).
@@ -115,6 +116,8 @@ The search can't run on the real `Game`: a scout's move would reveal real tiles 
 - **Then a ramp** by training steps, from no fog to all fog over `--fog-ramp-steps` (25,000), started once and never reversed. It mustn't follow a live measure of play, or it could loop (more fog, worse play, less fog), as the old score weight did.
 - **A brake:** `--fog-brake` (3) failed gates in a row pause the ramp until a gate passes. Pausing can't oscillate the way reversing could.
 - The schedule's state is in the checkpoint; the status line shows the current share, and the log when the ramp starts, pauses and resumes.
+
+**Guards:** a training step whose loss isn't finite is skipped and counted (`skipped` in the status line), since one would turn every weight into NaN. A checkpoint whose weights aren't finite is resumed from `best.pt` with a fresh optimizer ("recovered from the best network").
 
 **Files** in the run directory: `records.txt` and `holdout.txt` (rewritten from the buffers at every checkpoint, so they stay the buffers' size), `checkpoint.pt` (network, its average, optimizer, step), `best.pt` (the network self-play plays), `checkpoints/`, `heldout.npz`, and `log.txt` (one JSON object a line; the terminal shows a readable version).
 

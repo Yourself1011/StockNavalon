@@ -90,21 +90,22 @@ int Game::effectsInLastChange(int by, int to) const {
     return scoreEffects[count * count + by * count + to];
 }
 
+void Game::meet(int p, int other) {
+    Player &player = players[p];
+    if (other < 0 || other == p || player.hasMet(other) || !player.alive ||
+        !players[other].alive) {
+        return;
+    }
+    player.met |= std::uint32_t{1} << other;
+    player.stars += Rules::meetingBonus(score(other));
+}
+
 void Game::checkMeetings() {
     int count = static_cast<int>(players.size());
     for (int p = 0; p < count; p++) {
-        Player &player = players[p];
-        if (!player.alive) {
+        if (!players[p].alive) {
             continue;
         }
-        auto meet = [&](int other) {
-            if (other < 0 || other == p || player.hasMet(other) ||
-                !players[other].alive) {
-                return;
-            }
-            player.met |= std::uint32_t{1} << other;
-            player.stars += Rules::meetingBonus(score(other));
-        };
         // meeting a tribe means seeing one of its units or one of its cities;
         // a border tile alone doesn't count
         for (int t = 0; t < size * size; t++) {
@@ -113,11 +114,11 @@ void Game::checkMeetings() {
             }
             int city = cityAt(t);
             if (city >= 0) {
-                meet(cities[city].owner);
+                meet(p, cities[city].owner);
             }
             const Unit *unit = unitAt(t);
             if (unit && canSee(p, *unit)) {
-                meet(unit->owner);
+                meet(p, unit->owner);
             }
         }
     }

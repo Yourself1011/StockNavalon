@@ -236,6 +236,8 @@ class Trainer:
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr,
                                            weight_decay=weight_decay)
         self.steps = 0
+        # steps skipped for a loss that wasn't finite
+        self.skipped = 0
         # steps since the optimizer started fresh; None once its state is
         # loaded from a checkpoint (no warm-up then)
         self.fresh_steps: int | None = 0
@@ -262,6 +264,8 @@ class Trainer:
 
     def step(self, buffer: pe.ReplayBuffer, batch_size: int,
              city_weight: float = 0.0) -> dict[str, float]:
+        """One training step; its losses, or {} if it was skipped for a loss
+        that wasn't finite (counted in `skipped`)."""
         # the city weight changes slowly: a batch made a step ago will do
         city_weight = round(city_weight, 3)
         key = (id(buffer), batch_size, city_weight)
@@ -281,12 +285,19 @@ class Trainer:
             self.model.train()
             out = self.model(batch["planes"], batch["globals"])
             result = losses(self.model, out, batch, self.weights)
-            self.optimizer.zero_grad(set_to_none=True)
-            result["total"].backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            self.optimizer.step()
-            self._update_ema()
             values = {name: value.item() for name, value in result.items()}
+            # A loss that isn't finite (a bad target) would turn every
+            # weight into NaN in one step: skip the batch instead
+            finite = math.isfinite(values["total"])
+            if finite:
+                self.optimizer.zero_grad(set_to_none=True)
+                result["total"].backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                self.optimizer.step()
+                self._update_ema()
+            else:
+                self.skipped += 1
+                values = {}
         self.steps += 1
         if self.fresh_steps is not None:
             self.fresh_steps += 1

@@ -363,3 +363,20 @@ TEST_CASE("unexplored tiles sampled from beliefs follow the map generator's rule
     }
     CHECK(checked > 0);
 }
+
+TEST_CASE("a sample's opponent has met the player once the player sent them an embassy") {
+    Game real = randomGame(3, 0);
+    int player = real.currentPlayer, q = 1 - player;
+    real.players[player].met |= std::uint32_t{1} << q;
+    Beliefs beliefs = priorBeliefs(makeView(real, player));
+    // at the start, they can't have seen the player
+    std::optional<Game> before =
+        determinize(real, player, beliefs, 1, Detail::TILES_AND_UNITS, 50);
+    REQUIRE(before);
+    CHECK_FALSE(before->players[q].hasMet(player));
+    real.players[player].embassies |= std::uint32_t{1} << q;
+    std::optional<Game> after =
+        determinize(real, player, beliefs, 1, Detail::TILES_AND_UNITS, 50);
+    REQUIRE(after);
+    CHECK(after->players[q].hasMet(player));
+}

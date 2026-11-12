@@ -55,6 +55,8 @@ class Window:
     seconds_training: float = 0.0
     waiting: float = 0.0
     losses: dict[str, float] = dataclasses.field(default_factory=dict)
+    # steps skipped for a loss that wasn't finite
+    skipped: int = 0
 
 
 # the size of the fixed held-out set, and the held-out games it's drawn
@@ -102,6 +104,11 @@ _COLOUR = sys.stdout.isatty()
 
 # what heldout.npz keeps beside the examples
 HELDOUT_EXTRAS = ("games", "version", "game_seeds", "moves")
+
+
+def finite_weights(weights: dict) -> bool:
+    """Whether every floating-point tensor in saved weights is finite."""
+    return all(torch.isfinite(t).all() for t in weights.values() if t.is_floating_point())
 
 
 def without_positions(saved: dict) -> dict:
@@ -165,7 +172,8 @@ def pretty(e: dict[str, Any]) -> str:
             (f"train waiting for {_num(e['filling'][1])} positions "
              f"({_num(e['filling'][0])} so far)" if e.get("filling") else
              f"train {_num(e['steps'])} steps ({_num(e['steps_per_minute'])}/min, "
-             f"{_num(e['ms_per_step'])} ms, idle {_num(100 * e['training_waited'])}%)"),
+             f"{_num(e['ms_per_step'])} ms, idle {_num(100 * e['training_waited'])}%)"
+             + (_style(f", {e['skipped_steps']} skipped", "31") if e.get("skipped_steps") else "")),
             f"play {_num(e['games_per_minute'], 1)} games/min, "
             f"{_num(e['positions_per_second'])} pos/s" + (
                 " (CPU {cpu:.0%}, GPU {gpu:.0%}, lock {lock:.0%})".format(**e["selfplay_time"])
@@ -392,11 +400,21 @@ def main():
     initialized = False
     if os.path.exists(checkpoint_path):
         state = torch.load(checkpoint_path, map_location=device)
+        broken = not (finite_weights(state["model"]) and finite_weights(state.get("ema", {})))
+        if broken:
+            # weights gone to NaN (a bad batch, before steps were guarded):
+            # carry on from the best network, with a fresh optimizer
+            best = torch.load(os.path.join(args.dir, "best.pt"), map_location=device)
+            state = {**state, "model": best["model"], "ema": best["model"]}
+            log(args.dir, {"event": "recovered from the best network",
+                           "steps": state["steps"], "best": best["steps"]})
         fresh = load_weights(model, state["model"])
+        if broken:
+            fresh = fresh or ["(recovered)"]
         if not fresh:
             trainer.optimizer.load_state_dict(state["optimizer"])
             trainer.fresh_steps = None  # its state goes on: no warm-up
-        else:
+        elif not broken:
             # new heads or wider inputs: the optimizer's state no longer
             # fits; it starts over
             log(args.dir, {"event": "network grown", "fresh": sorted({k.split('.')[0] for k in fresh})})
@@ -586,7 +604,9 @@ def main():
                 window.waiting += time.perf_counter() - now
             else:
                 trainer.set_learning_rate(learning_rate())
-                for name, value in trainer.step(buffer, args.batch, city_weight()).items():
+                values = trainer.step(buffer, args.batch, city_weight())
+                window.skipped += not values
+                for name, value in values.items():
                     window.losses[name] = window.losses.get(name, 0.0) + value
                 samples += args.batch
                 window.steps += 1
@@ -667,6 +687,7 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
            seconds: float, warmup: int, city_weight: float) -> dict[str, Any]:
     """One log line about the last `seconds`."""
     steps = window.steps
+    trained = steps - window.skipped
     played = player.take_window()
     added = buffer.added - added_at_start
     return {
@@ -675,7 +696,10 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
         "steps_per_minute": round(60 * steps / seconds, 1),
         "ms_per_step": round(1000 * window.seconds_training / steps) if steps else None,
         "training_waited": round(window.waiting / seconds, 2),
-        "losses": {k: round(v / steps, 4) for k, v in window.losses.items()} if steps else None,
+        "losses": ({k: round(v / trained, 4) for k, v in window.losses.items()}
+                   if trained else None),
+        # steps whose loss wasn't finite, so they were skipped (a bad target)
+        "skipped_steps": window.skipped or None,
         "games_per_minute": round(60 * played["games"] / seconds, 1),
         "positions_per_second": round(played["evaluated"] / seconds),
         # where self-play's time went: the CPU, waiting for the GPU lock, the GPU

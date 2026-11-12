@@ -64,6 +64,10 @@ void Game::applyDiplomacy(const Command &command) {
     switch (command.type) {
     case PEACETREATY:
         players[command.arg].peaceRequests |= bit(currentPlayer);
+        // an offer reveals the sender
+        if (settings.diplomacyMeets) {
+            meet(command.arg, currentPlayer);
+        }
         break;
     case PEACEREQUESTRESPONSE: {
         int proposer = command.arg / 2;
@@ -100,8 +104,12 @@ void Game::applyDiplomacy(const Command &command) {
         int host = command.arg;
         me.stars -= Rules::EMBASSY_COST;
         me.embassies |= bit(host);
-        // the builder sees the 3x3 around the host's capital
+        // the builder sees the 3x3 around the host's capital, and the host
+        // meets the builder
         revealAround(currentPlayer, cities[players[host].capital].tile, 1);
+        if (settings.diplomacyMeets) {
+            meet(host, currentPlayer);
+        }
         break;
     }
     case DESTROYEMBASSY:

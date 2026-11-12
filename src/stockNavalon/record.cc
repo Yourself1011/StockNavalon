@@ -11,7 +11,24 @@
 
 Game GameRecord::start() const {
     return Game(generateMap(map), map.tribes,
-                {.seed = gameSeed, .peaceTreaties = peaceTreaties});
+                {.seed = gameSeed, .peaceTreaties = peaceTreaties,
+                 .diplomacyMeets = diplomacyMeets});
+}
+
+bool GameRecord::replaysLegally() const {
+    Game game = start();
+    for (const RecordedMove &m : moves) {
+        if (game.gameOver() || game.currentPlayer != m.player || !game.isLegal(m.command)) {
+            return false;
+        }
+        game.applyUnchecked(m.command);
+        for (const Player &p : game.players) {
+            if (p.stars < 0) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 float GameRecord::cityValue(int player) const {
@@ -67,10 +84,12 @@ Command readCommand(std::istream &in) {
 //   game <size> <map type> <map seed> <candidates> <tribes> <tribe>...
 //        <game seed> <winner> <turns> <scores> <score>...
 //        [<values> <value>... <tiles> <owner>... <scores> <score>... <fog>
-//         <peace treaties> <cities> <city count>...]
+//         <peace treaties> <cities> <city count>... <root values>
+//         <diplomacy meets>]
 //        (final values, final territory, the score table, whether it was
-//        played with fog and peace treaties, and the final city counts;
-//        absent in older files)
+//        played with fog and peace treaties, the final city counts, whether
+//        move lines end with a root value, and whether diplomacy introduced
+//        the sender; absent in older files, which replay without it)
 //   <moves>
 //   <player> <command> <visits> (<command> <count>)...   one line per move
 // where a command is <type> <from> <to> <arg>. The map is regenerated from
@@ -109,7 +128,7 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
             out << ' ' << cities;
         }
         // each move line ends with its root value
-        out << " 1";
+        out << " 1 " << r.diplomacyMeets;
         out << '\n' << r.moves.size() << '\n';
         for (const RecordedMove &m : r.moves) {
             out << m.player;
@@ -195,6 +214,11 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         if (int flag; header >> flag) {
             rootValues = flag != 0;
         }
+        // recorded before the rule: replayed without it
+        r.diplomacyMeets = false;
+        if (int meets; header >> meets) {
+            r.diplomacyMeets = meets != 0;
+        }
         if (!header && !header.eof()) {
             throw std::runtime_error("Bad record header in " + path);
         }
@@ -276,9 +300,14 @@ void encodeExamples(const std::vector<GameRecord> &records,
             float *policy = out.policy + i * actions;
             std::fill(policy, policy + actions, 0.0f);
             double total = 0;
+            const std::uint8_t *legal = out.legal + i * actions;
             for (const auto &[command, count] : m.visits) {
                 int slot = encodeCommand(game, command, config);
-                if (slot >= 0) {
+                // A move the search found legal in a determinized game can
+                // be illegal in the real one (a hidden unit in the way).
+                // Gumbel search's target weighs every root move, so such
+                // moves would put weight where the policy can't go.
+                if (slot >= 0 && legal[slot]) {
                     policy[slot] += static_cast<float>(count);
                     total += count;
                 }

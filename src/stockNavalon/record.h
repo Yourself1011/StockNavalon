@@ -60,6 +60,9 @@ struct GameRecord {
     // whether peace treaties were allowed (GameSettings::peaceTreaties), so
     // a replay has the same legal commands
     bool peaceTreaties = true;
+    // whether diplomacy introduced the sender (GameSettings::diplomacyMeets):
+    // false for games recorded before the engine had the rule
+    bool diplomacyMeets = true;
     // each player's cities when the game ended, for the early city term of
     // the value target; empty in older records
     std::vector<int> finalCities;
@@ -72,6 +75,9 @@ struct GameRecord {
 
     // the game before any command
     Game start() const;
+    // whether every command is legal when replayed, and no player's stars go
+    // below zero: a check that the record replays as it was played
+    bool replaysLegally() const;
     // +1 or -1 for a win or loss, 0 for a game cut off by the turn limit
     float result(int player) const;
     // The value target: the result if the game was decided; if it was cut
