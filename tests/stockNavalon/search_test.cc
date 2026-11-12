@@ -334,3 +334,18 @@ TEST_CASE("Gumbel search continues a reused tree within the budget") {
     CHECK(total == config.simulations - 1);
     CHECK(second.chosen >= 0);
 }
+
+TEST_CASE("a search without trees can't be reused") {
+    // no determinized game: what a failed determinization leaves
+    Game game = emptyGame();
+    ScoreEvaluator evaluator;
+    for (bool gumbel : {false, true}) {
+        CAPTURE(gumbel);
+        SearchConfig config{.simulations = 16, .samples = 0, .gumbel = gumbel};
+        BatchedSearch search({&game}, {priorBeliefs(makeView(game, 0))}, config, 1);
+        run(search, evaluator);
+        CHECK(search.treeCount() == 0);
+        CHECK(search.result(0).moves.empty());
+        CHECK_FALSE(search.reuse({CommandTypes::ENDTURN}, config));
+    }
+}

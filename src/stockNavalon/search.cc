@@ -374,7 +374,9 @@ void BatchedSearch::addRootNoise(Tree &tree) {
 }
 
 bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
-    if (games != 1 || !done()) {
+    // no trees (no determinized game matched what the player knows): nothing
+    // to continue
+    if (games != 1 || !done() || trees.empty()) {
         return false;
     }
     // every tree must have the child, evaluated, with the same player to move
