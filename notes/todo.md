@@ -10,7 +10,7 @@ What should work well on this machine first, so more compute is spent well.
   - [ ] the value's overconfidence after the city term faded: the search-value blend, built, to evaluate (Experiments)
   - [ ] the fog schedule seen through to 100% with gates passing again
 - [ ] **Efficiency per evaluation:**
-  - [ ] Gumbel search at the root ([`design.md`](design.md), "Gumbel search, for small budgets")
+  - [ ] Gumbel search at the root ([`design.md`](design.md), "Gumbel search, for small budgets"): built (`--gumbel`, off); compare with PUCT at equal simulations (`searches.py`), then on in training if it wins
   - [x] half-precision inference: float16 by default (network 2× faster on MPS, self-play +10%: the CPU side now dominates)
   - [x] the CPU side of self-play: bigger batches (`--parallel` 128), and each session's games advanced and encoded on a persistent thread pool (`--session-threads`, 4: about 2× the C++ side's throughput)
   - [ ] check the thread pool's gain on a real run's games per minute (the stand-in measure only times the C++ side); the status line now splits self-play's time between CPU, GPU and the GPU lock

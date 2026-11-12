@@ -17,11 +17,16 @@
 #include <utility>
 #include <vector>
 
+// Gumbel search's improved policy, stored as whole weights
+constexpr int POLICY_WEIGHT_SCALE = 10000;
+
 struct RecordedMove {
     int player;
     Command command;
-    // the search's root visits, for the policy target; empty for a command
-    // the search didn't choose (a random bot's)
+    // the policy target's weights per root move, normalized when encoded:
+    // the search's root visits, or with Gumbel search the improved policy in
+    // units of 1 / POLICY_WEIGHT_SCALE; empty for a command the search didn't
+    // choose (a random bot's)
     std::vector<std::pair<Command, int>> visits;
     // the search's value of the position for the player to move (its root
     // moves' values, weighted by visits), for the value target's search

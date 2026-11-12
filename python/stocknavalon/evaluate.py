@@ -59,14 +59,16 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           simulations: int = 50, samples: int = 2, max_turns: int = 50,
           stall_turns: int = 0, fog_share: float = 1.0,
           network_beliefs: bool = False, peace_treaties: bool = True,
-          threads: int = 1, settled=None,
+          threads: int = 1, gumbel: tuple[bool, bool] = (False, False),
+          gumbel_candidates: int = 16, settled=None,
           gpu_lock=None, progress=None, progress_seconds: float = 30.0,
           finish_share: float = 0.9, extra_moves: int = 50,
           max_minutes: float = 10.0,
           keep: list[pe.GameRecord] | None = None) -> dict[str, Any]:
     """`model` (side 0) against `opponent` (side 1): another Network, or
     "score" or "random". Returns side 0's results. `progress`, if given, is
-    called every `progress_seconds` with the results so far."""
+    called every `progress_seconds` with the results so far. `gumbel` is per
+    side, so the same network can play one search against the other."""
     gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
     networks: list[Network | None] = [
         model, opponent if isinstance(opponent, Network) else None]
@@ -81,7 +83,8 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         max_turns=max_turns, temperature_turns=1, root_noise=False,
         full_share=1.0, sides=sides, paired=True, stall_turns=stall_turns,
         fog_share=fog_share, network_beliefs=network_beliefs,
-        peace_treaties=peace_treaties, threads=threads)
+        peace_treaties=peace_treaties, threads=threads, gumbel=list(gumbel),
+        gumbel_candidates=gumbel_candidates)
 
     start = reported = time.perf_counter()
     records: list[pe.GameRecord] = []

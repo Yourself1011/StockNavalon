@@ -716,8 +716,14 @@ void bindSearch(nb::module_ &m) {
                 double fullShare, int quickSimulations,
                 const std::vector<std::string> &sides, bool paired, int stallTurns,
                 double fogShare, bool networkBeliefs, bool peaceTreaties,
-                bool firstPlayUrgency, bool treeReuse) {
+                bool firstPlayUrgency, bool treeReuse, const std::vector<bool> &gumbel,
+                int gumbelCandidates) {
                  SelfPlayConfig config;
+                 if (gumbel.size() != 2) {
+                     throw std::invalid_argument("gumbel: one flag per side");
+                 }
+                 config.gumbel = {gumbel[0], gumbel[1]};
+                 config.search.gumbelCandidates = gumbelCandidates;
                  config.treeReuse = treeReuse;
                  config.peaceTreaties = peaceTreaties;
                  config.search.firstPlayUrgency = firstPlayUrgency;
@@ -756,7 +762,8 @@ void bindSearch(nb::module_ &m) {
              "sides"_a = std::vector<std::string>{"network", "network"},
              "paired"_a = false, "stall_turns"_a = 0, "fog_share"_a = 1.0,
              "network_beliefs"_a = false, "peace_treaties"_a = true,
-             "first_play_urgency"_a = true, "tree_reuse"_a = true)
+             "first_play_urgency"_a = true, "tree_reuse"_a = true,
+             "gumbel"_a = std::vector<bool>{false, false}, "gumbel_candidates"_a = 16)
         .def("done", &SelfPlaySession::done)
         .def_prop_ro("finished_games", &SelfPlaySession::finishedGames)
         .def(
@@ -1008,7 +1015,7 @@ void bindSearch(nb::module_ &m) {
         "run_cli",
         [](std::vector<std::string> args, const EncodingConfig &encoding,
            nb::callable evaluate, int simulations, int samples, int horizon,
-           bool networkBeliefs) {
+           bool networkBeliefs, bool gumbel) {
             args.insert(args.begin(), "stocknavalon.play");
             std::vector<char *> argv;
             for (std::string &a : args) {
@@ -1016,7 +1023,7 @@ void bindSearch(nb::module_ &m) {
             }
             auto evaluator = std::make_shared<PythonEvaluator>(encoding, evaluate);
             SearchConfig config{.simulations = simulations, .samples = samples,
-                                .horizon = horizon};
+                                .horizon = horizon, .gumbel = gumbel};
             return runCli(static_cast<int>(argv.size()), argv.data(),
                           [config, evaluator, networkBeliefs](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
@@ -1026,7 +1033,7 @@ void bindSearch(nb::module_ &m) {
             });
         },
         "args"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
-        "horizon"_a = 1, "network_beliefs"_a = true,
+        "horizon"_a = 1, "network_beliefs"_a = true, "gumbel"_a = false,
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
         "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "

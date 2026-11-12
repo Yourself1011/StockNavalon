@@ -70,6 +70,9 @@ struct SelfPlayConfig {
     // Games in pairs: the same map and tribes twice, the sides swapping
     // seats, so neither the map nor moving first favours a side
     bool paired = false;
+    // Gumbel search at the root for each side (SearchConfig::gumbel), so a
+    // match can put the two searches against each other
+    std::array<bool, 2> gumbel{false, false};
 };
 
 // One game. The evaluator scores positions for the search.

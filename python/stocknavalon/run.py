@@ -323,6 +323,12 @@ def main():
     p.add_argument("--parallel", type=int, default=64,
                    help="self-play games at once, in each of two sessions")
     p.add_argument("--simulations", type=int, default=64)
+    p.add_argument("--gumbel", action=argparse.BooleanOptionalAction, default=False,
+                   help="Gumbel search at the root, in self-play and gates: "
+                        "sampled candidates, sequential halving, the improved "
+                        "policy as the target")
+    p.add_argument("--gumbel-candidates", type=int, default=16,
+                   help="root moves Gumbel search considers")
     p.add_argument("--samples", type=int, default=1)
     p.add_argument("--full-share", type=float, default=0.5,
                    help="share of decisions with the full search, recorded for "
@@ -481,6 +487,8 @@ def main():
         full_share=args.full_share,
         quick_simulations=args.quick_simulations,
         threads=args.session_threads,
+        gumbel=[args.gumbel, args.gumbel],
+        gumbel_candidates=args.gumbel_candidates,
     )
 
     # 1. bootstrap until the buffer is full, in chunks so progress is saved.
@@ -905,6 +913,8 @@ class EvaluationThread(threading.Thread):
                      network_beliefs=self.args.network_beliefs and self.fog_share() > 0,
                      peace_treaties=self.args.peace_treaties,
                      threads=self.args.session_threads,
+                     gumbel=[self.args.gumbel, self.args.gumbel],
+                     gumbel_candidates=self.args.gumbel_candidates,
                      settled=(gate_settled(self.args.gate_threshold,
                                            self.args.gate_min_decided) if gate else None),
                      seed=steps, gpu_lock=self.gpu_lock, progress=report,

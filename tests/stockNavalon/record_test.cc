@@ -673,3 +673,70 @@ TEST_CASE("a session's games don't depend on its thread count") {
         CHECK(one[i].fog == four[i].fog);
     }
 }
+
+TEST_CASE("self-play with Gumbel search records the improved policy as the target") {
+    SelfPlayConfig config;
+    config.search.simulations = 16;
+    config.quickSimulations = 4;
+    config.fullShare = 0.5;
+    config.maxTurns = 4;
+    config.search.rootNoise = true;
+    config.gumbel = {true, true};
+    SelfPlaySession session(config, 3, 3, 8);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 3);
+    int targets = 0;
+    for (const GameRecord &r : records) {
+        Game game = r.start();
+        for (const RecordedMove &m : r.moves) {
+            REQUIRE(game.isLegal(m.command));
+            if (!m.visits.empty()) {
+                targets++;
+                int sum = 0;
+                for (const auto &[command, weight] : m.visits) {
+                    CHECK(weight >= 0);
+                    sum += weight;
+                }
+                // whole weights, so a little rounding
+                CHECK(std::abs(sum - POLICY_WEIGHT_SCALE) <= static_cast<int>(m.visits.size()));
+            }
+            game.apply(m.command);
+        }
+    }
+    CHECK(targets > 0);
+    // they encode into a distribution like visit counts do
+    std::vector<std::pair<int, int>> positions;
+    for (std::size_t m = 0; m < records[0].moves.size(); m++) {
+        if (!records[0].moves[m].visits.empty()) {
+            positions.push_back({0, static_cast<int>(m)});
+        }
+    }
+    REQUIRE(!positions.empty());
+    EncodingConfig enc;
+    const std::size_t b = positions.size(), a = actionCount(enc), n = enc.mapSize;
+    std::vector<float> planes(b * planeCount(enc) * n * n), globals(b * globalCount(enc)),
+        policy(b * a), value(b), weight(b), targets_(b * targetCount(enc)),
+        side(b * sideTargetCount(enc));
+    std::vector<std::uint8_t> legal(b * a), masks(b * targetCount(enc)),
+        sideMasks(b * sideTargetCount(enc));
+    encodeExamples(records, positions, enc,
+                   {planes.data(), globals.data(), legal.data(), policy.data(), value.data(),
+                    weight.data(), targets_.data(), masks.data(), side.data(), sideMasks.data()});
+    for (std::size_t i = 0; i < b; i++) {
+        double sum = 0;
+        for (std::size_t s = 0; s < a; s++) {
+            sum += policy[i * a + s];
+        }
+        CHECK(sum == doctest::Approx(1).epsilon(0.01));
+    }
+}

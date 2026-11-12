@@ -179,6 +179,7 @@ void SelfPlaySession::advance(Slot &slot) {
             }
             SearchConfig search = config.search;
             search.fullInformation = !slot.record.fog;
+            search.gumbel = config.gumbel[slot.side];
             // with fog, the network's beliefs, once per turn: wait for them
             bool fromNetwork = !search.fullInformation && config.networkBeliefs &&
                                config.sides[slot.side] == SideKind::NETWORK;
@@ -196,6 +197,12 @@ void SelfPlaySession::advance(Slot &slot) {
             if (!slot.full) {
                 search.simulations = config.quickSimulations;
                 search.rootNoise = false;
+            }
+            // Gumbel search picks its move by its noise: on in the opening
+            // turns, for varied openings, as the temperature is otherwise
+            if (search.gumbel && config.search.rootNoise &&
+                game.turn < config.temperatureTurns) {
+                search.rootNoise = true;
             }
             // reuse the last decision's tree when it's still this player's
             // turn and the tree's position looks exactly like the real one
@@ -241,7 +248,10 @@ void SelfPlaySession::advance(Slot &slot) {
                           .rootValue = rootValue};
         // only a full search's visits are worth training the policy on
         for (std::size_t i = 0; slot.full && i < result.moves.size(); i++) {
-            move.visits.push_back({result.moves[i], result.visits[i]});
+            int weight = result.chosen >= 0
+                             ? static_cast<int>(std::lround(result.policy[i] * POLICY_WEIGHT_SCALE))
+                             : result.visits[i];
+            move.visits.push_back({result.moves[i], weight});
         }
         if (result.moves.empty() || !game.isLegal(move.command)) {
             move.command = game.legalCommands().front();

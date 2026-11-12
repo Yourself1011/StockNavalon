@@ -226,3 +226,111 @@ TEST_CASE("the CLI bot asks for its beliefs once a turn when told to") {
         CHECK(evaluator.asked == (network ? 4 : 0));
     }
 }
+
+TEST_CASE("Gumbel search spends its budget on its candidates, halving them, and plays the last one") {
+    // a network with uneven priors, so the candidates aren't a tie
+    struct Leaning : Evaluator {
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                std::size_t n = requests[i].moves ? requests[i].moves->size() : 0;
+                results[i].priors.resize(n);
+                double sum = 0;
+                for (std::size_t a = 0; a < n; a++) {
+                    sum += results[i].priors[a] = 1.0f / static_cast<float>(a + 1);
+                }
+                for (float &p : results[i].priors) {
+                    p = static_cast<float>(p / sum);
+                }
+                results[i].value = 0.1f;
+            }
+        }
+    } network;
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    REQUIRE(game.legalCommands().size() > 10);
+    for (bool noise : {false, true}) {
+        CAPTURE(noise);
+        SearchConfig config{.simulations = 64, .samples = 1, .horizon = 0,
+                            .rootNoise = noise, .gumbel = true, .gumbelCandidates = 8};
+        SearchResult r = search(game, priorBeliefs(makeView(game, 0)), network, config, 3);
+        int total = 0, tried = 0, most = 0;
+        for (int v : r.visits) {
+            total += v;
+            tried += v > 0;
+            most = std::max(most, v);
+        }
+        CHECK(total == config.simulations - 1);
+        CHECK(tried == 8);
+        // the last one standing had the most visits, and is played
+        REQUIRE(r.chosen >= 0);
+        CHECK(r.visits[r.chosen] == most);
+        std::mt19937_64 rng(0);
+        CHECK(r.choose(1.0, rng) == r.moves[r.chosen]);
+        // the policy target covers every move
+        REQUIRE(r.policy.size() == r.moves.size());
+        double sum = 0;
+        for (double p : r.policy) {
+            CHECK(p > 0);
+            sum += p;
+        }
+        CHECK(sum == doctest::Approx(1));
+        // the same seed, the same search
+        SearchResult again = search(game, priorBeliefs(makeView(game, 0)), network, config, 3);
+        CHECK(again.visits == r.visits);
+        CHECK(again.chosen == r.chosen);
+    }
+    // without noise the candidates are the most likely moves
+    SearchConfig config{.simulations = 64, .samples = 1, .horizon = 0,
+                        .gumbel = true, .gumbelCandidates = 8};
+    SearchResult r = search(game, priorBeliefs(makeView(game, 0)), network, config, 3);
+    for (std::size_t a = 0; a < r.visits.size(); a++) {
+        CHECK((r.visits[a] > 0) == (a < 8));
+    }
+}
+
+TEST_CASE("Gumbel search takes a win on the spot, and its policy target says so") {
+    Game game = emptyGame();
+    addUnit(game, 0, UnitTypes::WARRIOR, 6, 6);
+    ScoreEvaluator evaluator;
+    for (int simulations : {16, 64}) {
+        CAPTURE(simulations);
+        SearchConfig config{.simulations = simulations, .samples = 2, .horizon = 1,
+                            .rootNoise = true, .gumbel = true};
+        SearchResult r = search(game, priorBeliefs(makeView(game, 0)), evaluator, config, 1);
+        CHECK(best(r).type == CAPTURE);
+        // the priors are uniform; the improved policy puts the capture first
+        int capture = static_cast<int>(
+            std::find_if(r.moves.begin(), r.moves.end(),
+                         [](const Command &c) { return c.type == CAPTURE; }) -
+            r.moves.begin());
+        REQUIRE(capture < static_cast<int>(r.moves.size()));
+        CHECK(r.policy[capture] == *std::max_element(r.policy.begin(), r.policy.end()));
+        CHECK(r.policy[capture] > 2.0 / static_cast<double>(r.moves.size()));
+    }
+}
+
+TEST_CASE("Gumbel search continues a reused tree within the budget") {
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    ScoreEvaluator evaluator;
+    SearchConfig config{.simulations = 64, .samples = 1, .horizon = 1,
+                        .rootNoise = true, .fullInformation = true, .gumbel = true};
+    BatchedSearch search({&game}, {Beliefs{}}, config, 5);
+    run(search, evaluator);
+    SearchResult first = search.result(0);
+    Command played = first.moves[first.chosen];
+    if (played.type == CommandTypes::ENDTURN || first.visits[first.chosen] < 2) {
+        return; // nothing to continue from with this seed
+    }
+    REQUIRE(search.reuse(played, config));
+    run(search, evaluator);
+    SearchResult second = search.result(0);
+    int total = 0;
+    for (int v : second.visits) {
+        total += v;
+    }
+    CHECK(total == config.simulations - 1);
+    CHECK(second.chosen >= 0);
+}

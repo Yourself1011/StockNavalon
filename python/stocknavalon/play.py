@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--samples", type=int, default=4,
                         help="determinized games per command")
     parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument("--gumbel", action=argparse.BooleanOptionalAction, default=False,
+                        help="Gumbel search at the root")
     parser.add_argument("--device", default=None)
     parser.add_argument("--network-beliefs", action=argparse.BooleanOptionalAction,
                         default=True,
@@ -86,7 +88,7 @@ def main():
 
     sys.exit(pe.run_cli(rest, encoding, evaluate, simulations=args.simulations,
                         samples=args.samples, horizon=args.horizon,
-                        network_beliefs=args.network_beliefs))
+                        network_beliefs=args.network_beliefs, gumbel=args.gumbel))
 
 
 if __name__ == "__main__":

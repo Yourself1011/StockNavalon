@@ -1008,7 +1008,7 @@ class SelfPlaySession:
         records = session.take_finished()
     """
 
-    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True) -> None: ...
+    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True, gumbel: Sequence[bool] = [False, False], gumbel_candidates: int = 16) -> None: ...
 
     def done(self) -> bool: ...
 
@@ -1116,7 +1116,7 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1, network_beliefs: bool = True) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1, network_beliefs: bool = True, gumbel: bool = False) -> int:
     """
     The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. Returns the exit code.
     """

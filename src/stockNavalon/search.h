@@ -33,7 +33,8 @@ struct SearchConfig {
     // looking further: 0 is the player's own turn only, 1 includes the
     // opponent's reply
     int horizon = 1;
-    // Dirichlet noise on the root priors, for self-play
+    // Dirichlet noise on the root priors, for self-play; with Gumbel search,
+    // Gumbel noise on the candidates' logits instead
     bool rootNoise = false;
     double noiseAlpha = 0.3, noiseWeight = 0.25;
     int determinizeTries = 20;
@@ -42,6 +43,19 @@ struct SearchConfig {
     // the random state reseeded, so chance (ruins, Explorer paths) stays
     // chance. The network's input is then encoded with full information.
     bool fullInformation = false;
+
+    // Gumbel search at the root (Danihelka et al. 2022, notes/design.md):
+    // `gumbelCandidates` moves sampled from the policy without replacement
+    // (Gumbel-top-k; the most likely ones without root noise), the budget
+    // spent on them by sequential halving, the last one standing played, and
+    // the policy target the improved policy softmax(logit + sigma(completed
+    // Q)) over every root move. Below the root, PUCT as before.
+    bool gumbel = false;
+    int gumbelCandidates = 16;
+    // sigma(q) = (gumbelVisitScale + most visits of a root move) x
+    // gumbelValueScale x q, with the completed Q rescaled to [0, 1] across the
+    // root's moves (the paper's and mctx's defaults)
+    double gumbelVisitScale = 50, gumbelValueScale = 0.1;
 };
 
 // A position to evaluate, for the player to move in it
@@ -94,11 +108,17 @@ struct SearchResult {
     std::vector<Command> moves;
     std::vector<int> visits;
     std::vector<double> values;
+    // the policy target over the moves, summing to 1: the visit shares, or
+    // with Gumbel search the improved policy
+    std::vector<double> policy;
+    // with Gumbel search, the move to play (the last one standing); -1
+    // otherwise
+    int chosen = -1;
     // determinized games actually searched
     int samples = 0;
 
-    // the most visited command, or with a temperature, one drawn in
-    // proportion to visits^(1 / temperature)
+    // Gumbel search's move; otherwise the most visited command, or with a
+    // temperature, one drawn in proportion to visits^(1 / temperature)
     Command choose(double temperature, std::mt19937_64 &rng) const;
 };
 
@@ -166,11 +186,20 @@ class BatchedSearch {
         // the node waiting for an evaluation, -1 if none
         int waiting = -1;
         std::mt19937_64 rng;
+        // Gumbel search: the root moves' Gumbel noise, the candidates still
+        // in (indices of root moves), and the visits each must reach before
+        // the next halving
+        std::vector<double> gumbel;
+        std::vector<int> remaining;
+        int phaseTarget = 0;
     };
 
     SearchConfig config;
     int games;
     std::vector<Tree> trees;
+    // per game, the seed of its root moves' Gumbel noise, so every
+    // determinized tree of a game draws the same noise for the same command
+    std::vector<std::uint64_t> gumbelSeeds;
     std::vector<EvalRequest> requests;
     // the tree each request is for
     std::vector<int> requestTree;
@@ -180,6 +209,10 @@ class BatchedSearch {
     // or completes without one (false)
     bool descend(Tree &tree);
     void addRootNoise(Tree &tree);
+    // Gumbel search: the candidates, once the root is evaluated
+    void startGumbel(Tree &tree);
+    // the root move the next simulation takes, halving when a phase is done
+    int gumbelRootMove(Tree &tree);
     void backup(Tree &tree, int leaf, float value);
     void expand(Tree &tree, int node, const Evaluation &evaluation);
 };

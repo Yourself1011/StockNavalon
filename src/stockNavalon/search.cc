@@ -3,7 +3,65 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <tuple>
+
+namespace {
+// A Gumbel(0, 1) draw for a command, from the seed and the command alone, so
+// every tree of a game draws the same noise for the same move
+double gumbelNoise(std::uint64_t seed, const Command &command) {
+    std::uint64_t x = seed;
+    for (int v : {static_cast<int>(command.type), command.from, command.to, command.arg}) {
+        // splitmix64, mixing in each field
+        x += 0x9e3779b97f4a7c15ULL + static_cast<std::uint32_t>(v);
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        x ^= x >> 31;
+    }
+    double u = (static_cast<double>(x >> 11) + 0.5) * 0x1.0p-53;
+    return -std::log(-std::log(u));
+}
+
+double logit(float prior) { return std::log(std::max(prior, 1e-12f)); }
+
+// Gumbel search's sigma(completed Q) for each root move: a visited move's
+// mean value, an unvisited one's the mixed value (the root's own estimate
+// blended with the visited moves' values, weighted by their priors), all
+// rescaled to [0, 1] across the moves, then scaled up as visits grow
+std::vector<double> sigmaQ(const std::vector<float> &prior,
+                           const std::vector<int> &visits,
+                           const std::vector<double> &total, double rootValue,
+                           const SearchConfig &config) {
+    std::size_t n = prior.size();
+    double visited = 0, weighted = 0, weights = 0;
+    int most = 0;
+    for (std::size_t a = 0; a < n; a++) {
+        if (visits[a] > 0) {
+            double q = total[a] / visits[a];
+            weighted += prior[a] * q;
+            weights += prior[a];
+            visited += visits[a];
+            most = std::max(most, visits[a]);
+        }
+    }
+    double mixed = weights > 0 ? (rootValue + visited * weighted / weights) / (visited + 1)
+                               : rootValue;
+    std::vector<double> q(n);
+    for (std::size_t a = 0; a < n; a++) {
+        q[a] = visits[a] > 0 ? total[a] / visits[a] : mixed;
+    }
+    if (n == 0) {
+        return q;
+    }
+    auto [low, high] = std::minmax_element(q.begin(), q.end());
+    double lo = *low, range = std::max(*high - *low, 1e-8);
+    double scale = (config.gumbelVisitScale + most) * config.gumbelValueScale;
+    for (double &v : q) {
+        v = scale * (v - lo) / range;
+    }
+    return q;
+}
+} // namespace
 
 void ScoreEvaluator::evaluate(const std::vector<EvalRequest> &requests,
                               std::vector<Evaluation> &results) {
@@ -32,6 +90,9 @@ void ScoreEvaluator::evaluate(const std::vector<EvalRequest> &requests,
 Command SearchResult::choose(double temperature, std::mt19937_64 &rng) const {
     if (moves.empty()) {
         return {CommandTypes::ENDTURN};
+    }
+    if (chosen >= 0) {
+        return moves[chosen];
     }
     if (temperature <= 0) {
         auto most = std::max_element(visits.begin(), visits.end());
@@ -89,6 +150,10 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
             trees.push_back(std::move(tree));
         }
     }
+    // drawn last, so a search without Gumbel noise draws as before
+    for (int i = 0; i < games; i++) {
+        gumbelSeeds.push_back(config.gumbel ? seeds() : 0);
+    }
 }
 
 BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
@@ -134,31 +199,35 @@ bool BatchedSearch::descend(Tree &tree) {
                 tree.simulations++;
                 break;
             }
-            // PUCT: the most promising move, balancing value and prior
-            double scale = config.exploration *
-                           std::sqrt(std::max(1, node.parentVisits));
-            // what a move not tried yet counts as: the node's value so far
-            // (its own evaluation and everything backed up through it), less
-            // a reduction growing with the prior already explored
-            double explored = 0, sum = node.value;
-            for (std::size_t a = 0; a < node.moves.size(); a++) {
-                if (node.visits[a]) {
-                    explored += node.prior[a];
-                    sum += node.total[a];
-                }
-            }
-            double untried = sum / (1 + node.parentVisits) -
-                             config.fpuReduction * std::sqrt(explored);
             int best = 0;
-            double bestScore = -1e9;
-            for (std::size_t a = 0; a < node.moves.size(); a++) {
-                double q = node.visits[a]            ? node.total[a] / node.visits[a]
-                           : config.firstPlayUrgency ? untried
-                                                     : 0.0;
-                double u = scale * node.prior[a] / (1 + node.visits[a]);
-                if (q + u > bestScore) {
-                    bestScore = q + u;
-                    best = static_cast<int>(a);
+            if (n == 0 && config.gumbel) {
+                best = gumbelRootMove(tree);
+            } else {
+                // PUCT: the most promising move, balancing value and prior
+                double scale = config.exploration *
+                               std::sqrt(std::max(1, node.parentVisits));
+                // what a move not tried yet counts as: the node's value so far
+                // (its own evaluation and everything backed up through it), less
+                // a reduction growing with the prior already explored
+                double explored = 0, sum = node.value;
+                for (std::size_t a = 0; a < node.moves.size(); a++) {
+                    if (node.visits[a]) {
+                        explored += node.prior[a];
+                        sum += node.total[a];
+                    }
+                }
+                double untried = sum / (1 + node.parentVisits) -
+                                 config.fpuReduction * std::sqrt(explored);
+                double bestScore = -1e9;
+                for (std::size_t a = 0; a < node.moves.size(); a++) {
+                    double q = node.visits[a]            ? node.total[a] / node.visits[a]
+                               : config.firstPlayUrgency ? untried
+                                                         : 0.0;
+                    double u = scale * node.prior[a] / (1 + node.visits[a]);
+                    if (q + u > bestScore) {
+                        bestScore = q + u;
+                        best = static_cast<int>(a);
+                    }
                 }
             }
             if (node.child[best] < 0) {
@@ -207,12 +276,85 @@ void BatchedSearch::expand(Tree &tree, int n, const Evaluation &evaluation) {
                                     : 1.0f / static_cast<float>(node.moves.size());
             }
         }
-        if (n == 0 && config.rootNoise) {
+        if (n == 0 && config.gumbel) {
+            startGumbel(tree);
+        } else if (n == 0 && config.rootNoise) {
             addRootNoise(tree);
         }
     }
     backup(tree, n, node.value);
     tree.simulations++;
+}
+
+void BatchedSearch::startGumbel(Tree &tree) {
+    const Node &root = tree.nodes[0];
+    std::size_t m = root.moves.size();
+    tree.gumbel.assign(m, 0);
+    if (config.rootNoise) {
+        for (std::size_t a = 0; a < m; a++) {
+            tree.gumbel[a] = gumbelNoise(gumbelSeeds[tree.game], root.moves[a]);
+        }
+    }
+    // Gumbel-top-k: k moves sampled from the policy without replacement
+    std::vector<int> order(m);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return tree.gumbel[a] + logit(root.prior[a]) > tree.gumbel[b] + logit(root.prior[b]);
+    });
+    // no more than the simulations left can visit (the root's own
+    // evaluation, if not done yet, is one of them)
+    int left = config.simulations - tree.simulations - (root.evaluated && tree.simulations == 0);
+    std::size_t k = static_cast<std::size_t>(std::max(1, std::min(config.gumbelCandidates, left)));
+    order.resize(std::min(m, k));
+    tree.remaining = std::move(order);
+    // no phase yet
+    tree.phaseTarget = -1;
+}
+
+int BatchedSearch::gumbelRootMove(Tree &tree) {
+    const Node &root = tree.nodes[0];
+    std::vector<int> &remaining = tree.remaining;
+    if (remaining.empty()) {
+        startGumbel(tree);
+    }
+    while (remaining.size() > 1) {
+        // the candidate furthest from this phase's visits
+        int pick = -1;
+        for (int a : remaining) {
+            if (root.visits[a] < tree.phaseTarget &&
+                (pick < 0 || root.visits[a] < root.visits[pick])) {
+                pick = a;
+            }
+        }
+        if (pick >= 0) {
+            return pick;
+        }
+        if (tree.phaseTarget >= 0) {
+            // the phase is done: the better half stays in
+            std::vector<double> sigma =
+                sigmaQ(root.prior, root.visits, root.total, root.value, config);
+            std::stable_sort(remaining.begin(), remaining.end(), [&](int a, int b) {
+                return tree.gumbel[a] + logit(root.prior[a]) + sigma[a] >
+                       tree.gumbel[b] + logit(root.prior[b]) + sigma[b];
+            });
+            remaining.resize((remaining.size() + 1) / 2);
+            if (remaining.size() == 1) {
+                break;
+            }
+        }
+        // the next phase: the budget left, split evenly over the candidates
+        // and the phases still to come
+        int left = std::max(1, config.simulations - tree.simulations);
+        int phases = static_cast<int>(std::ceil(std::log2(remaining.size())));
+        int each = std::max(1, left / (static_cast<int>(remaining.size()) * phases));
+        int least = root.visits[remaining[0]];
+        for (int a : remaining) {
+            least = std::min(least, root.visits[a]);
+        }
+        tree.phaseTarget = least + each;
+    }
+    // the last one standing takes whatever budget is left
+    return remaining[0];
 }
 
 void BatchedSearch::addRootNoise(Tree &tree) {
@@ -255,6 +397,10 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
         roots.push_back(child);
     }
     config = next;
+    if (config.gumbel) {
+        // a new decision, new noise
+        gumbelSeeds[0] = trees[0].rng();
+    }
     for (std::size_t t = 0; t < trees.size(); t++) {
         Tree &tree = trees[t];
         // the subtree, renumbered from 0 in breadth-first order
@@ -284,7 +430,12 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
         tree.simulations = tree.nodes[0].parentVisits + 1;
         tree.path.clear();
         tree.waiting = -1;
-        if (config.rootNoise) {
+        tree.remaining.clear();
+        if (config.gumbel) {
+            if (!tree.nodes[0].moves.empty()) {
+                startGumbel(tree);
+            }
+        } else if (config.rootNoise) {
             addRootNoise(tree);
         }
     }
@@ -332,25 +483,76 @@ SearchResult BatchedSearch::result(int game) const {
     };
     std::map<Command, std::size_t, decltype(before)> index(before);
     std::vector<double> totals;
+    // for Gumbel search: the priors (averaged over the trees with the
+    // move), the root's own value (averaged), and the candidates still in
+    std::vector<double> priorSum;
+    std::vector<int> priorCount;
+    std::vector<char> standing;
+    double rootValue = 0;
     for (const Tree &tree : trees) {
         if (tree.game != game) {
             continue;
         }
         out.samples++;
         const Node &root = tree.nodes[0];
+        rootValue += root.value;
         for (std::size_t a = 0; a < root.moves.size(); a++) {
             auto [it, added] = index.try_emplace(root.moves[a], out.moves.size());
             if (added) {
                 out.moves.push_back(root.moves[a]);
                 out.visits.push_back(0);
                 totals.push_back(0);
+                priorSum.push_back(0);
+                priorCount.push_back(0);
+                standing.push_back(0);
             }
             out.visits[it->second] += root.visits[a];
             totals[it->second] += root.total[a];
+            priorSum[it->second] += root.prior[a];
+            priorCount[it->second]++;
+        }
+        for (int a : tree.remaining) {
+            standing[index.at(root.moves[a])] = 1;
         }
     }
-    for (std::size_t i = 0; i < out.moves.size(); i++) {
+    const std::size_t n = out.moves.size();
+    for (std::size_t i = 0; i < n; i++) {
         out.values.push_back(out.visits[i] ? totals[i] / out.visits[i] : 0);
+    }
+    if (!config.gumbel || out.samples == 0 || n == 0) {
+        double sum = std::accumulate(out.visits.begin(), out.visits.end(), 0.0);
+        for (int v : out.visits) {
+            out.policy.push_back(sum > 0 ? v / sum : 1.0 / static_cast<double>(n));
+        }
+        return out;
+    }
+    std::vector<float> prior(n);
+    for (std::size_t i = 0; i < n; i++) {
+        prior[i] = static_cast<float>(priorSum[i] / priorCount[i]);
+    }
+    std::vector<double> sigma = sigmaQ(prior, out.visits, totals, rootValue / out.samples, config);
+    // the improved policy: softmax(logit + sigma(completed Q))
+    std::vector<double> score(n);
+    for (std::size_t i = 0; i < n; i++) {
+        score[i] = logit(prior[i]) + sigma[i];
+    }
+    double top = *std::max_element(score.begin(), score.end()), sum = 0;
+    for (double s : score) {
+        out.policy.push_back(std::exp(s - top));
+        sum += out.policy.back();
+    }
+    for (double &p : out.policy) {
+        p /= sum;
+    }
+    // the move played: the best of the last ones standing, with the noise
+    // that picked the candidates
+    double best = -1e300;
+    for (std::size_t i = 0; i < n; i++) {
+        double g = config.rootNoise ? gumbelNoise(gumbelSeeds[game], out.moves[i]) : 0;
+        if (standing[i] && g + score[i] > best) {
+            best = g + score[i];
+            out.chosen = static_cast<int>(i);
+        }
     }
     return out;
 }

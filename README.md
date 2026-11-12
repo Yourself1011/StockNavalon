@@ -131,6 +131,7 @@ The network and training loop are in `python/stocknavalon` (PyTorch). Install th
 uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.measure          # network and self-play speed
 .venv/bin/python -m stocknavalon.rating runs/NAME # Elo of each best network so far
+.venv/bin/python -m stocknavalon.searches runs/NAME  # Gumbel search against PUCT, same network
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 
