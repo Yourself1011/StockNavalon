@@ -1,6 +1,7 @@
 #include "encoding.h"
 #include "game.h"
 #include "mapgen.h"
+#include "moveSearch.h"
 #include "tribeInference.h"
 #include "view.h"
 #include <algorithm>
@@ -32,7 +33,18 @@ struct Layout {
     int hpFraction() const { return passenger() + UnitTypes::GIANT + 1; }
     // enemy attackers, enemy damage, own attackers
     int threat() const { return hpFraction() + 8; }
-    int count() const { return threat() + 3; }
+    // unexplored tiles the shore shows as land, then as water (last, so
+    // networks from before load with zero weights for them)
+    int shore() const { return threat() + 3; }
+    // enemy units that could move onto the tile next turn, the player's that
+    // could this turn: an empty city an enemy can step onto is captured the
+    // turn after unless it's defended
+    int reach() const { return shore() + 2; }
+    // on the player's units: the damage every visible enemy that can reach it
+    // could deal next turn, over its HP, capped at 1 (it dies if they all
+    // attack it)
+    int lethal() const { return reach() + 2; }
+    int count() const { return lethal() + 1; }
 };
 
 void checkFits(const Game &game, const EncodingConfig &config) {
@@ -72,12 +84,12 @@ bool attacksUnits(const UnitData &data) {
            (data.attack > 0 || data.abilities.test(Abilities::CONVERT));
 }
 
-// Where a visible enemy unit could attack from on its next turn: its own
-// tile, and with Dash anywhere it could move to. Only the viewer's knowledge
-// is used, and the worst case where that's missing: the opponent owns every
-// movement tech, and unexplored tiles are open ground.
-std::vector<int> enemyOrigins(const PlayerView &view,
-                              const PlayerView::UnitView &unit) {
+// The empty tiles a visible enemy unit could move to on its next turn. Only
+// the viewer's knowledge is used, and the worst case where that's missing:
+// the opponent owns every movement tech, and unexplored tiles are open
+// ground.
+std::vector<char> enemyReach(const PlayerView &view,
+                             const PlayerView::UnitView &unit) {
     const int size = view.size;
     const UnitData &data = unitInfo(unit.type);
     const bool naval = data.abilities.test(Abilities::WATER);
@@ -100,18 +112,16 @@ std::vector<int> enemyOrigins(const PlayerView &view,
         int u = view.tiles[tile].unit;
         return u < 0 ? nullptr : &view.units[u];
     };
+    // the worst case: every movement tech, and unexplored tiles open
     auto enterable = [&](int tile) {
         const PlayerView::TileView &t = view.tiles[tile];
-        if (!t.explored) {
-            return true;
-        }
-        bool water = TerrainTypes::isWater(t.terrain);
-        return naval ? water : (!water || t.road);
+        return !t.explored || terrainEnterable(naval, t.terrain, t.road, true, true);
     };
+    // without peace treaties (as in training), every other player's
+    // borders are hostile
     auto roadLike = [&](int tile) {
         const PlayerView::TileView &t = view.tiles[tile];
-        return t.explored && (t.road || t.city >= 0) &&
-               (t.owner < 0 || t.owner == unit.owner);
+        return t.explored && roadFor(t.road || t.city >= 0, t.owner, t.owner != unit.owner);
     };
     auto nextToEnemy = [&](int tile) {
         bool found = false;
@@ -122,47 +132,43 @@ std::vector<int> enemyOrigins(const PlayerView &view,
         return found;
     };
 
-    std::vector<int> best(size * size, -1);
+    // what the viewer knows of each step (the rules are searchMoves', as
+    // for the engine's own moves)
     std::vector<char> reached(size * size, 0);
-    best[unit.tile] = data.movement * 2;
-    std::vector<int> stack{unit.tile};
-    while (!stack.empty()) {
-        int from = stack.back();
-        stack.pop_back();
-        int remaining = best[from];
-        neighbours(from, [&](int to) {
-            if (!enterable(to)) {
-                return;
-            }
-            const PlayerView::UnitView *other = occupant(to);
-            bool friendly = other && other->owner == unit.owner;
-            if (other && !friendly && !passEnemies) {
-                return;
-            }
-            bool roadStep = !naval && roadLike(from) && roadLike(to);
-            int cost = roadStep ? 1 : 2;
-            if (remaining < cost) {
-                return;
-            }
-            if (!other) {
-                reached[to] = 1;
-            }
-            const PlayerView::TileView &t = view.tiles[to];
-            bool stop = (t.explored && t.terrain == TerrainTypes::MOUNTAIN) ||
-                        (t.explored && t.terrain == TerrainTypes::FOREST &&
-                         !roadStep && !creep) ||
-                        (!ignoreZoc && nextToEnemy(to));
-            int left = remaining - cost;
-            if (!stop && left > best[to]) {
-                best[to] = left;
-                stack.push_back(to);
-            }
-        });
-    }
+    auto facts = [&](int from, int to) {
+        StepFacts f;
+        const PlayerView::UnitView *other = occupant(to);
+        bool friendly = other && other->owner == unit.owner;
+        f.free = !other;
+        f.enter = enterable(to) && !(other && !friendly && !passEnemies);
+        if (!f.enter) {
+            return f;
+        }
+        const PlayerView::TileView &t = view.tiles[to];
+        f.road = !naval && roadLike(from) && roadLike(to);
+        f.mountain = t.explored && t.terrain == TerrainTypes::MOUNTAIN;
+        f.forest = t.explored && t.terrain == TerrainTypes::FOREST;
+        f.nextToEnemy = !ignoreZoc && nextToEnemy(to);
+        return f;
+    };
+    searchMoves(size, unit.tile,
+                {.movement = data.movement, .creep = creep, .ignoreZoc = ignoreZoc}, facts,
+                [&](int, int to, int, const StepFacts &f) {
+                    if (f.free) {
+                        reached[to] = 1;
+                    }
+                });
 
+    return reached;
+}
+
+// Where a visible enemy unit could attack from on its next turn: its own
+// tile, and with Dash anywhere it could move to
+std::vector<int> enemyOrigins(const PlayerView::UnitView &unit,
+                              const std::vector<char> &reached) {
     std::vector<int> origins{unit.tile};
-    if (data.abilities.test(Abilities::DASH)) {
-        for (int t = 0; t < size * size; t++) {
+    if (unitInfo(unit.type).abilities.test(Abilities::DASH)) {
+        for (int t = 0; t < static_cast<int>(reached.size()); t++) {
             if (reached[t]) {
                 origins.push_back(t);
             }
@@ -234,7 +240,7 @@ int planeCount(const EncodingConfig &config) {
 }
 
 int globalCount(const EncodingConfig &config) {
-    return 58 + MapTypes::MAP_TYPE_SIZE + 15 * config.players +
+    return 64 + MapTypes::MAP_TYPE_SIZE + 17 * config.players +
            45 * (config.players - 1);
 }
 
@@ -300,6 +306,9 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         at(Layout::ON_MAP, t) = 1;
         const PlayerView::TileView &tile = view.tiles[t];
         if (!tile.explored) {
+            if (tile.knownLand >= 0) {
+                at(layout.shore() + (tile.knownLand ? 0 : 1), t) = 1;
+            }
             continue;
         }
         // with full information every tile shows, but exploring still counts
@@ -363,23 +372,36 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         }
     }
 
-    // ---- threats ----
-    std::vector<int> enemyAttackers(size * size, 0), ownAttackers(size * size, 0);
-    std::vector<double> enemyDamage(size * size, 0);
+    // ---- threats and reach ----
+    std::vector<int> enemyAttackers(size * size, 0), ownAttackers(size * size, 0),
+        enemyMovers(size * size, 0), ownMovers(size * size, 0);
+    std::vector<double> enemyDamage(size * size, 0), enemyTotal(size * size, 0);
     for (const PlayerView::UnitView &unit : view.units) {
         const UnitData &data = unitInfo(unit.type);
+        std::vector<char> reached;
+        if (unit.owner != player) {
+            reached = enemyReach(view, unit);
+            for (int t = 0; t < size * size; t++) {
+                enemyMovers[t] += reached[t];
+            }
+        } else if (unit.canMove) {
+            for (int t : game.moveTargets(game.tiles[unit.tile].unit)) {
+                ownMovers[t]++;
+            }
+        }
         if (!attacksUnits(data)) {
             continue;
         }
         std::vector<char> hit(size * size, 0);
         if (unit.owner != player) {
-            markInRange(size, enemyOrigins(view, unit), data.range, unit.tile,
+            markInRange(size, enemyOrigins(unit, reached), data.range, unit.tile,
                         hit);
             for (int t = 0; t < size * size; t++) {
                 if (hit[t]) {
+                    double damage = damageAt(game, view, unit, t);
                     enemyAttackers[t]++;
-                    enemyDamage[t] =
-                        std::max(enemyDamage[t], damageAt(game, view, unit, t));
+                    enemyDamage[t] = std::max(enemyDamage[t], damage);
+                    enemyTotal[t] += damage;
                 }
             }
         } else if (unit.canAttack) {
@@ -402,6 +424,19 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         at(layout.threat(), t) = enemyAttackers[t] / 4.0f;
         at(layout.threat() + 1, t) = static_cast<float>(enemyDamage[t] / 15.0);
         at(layout.threat() + 2, t) = ownAttackers[t] / 4.0f;
+    }
+    // how close each of the player's units is to dying next turn
+    std::vector<float> lethal(size * size, 0);
+    for (const PlayerView::UnitView &unit : view.units) {
+        if (unit.owner == player && unit.hp > 0) {
+            lethal[unit.tile] =
+                static_cast<float>(std::min(1.0, enemyTotal[unit.tile] / (unit.hp / 10.0)));
+        }
+    }
+    for (int t = 0; t < size * size; t++) {
+        at(layout.reach(), t) = enemyMovers[t] / 4.0f;
+        at(layout.reach() + 1, t) = ownMovers[t] / 4.0f;
+        at(layout.lethal(), t) = lethal[t];
     }
 
     // ---- the global vector ----
@@ -567,6 +602,46 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
     // the map type, public: what the unexplored tiles are likely to be
     g[view.mapType] = 1;
     g += MapTypes::MAP_TYPE_SIZE;
+    // the player's cities in danger: with an enemy on them (captured at the
+    // start of the enemy's next turn unless it's removed), and empty ones an
+    // enemy could step onto next turn (captured the turn after); then the
+    // same for the capital alone
+    int occupied = 0, reachable = 0, doomed = 0;
+    bool capitalOccupied = false, capitalReachable = false, capitalDoomed = false;
+    for (const PlayerView::CityView &city : view.cities) {
+        if (city.owner != player) {
+            continue;
+        }
+        int u = view.tiles[city.tile].unit;
+        bool enemyOn = u >= 0 && view.units[u].owner != player;
+        bool enemyCanStep = u < 0 && enemyMovers[city.tile] > 0;
+        // held by a defender the visible enemies could kill
+        bool defenderDies = u >= 0 && !enemyOn && lethal[city.tile] >= 1;
+        occupied += enemyOn;
+        reachable += enemyCanStep;
+        doomed += defenderDies;
+        if (city.capitalOf == player) {
+            capitalOccupied |= enemyOn;
+            capitalReachable |= enemyCanStep;
+            capitalDoomed |= defenderDies;
+        }
+    }
+    *g++ = occupied / 4.0f;
+    *g++ = reachable / 4.0f;
+    *g++ = capitalOccupied;
+    *g++ = capitalReachable;
+    *g++ = doomed / 4.0f;
+    *g++ = capitalDoomed;
+    // each relative player's head start in stars (public), as the stars are,
+    // and their capital income bonus above the usual (public), as income is
+    for (int k = 0; k < P; k++) {
+        *g++ = seat(k) < players ? view.headStart[seat(k)] / 50.0f : 0.0f;
+    }
+    for (int k = 0; k < P; k++) {
+        *g++ = seat(k) < players
+                   ? (view.capitalIncome[seat(k)] - Rules::CAPITAL_INCOME) / 30.0f
+                   : 0.0f;
+    }
     if (g != globals + globalCount(config)) {
         throw std::logic_error("Global vector layout doesn't match its size");
     }

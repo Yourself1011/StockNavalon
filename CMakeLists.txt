@@ -16,11 +16,19 @@ option(POLYENGINE_SANITIZE
        "Build with address and undefined-behaviour sanitizers and checked \
 standard library containers (the dev preset)" OFF)
 if(POLYENGINE_SANITIZE)
-    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
-                        # libstdc++ (gcc) and libc++ (clang, macOS) checks
-                        -D_GLIBCXX_DEBUG
-                        -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address,undefined)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        # the full debug checks of libstdc++ (gcc) and libc++ (clang, macOS):
+        # the dev build, for the editor and debugging
+        add_compile_options(-D_GLIBCXX_DEBUG
+                            -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
+    else()
+        # the check build: optimized, so the full suite runs in about a
+        # minute instead of ten, keeping the bounds and validity checks
+        add_compile_options(-D_GLIBCXX_ASSERTIONS
+                            -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE)
+    endif()
 endif()
 
 # warnings for our own code only, not nanobind's

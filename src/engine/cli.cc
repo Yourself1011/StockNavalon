@@ -17,13 +17,24 @@ namespace {
 
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+                   // ASCII only: under a UTF-8 locale (as in Python),
+                   // tolower would change bytes of multi-byte characters
+                   [](unsigned char c) { return c < 128 ? std::tolower(c) : c; });
+    return s;
+}
+
+// a tribe's name as typed without its accent ("Yadakk" for "Yădakk")
+std::string unaccented(std::string s) {
+    for (std::size_t at; (at = s.find("\u0103")) != std::string::npos;) {
+        s.replace(at, 2, "a");
+    }
     return s;
 }
 
 TribeTypes::Tribe parseTribe(const std::string &name) {
     for (const TribeData &tribe : tribeData) {
-        if (lower(std::string{tribe.name}) == lower(name)) {
+        std::string known = lower(std::string{tribe.name});
+        if (known == lower(name) || unaccented(known) == lower(name)) {
             return tribe.tribe;
         }
     }
@@ -204,8 +215,9 @@ void printKey() {
 }
 
 // the current player's own state, from their view
-void printStatus(const Game &game) {
-    const PlayerView view = makeView(game, game.currentPlayer);
+// the player's status, by default the one to move
+void printStatus(const Game &game, int player = -1) {
+    const PlayerView view = makeView(game, player < 0 ? game.currentPlayer : player);
     std::cout << "Turn " << view.turn << ", player " << view.player << " ("
               << tribeData[*view.tribes[view.player]].name << ")\n"
               << "Stars: " << view.stars << " (+" << view.income
@@ -310,8 +322,9 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
     // --ascii switches to the letter map, --reveal turns fog off, --seed and
     // --size set up a generated map, --bot N makes seat N a bot, --watch
     // shows a bots-only game turn by turn (--delay S: on its own, S seconds
-    // apart), --no-treaties leaves out peace treaties; the rest is positional
-    bool ascii = false, reveal = false, watch = false, treaties = true;
+    // apart), --pov watches each bot's own view, fog and all, after its turn,
+    // --no-treaties leaves out peace treaties; the rest is positional
+    bool ascii = false, reveal = false, watch = false, pov = false, treaties = true;
     double delay = -1;
     std::vector<int> botSeats;
     MapGenSettings generate;
@@ -326,6 +339,8 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
             treaties = false;
         } else if (arg == "--watch") {
             watch = true;
+        } else if (arg == "--pov") {
+            watch = pov = true;
         } else if (arg == "--delay" && i + 1 < argc) {
             watch = true;
             delay = std::stod(argv[++i]);
@@ -396,16 +411,20 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
     // what's in the fog.
     // random games can go on forever, so bot-only games stop at a turn limit
     constexpr int BOT_GAME_TURNS = 300;
-    // after each bot turn: false stops the game there
-    auto runBots = [&](const std::function<bool()> &afterTurn) {
+    // after each bot turn, given who played it: false stops the game there
+    auto runBots = [&](const std::function<bool(int)> &afterTurn) {
         bool played = false;
         while (!game.gameOver() && isBot[game.currentPlayer] &&
                game.turn < BOT_GAME_TURNS) {
             int player = game.currentPlayer;
             Game before = game;
-            std::vector<Command> commands = bot(game);
+            BotResult result = bot(game);
+            const std::vector<Command> &commands = result.commands;
             std::cout << "Player " << player << " (bot) played "
                       << commands.size() << " commands\n";
+            if (!result.note.empty()) {
+                std::cout << "  " << result.note << '\n';
+            }
             if (reveal || allBots) {
                 // described as they were played
                 for (const Command &command : commands) {
@@ -414,7 +433,7 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
                 }
             }
             played = true;
-            if (afterTurn && !afterTurn()) {
+            if (afterTurn && !afterTurn(player)) {
                 break;
             }
         }
@@ -423,15 +442,23 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
 
     if (allBots) {
         // watching: the board after every turn, then Enter for the next (q
-        // to stop), or the delay
-        std::function<bool()> afterTurn;
+        // to stop), or the delay. With --pov, as the player who just moved
+        // sees it: their status, and the map through their fog.
+        std::function<bool(int)> afterTurn;
         if (watch) {
-            afterTurn = [&] {
+            afterTurn = [&](int mover) {
                 if (game.gameOver()) {
                     return true;
                 }
-                printStatus(game);
-                show();
+                if (pov) {
+                    std::cout << "--- player " << mover << "'s view ---\n";
+                    printStatus(game, mover);
+                    PlayerView view = makeView(game, mover, reveal);
+                    ascii ? printMapAscii(view) : printMap(view);
+                } else {
+                    printStatus(game);
+                    show();
+                }
                 if (delay >= 0) {
                     std::this_thread::sleep_for(std::chrono::duration<double>(delay));
                     return true;

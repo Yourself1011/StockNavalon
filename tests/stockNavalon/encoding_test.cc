@@ -49,10 +49,13 @@ Game scrambleHidden(const Game &game, int viewer) {
         if (tile.exploredBy(viewer)) {
             continue;
         }
+        // land stays land and water water: the shore can show which
         if (tile.unit < 0 && tile.building == ImprovementTypes::NONE) {
-            tile.terrain = tile.terrain == TerrainTypes::FOREST
-                               ? TerrainTypes::MOUNTAIN
-                               : TerrainTypes::FOREST;
+            using namespace TerrainTypes;
+            tile.terrain = tile.terrain == FOREST  ? MOUNTAIN
+                           : tile.terrain == WATER ? OCEAN
+                           : tile.terrain == OCEAN ? WATER
+                                                   : FOREST;
         }
         tile.resource = tile.resource == ResourceTypes::NONE
                             ? ResourceTypes::METAL
@@ -91,13 +94,13 @@ Game scrambleHidden(const Game &game, int viewer) {
 
 TEST_CASE("encoding sizes follow the spec") {
     EncodingConfig config;
-    CHECK(planeCount(config) == 100);
-    CHECK(globalCount(config) == 139);
+    CHECK(planeCount(config) == 105);
+    CHECK(globalCount(config) == 149);
     CHECK(actionCount(config) == 26410);
     CHECK(EncodingSlots::PER_TILE == 218);
 }
 
-TEST_CASE("the map type is the global vector's last one-hot") {
+TEST_CASE("the map type is a one-hot near the global vector's end") {
     EncodingConfig config;
     const int G = globalCount(config), types = MapTypes::MAP_TYPE_SIZE;
     for (int type = 0; type < types; type++) {
@@ -110,7 +113,9 @@ TEST_CASE("the map type is the global vector's last one-hot") {
         for (int player : {0, 1}) {
             Encoded e = encode(game, player, config);
             for (int t = 0; t < types; t++) {
-                CHECK(e.globals[G - types + t] == (t == type ? 1.0f : 0.0f));
+                // before the six city-danger values, the two head starts and
+                // the two capital incomes
+                CHECK(e.globals[G - 10 - types + t] == (t == type ? 1.0f : 0.0f));
             }
         }
     }
@@ -224,7 +229,8 @@ TEST_CASE("features land where they should") {
     const int unitOwner = 50 + 2 + 2 + 4;
     CHECK(plane(e, unitOwner + 1, 5, 3) == 1);
     CHECK(plane(e, unitOwner + 2 + RIDER, 5, 3) == 1);
-    const int threat = planeCount(config) - 3;
+    // the threats come just before the two shore, two reach and lethal planes
+    const int threat = planeCount(config) - 8;
     // it can move 2 and attack 1 further, but not 4 away
     CHECK(plane(e, threat, 2, 3) == doctest::Approx(0.25));
     CHECK(plane(e, threat, 5, 3) == 0);
@@ -718,4 +724,125 @@ TEST_CASE("the unexplored head's targets are the true contents of tiles the play
         CHECK(t[head.offset + (FEATURE + feature) * area + at] == 1);
     }
     CHECK(trained > 0);
+}
+
+TEST_CASE("the shore shows which unexplored tiles beside shallow water are land") {
+    // player 0 has explored (3,3) only around it; (4,3) shallow water is
+    // explored, with land at (5,3) and water at (4,2) beyond it, unexplored
+    Game game = makeFogGame(bigMap({"4 3 W", "4 2 W", "5 3 F", "4 4 O"}));
+    for (Tile &tile : game.tiles) {
+        tile.explored = 0;
+    }
+    game.tiles[game.index(4, 3)].explored = 1;
+    game.tiles[game.index(4, 4)].explored = 1;
+    PlayerView view = makeView(game, 0);
+    CHECK(view.tiles[game.index(5, 3)].knownLand == 1);
+    CHECK(view.tiles[game.index(4, 2)].knownLand == 0);
+    CHECK(view.tiles[game.index(3, 3)].knownLand == 1);
+    // diagonals show nothing, and ocean shows no shore
+    CHECK(view.tiles[game.index(5, 2)].knownLand == -1);
+    CHECK(view.tiles[game.index(5, 4)].knownLand == -1);
+    // explored tiles need none
+    CHECK(view.tiles[game.index(4, 3)].knownLand == -1);
+    EncodingConfig config{.mapSize = 12};
+    Encoded e = encode(game, 0, config);
+    const int n = config.mapSize, shore = planeCount(config) - 5;
+    auto plane = [&](int p, int x, int y) { return e.planes[(p * n + y) * n + x]; };
+    CHECK(plane(shore, 5, 3) == 1);
+    CHECK(plane(shore + 1, 4, 2) == 1);
+    CHECK(plane(shore, 4, 2) == 0);
+    CHECK(plane(shore, 5, 2) + plane(shore + 1, 5, 2) == 0);
+}
+
+TEST_CASE("reach: where units can step, and the player's cities in danger") {
+    // player 0's capital at (1,1); an enemy rider at (3,1) can step onto it,
+    // and the player's warrior at (1,2) can too
+    Game game = makeGame(fieldMap());
+    clearUnits(game);
+    int enemy = addUnit(game, 1, UnitTypes::RIDER, 3, 1);
+    int own = addUnit(game, 0, UnitTypes::WARRIOR, 1, 2);
+    EncodingConfig config;
+    const int n = config.mapSize, reach = planeCount(config) - 3,
+              G = globalCount(config) - 6;
+    auto plane = [&](const Encoded &e, int p, int x, int y) {
+        return e.planes[(p * n + y) * n + x];
+    };
+    Encoded e = encode(game, 0, config);
+    CHECK(plane(e, reach, 1, 1) > 0);
+    CHECK(plane(e, reach, 7, 7) == 0);
+    // the player's warrior can step onto its capital this turn
+    CHECK(plane(e, reach + 1, 1, 1) > 0);
+    // one empty city an enemy can reach, and it's the capital
+    CHECK(e.globals[G - 4] == 0);
+    CHECK(e.globals[G - 3] == doctest::Approx(0.25));
+    CHECK(e.globals[G - 2] == 0);
+    CHECK(e.globals[G - 1] == 1);
+    // defended: a unit of the player's on the capital, so it can't be entered
+    game.apply({CommandTypes::MOVE, game.index(1, 2), game.index(1, 1)});
+    REQUIRE(game.units[own].tile == game.index(1, 1));
+    e = encode(game, 0, config);
+    CHECK(plane(e, reach, 1, 1) == 0);
+    CHECK(e.globals[G - 3] == 0);
+    CHECK(e.globals[G - 1] == 0);
+    // an enemy standing on the capital: captured next turn unless removed
+    clearUnits(game);
+    enemy = addUnit(game, 1, UnitTypes::WARRIOR, 1, 1);
+    REQUIRE(game.units[enemy].tile == game.index(1, 1));
+    e = encode(game, 0, config);
+    CHECK(e.globals[G - 4] == doctest::Approx(0.25));
+    CHECK(e.globals[G - 2] == 1);
+}
+
+TEST_CASE("reach: a road step, then one more with the half step left, for either side") {
+    // roads at (4,5)-(5,5) and (1,3)-(2,3); an enemy warrior on the first,
+    // the player's on the second, in ground the player has explored
+    Game game = makeGame(fieldMap({"4 5 F=", "5 5 F=", "1 3 F=", "2 3 F="}));
+    clearUnits(game);
+    addUnit(game, 1, UnitTypes::WARRIOR, 4, 5);
+    addUnit(game, 0, UnitTypes::WARRIOR, 1, 3);
+    EncodingConfig config;
+    const int n = config.mapSize, reach = planeCount(config) - 3;
+    auto plane = [&](const Encoded &e, int p, int x, int y) {
+        return e.planes[(p * n + y) * n + x];
+    };
+    Encoded e = encode(game, 0, config);
+    // the enemy's: off the road's end, not two tiles past it
+    CHECK(plane(e, reach, 6, 5) > 0);
+    CHECK(plane(e, reach, 6, 6) > 0);
+    CHECK(plane(e, reach, 7, 5) == 0);
+    // the player's, the same as the engine moves it
+    CHECK(plane(e, reach + 1, 3, 3) > 0);
+    CHECK(plane(e, reach + 1, 4, 3) == 0);
+}
+
+TEST_CASE("lethal: how close the player's units are to dying, and cities held by a doomed defender") {
+    // the capital at (1,1) held by a player's warrior; enemy swordsmen next
+    // to it
+    Game game = makeGame(fieldMap());
+    clearUnits(game);
+    int defender = addUnit(game, 0, UnitTypes::WARRIOR, 1, 1);
+    addUnit(game, 1, UnitTypes::SWORDSMAN, 2, 1);
+    addUnit(game, 1, UnitTypes::SWORDSMAN, 2, 2);
+    EncodingConfig config;
+    const int n = config.mapSize, lethal = planeCount(config) - 1, G = globalCount(config) - 4;
+    auto at = [&](const Encoded &e, int x, int y) { return e.planes[(lethal * n + y) * n + x]; };
+    // a full-HP warrior survives one swordsman but not two
+    Encoded e = encode(game, 0, config);
+    float full = at(e, 1, 1);
+    CHECK(full > 0);
+    // at 5 HP it certainly dies
+    game.units[defender].hp = 50;
+    e = encode(game, 0, config);
+    CHECK(at(e, 1, 1) == 1);
+    CHECK(at(e, 1, 1) >= full);
+    CHECK(e.globals[G - 2] == doctest::Approx(0.25));
+    CHECK(e.globals[G - 1] == 1);
+    // no enemies near, nothing doomed; only the player's units are marked
+    clearUnits(game);
+    addUnit(game, 0, UnitTypes::WARRIOR, 1, 1);
+    addUnit(game, 1, UnitTypes::SWORDSMAN, 6, 6);
+    e = encode(game, 0, config);
+    CHECK(at(e, 1, 1) == 0);
+    CHECK(at(e, 6, 6) == 0);
+    CHECK(e.globals[G - 1] == 0);
 }

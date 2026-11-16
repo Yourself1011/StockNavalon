@@ -344,9 +344,12 @@ TEST_CASE("unexplored tiles sampled from beliefs follow the map generator's rule
             checkInvariants(played);
         }
         // the same beliefs and seed give the same sample: nothing hidden leaks
+        // (tiles beside explored shallow water aren't hidden: the shore shows
+        // land from water)
         Game other = real;
         for (int t = 0; t < tiles; t++) {
-            if (!view.tiles[t].explored && !isCornerTile(real.tileX(t), real.tileY(t), real.size) &&
+            if (!view.tiles[t].explored && view.tiles[t].knownLand < 0 &&
+                !isCornerTile(real.tileX(t), real.tileY(t), real.size) &&
                 other.tiles[t].building == ImprovementTypes::NONE &&
                 other.unitAt(t) == nullptr) {
                 other.tiles[t].terrain = OCEAN;

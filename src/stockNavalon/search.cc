@@ -2,6 +2,7 @@
 #include "view.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <numeric>
 #include <tuple>
@@ -164,6 +165,8 @@ BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
     if (node.game.gameOver()) {
         node.terminal = node.evaluated = true;
         node.value = node.game.winner == node.toMove ? 1.0f : -1.0f;
+        // over, with the whole lead, now
+        node.utility = utilityOf(node.value, node.value, 0);
         return node;
     }
     if (crossed > config.horizon) {
@@ -180,6 +183,7 @@ BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
     node.prior.assign(n, n ? 1.0f / static_cast<float>(n) : 0.0f);
     node.visits.assign(n, 0);
     node.total.assign(n, 0);
+    node.utilityTotal.assign(n, 0);
     node.child.assign(n, -1);
     return node;
 }
@@ -190,12 +194,18 @@ bool BatchedSearch::descend(Tree &tree) {
         int n = 0;
         while (true) {
             Node &node = tree.nodes[n];
+            if (!node.evaluated || node.terminal || node.atHorizon || node.moves.empty()) {
+                // where this simulation ends
+                depthStats.simulations++;
+                depthStats.depth += static_cast<std::int64_t>(tree.path.size());
+                depthStats.reachedOpponent += node.crossed > 0;
+            }
             if (!node.evaluated) {
                 tree.waiting = n;
                 return true;
             }
             if (node.terminal || node.atHorizon || node.moves.empty()) {
-                backup(tree, n, node.value);
+                backup(tree, n, node.value, node.utility);
                 tree.simulations++;
                 break;
             }
@@ -209,18 +219,18 @@ bool BatchedSearch::descend(Tree &tree) {
                 // what a move not tried yet counts as: the node's value so far
                 // (its own evaluation and everything backed up through it), less
                 // a reduction growing with the prior already explored
-                double explored = 0, sum = node.value;
+                double explored = 0, sum = node.utility;
                 for (std::size_t a = 0; a < node.moves.size(); a++) {
                     if (node.visits[a]) {
                         explored += node.prior[a];
-                        sum += node.total[a];
+                        sum += node.utilityTotal[a];
                     }
                 }
                 double untried = sum / (1 + node.parentVisits) -
                                  config.fpuReduction * std::sqrt(explored);
                 double bestScore = -1e9;
                 for (std::size_t a = 0; a < node.moves.size(); a++) {
-                    double q = node.visits[a]            ? node.total[a] / node.visits[a]
+                    double q = node.visits[a]            ? node.utilityTotal[a] / node.visits[a]
                                : config.firstPlayUrgency ? untried
                                                          : 0.0;
                     double u = scale * node.prior[a] / (1 + node.visits[a]);
@@ -247,14 +257,35 @@ bool BatchedSearch::descend(Tree &tree) {
     return false;
 }
 
-void BatchedSearch::backup(Tree &tree, int leaf, float value) {
+float BatchedSearch::utilityOf(float value, float scoreLead, float turnsLeft) const {
+    return static_cast<float>(value + config.scoreUtility * scoreLead -
+                              config.winSooner * value * turnsLeft);
+}
+
+void BatchedSearch::backup(Tree &tree, int leaf, float value, float utility) {
     int mover = tree.nodes[leaf].toMove;
+    if (!tree.path.empty()) {
+        // where the simulation ended, for the root move it took
+        const Node &root = tree.nodes[0], &end = tree.nodes[leaf];
+        if (tree.leafCounts.size() != root.moves.size()) {
+            tree.leafCounts.assign(root.moves.size(), {});
+            tree.leafValues.assign(root.moves.size(), {});
+        }
+        int kind = end.terminal                 ? LEAF_GAME_OVER
+                   : end.crossed == 0           ? LEAF_OWN_TURN
+                   : end.toMove != root.toMove  ? LEAF_OPPONENT_TURN
+                                                : LEAF_LATER_TURN;
+        int a = tree.path[0].second;
+        tree.leafCounts[a][kind]++;
+        tree.leafValues[a][kind] += end.toMove == root.toMove ? value : -value;
+    }
     for (auto [n, a] : tree.path) {
         Node &node = tree.nodes[n];
-        // the value is for the leaf's player to move; flip it for the other
-        double v = node.toMove == mover ? value : -value;
+        // both are for the leaf's player to move; flip them for the other
+        bool same = node.toMove == mover;
         node.visits[a]++;
-        node.total[a] += v;
+        node.total[a] += same ? value : -value;
+        node.utilityTotal[a] += same ? utility : -utility;
         node.parentVisits++;
     }
     tree.path.clear();
@@ -264,6 +295,7 @@ void BatchedSearch::expand(Tree &tree, int n, const Evaluation &evaluation) {
     Node &node = tree.nodes[n];
     node.evaluated = true;
     node.value = evaluation.value;
+    node.utility = utilityOf(evaluation.value, evaluation.scoreLead, evaluation.turnsLeft);
     if (!node.moves.empty()) {
         if (evaluation.priors.size() == node.moves.size()) {
             double sum = 0;
@@ -282,7 +314,7 @@ void BatchedSearch::expand(Tree &tree, int n, const Evaluation &evaluation) {
             addRootNoise(tree);
         }
     }
-    backup(tree, n, node.value);
+    backup(tree, n, node.value, node.utility);
     tree.simulations++;
 }
 
@@ -305,10 +337,38 @@ void BatchedSearch::startGumbel(Tree &tree) {
     // evaluation, if not done yet, is one of them)
     int left = config.simulations - tree.simulations - (root.evaluated && tree.simulations == 0);
     std::size_t k = static_cast<std::size_t>(std::max(1, std::min(config.gumbelCandidates, left)));
-    order.resize(std::min(m, k));
+    k = std::min(m, k);
+    // some of them picked at random from the rest instead, for exploration
+    std::size_t explore = config.exploreCandidates > 0 && k > 1 && m > k
+                              ? std::min<std::size_t>(config.exploreCandidates, k - 1)
+                              : 0;
+    tree.exploring.assign(m, 0);
+    if (explore > 0) {
+        std::vector<int> rest(order.begin() + static_cast<std::ptrdiff_t>(k - explore), order.end());
+        // a random order of the rest, the same for every tree of the game
+        std::uint64_t seed = gumbelSeeds[tree.game] ^ 0x5bd1e9955bd1e995ULL;
+        std::stable_sort(rest.begin(), rest.end(), [&](int a, int b) {
+            return gumbelNoise(seed, root.moves[a]) > gumbelNoise(seed, root.moves[b]);
+        });
+        for (std::size_t j = 0; j < explore; j++) {
+            order[k - explore + j] = rest[j];
+            tree.exploring[rest[j]] = 1;
+        }
+    }
+    order.resize(k);
     tree.remaining = std::move(order);
     // no phase yet
     tree.phaseTarget = -1;
+}
+
+double BatchedSearch::choiceLogit(const Tree &tree, int a) const {
+    const Node &root = tree.nodes[0];
+    double l = logit(root.prior[a]);
+    if (a < static_cast<int>(tree.exploring.size()) && tree.exploring[a]) {
+        // no worse than an even spread over the moves
+        l = std::max(l, -std::log(static_cast<double>(root.moves.size())));
+    }
+    return l;
 }
 
 int BatchedSearch::gumbelRootMove(Tree &tree) {
@@ -332,10 +392,10 @@ int BatchedSearch::gumbelRootMove(Tree &tree) {
         if (tree.phaseTarget >= 0) {
             // the phase is done: the better half stays in
             std::vector<double> sigma =
-                sigmaQ(root.prior, root.visits, root.total, root.value, config);
+                sigmaQ(root.prior, root.visits, root.utilityTotal, root.utility, config);
             std::stable_sort(remaining.begin(), remaining.end(), [&](int a, int b) {
-                return tree.gumbel[a] + logit(root.prior[a]) + sigma[a] >
-                       tree.gumbel[b] + logit(root.prior[b]) + sigma[b];
+                return tree.gumbel[a] + choiceLogit(tree, a) + sigma[a] >
+                       tree.gumbel[b] + choiceLogit(tree, b) + sigma[b];
             });
             remaining.resize((remaining.size() + 1) / 2);
             if (remaining.size() == 1) {
@@ -489,37 +549,55 @@ SearchResult BatchedSearch::result(int game) const {
     // move), the root's own value (averaged), and the candidates still in
     std::vector<double> priorSum;
     std::vector<int> priorCount;
-    std::vector<char> standing;
-    double rootValue = 0;
+    std::vector<char> standing, exploring;
+    // what moves are chosen by (SearchConfig::scoreUtility); the values
+    // reported stay pure
+    std::vector<double> utilities;
+    double rootUtility = 0;
     for (const Tree &tree : trees) {
         if (tree.game != game) {
             continue;
         }
         out.samples++;
         const Node &root = tree.nodes[0];
-        rootValue += root.value;
+        rootUtility += root.utility;
         for (std::size_t a = 0; a < root.moves.size(); a++) {
             auto [it, added] = index.try_emplace(root.moves[a], out.moves.size());
             if (added) {
                 out.moves.push_back(root.moves[a]);
                 out.visits.push_back(0);
+                out.leafCounts.push_back({});
+                out.leafValues.push_back({});
                 totals.push_back(0);
+                utilities.push_back(0);
                 priorSum.push_back(0);
                 priorCount.push_back(0);
                 standing.push_back(0);
+                exploring.push_back(0);
             }
             out.visits[it->second] += root.visits[a];
+            if (a < tree.leafCounts.size()) {
+                for (int k = 0; k < LEAF_KINDS; k++) {
+                    out.leafCounts[it->second][k] += tree.leafCounts[a][k];
+                    out.leafValues[it->second][k] += tree.leafValues[a][k];
+                }
+            }
             totals[it->second] += root.total[a];
+            utilities[it->second] += root.utilityTotal[a];
             priorSum[it->second] += root.prior[a];
             priorCount[it->second]++;
         }
         for (int a : tree.remaining) {
             standing[index.at(root.moves[a])] = 1;
+            if (a < static_cast<int>(tree.exploring.size()) && tree.exploring[a]) {
+                exploring[index.at(root.moves[a])] = 1;
+            }
         }
     }
     const std::size_t n = out.moves.size();
     for (std::size_t i = 0; i < n; i++) {
         out.values.push_back(out.visits[i] ? totals[i] / out.visits[i] : 0);
+        out.priors.push_back(priorSum[i] / priorCount[i]);
     }
     if (!config.gumbel || out.samples == 0 || n == 0) {
         double sum = std::accumulate(out.visits.begin(), out.visits.end(), 0.0);
@@ -532,7 +610,7 @@ SearchResult BatchedSearch::result(int game) const {
     for (std::size_t i = 0; i < n; i++) {
         prior[i] = static_cast<float>(priorSum[i] / priorCount[i]);
     }
-    std::vector<double> sigma = sigmaQ(prior, out.visits, totals, rootValue / out.samples, config);
+    std::vector<double> sigma = sigmaQ(prior, out.visits, utilities, rootUtility / out.samples, config);
     // the improved policy: softmax(logit + sigma(completed Q))
     std::vector<double> score(n);
     for (std::size_t i = 0; i < n; i++) {
@@ -551,8 +629,12 @@ SearchResult BatchedSearch::result(int game) const {
     double best = -1e300;
     for (std::size_t i = 0; i < n; i++) {
         double g = config.rootNoise ? gumbelNoise(gumbelSeeds[game], out.moves[i]) : 0;
-        if (standing[i] && g + score[i] > best) {
-            best = g + score[i];
+        // an exploration candidate's logit no worse than an even spread's
+        double choice = exploring[i]
+                            ? std::max(logit(prior[i]), -std::log(static_cast<double>(n))) + sigma[i]
+                            : score[i];
+        if (standing[i] && g + choice > best) {
+            best = g + choice;
             out.chosen = static_cast<int>(i);
         }
     }
@@ -579,9 +661,50 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
     return batched.result(0);
 }
 
+namespace {
+// For playTurn's `explain`: the command played, then the root's leading
+// moves (by visits, then prior) and End Turn, with prior, visits and value.
+void explainDecision(const Game &game, const SearchResult &result, const Command &played,
+                     double rootValue, std::string &out) {
+    constexpr std::size_t SHOWN = 6;
+    char line[256];
+    std::snprintf(line, sizeof line, "%s  (value %+.2f, %zu moves)\n",
+                  toString(game, played).c_str(), rootValue, result.moves.size());
+    out += line;
+    std::vector<std::size_t> order(result.moves.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return std::tie(result.visits[a], result.priors[a]) >
+               std::tie(result.visits[b], result.priors[b]);
+    });
+    std::size_t shown = 0;
+    for (std::size_t i : order) {
+        bool endTurn = result.moves[i].type == CommandTypes::ENDTURN;
+        if (shown >= SHOWN && !endTurn) {
+            continue;
+        }
+        shown++;
+        char value[16];
+        if (result.visits[i]) {
+            std::snprintf(value, sizeof value, "%+.2f", result.values[i]);
+        } else {
+            std::snprintf(value, sizeof value, "  -  ");
+        }
+        std::snprintf(line, sizeof line, "      prior %5.1f%%  visits %4d  value %s  %s\n",
+                      100 * result.priors[i], result.visits[i], value,
+                      toString(game, result.moves[i]).c_str());
+        out += line;
+    }
+}
+} // namespace
+
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                               const SearchConfig &config, std::mt19937_64 &rng,
-                              bool networkBeliefs) {
+                              bool networkBeliefs, float *lastValue,
+                              std::string *explain) {
+    if (lastValue) {
+        *lastValue = std::nanf("");
+    }
     std::vector<Command> played;
     int me = game.currentPlayer;
     // once for the turn, as self-play does
@@ -601,9 +724,21 @@ std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
     // a turn always ends, but cap it in case
     while (!game.gameOver() && game.currentPlayer == me && played.size() < 200) {
         SearchResult result = search(game, *beliefs, evaluator, config, rng());
+        // the root's value: its moves' values, weighted by visits
+        double total = 0, visits = 0;
+        for (std::size_t i = 0; i < result.moves.size(); i++) {
+            total += result.values[i] * result.visits[i];
+            visits += result.visits[i];
+        }
+        if (lastValue && visits > 0) {
+            *lastValue = static_cast<float>(total / visits);
+        }
         Command command = result.choose(0, rng);
         if (result.moves.empty() || !game.isLegal(command)) {
             command = game.legalCommands().front();
+        }
+        if (explain) {
+            explainDecision(game, result, command, visits > 0 ? total / visits : 0, *explain);
         }
         game.apply(command);
         played.push_back(command);

@@ -49,6 +49,19 @@ bool Game::canBuild(int player, int tile, ImprovementType type) const {
         return false;
     }
 
+    // a bridge spans water between land on opposite sides, north and south or
+    // east and west: it can't lead out into the water. The player sees this
+    // from the shore drawn on the water tile's sides.
+    if (type == BRIDGE) {
+        int x = tile % size, y = tile / size;
+        auto land = [&](int nx, int ny) {
+            return inBounds(nx, ny) && !TerrainTypes::isWater(tiles[index(nx, ny)].terrain);
+        };
+        if (!(land(x, y - 1) && land(x, y + 1)) && !(land(x - 1, y) && land(x + 1, y))) {
+            return false;
+        }
+    }
+
     if (data.adjacency.any()) {
         bool found = false;
         forEachNeighbour(tile, [&](int n) {
@@ -77,6 +90,11 @@ bool Game::canDestroy(int player, int tile) const {
     const Tile &t = tiles[tile];
     if (!players[player].hasTech(TechTypes::CHIVALRY) ||
         tileOwner(tile) != player) {
+        return false;
+    }
+    // nothing can be done to a tile an enemy unit stands on
+    const Unit *unit = unitAt(tile);
+    if (unit && hostile(player, unit->owner) && canSee(player, *unit)) {
         return false;
     }
     // monuments can't be destroyed

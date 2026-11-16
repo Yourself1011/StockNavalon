@@ -221,7 +221,10 @@ TEST_CASE("the CLI bot asks for its beliefs once a turn when told to") {
         Asking evaluator;
         std::mt19937_64 rng(3);
         for (int turn = 0; turn < 4; turn++) {
-            REQUIRE(!playTurn(game, evaluator, config, rng, network).empty());
+            float value = 5;
+            REQUIRE(!playTurn(game, evaluator, config, rng, network, &value).empty());
+            // the last search's value, for the CLI to show
+            CHECK(std::abs(value) <= 1);
         }
         CHECK(evaluator.asked == (network ? 4 : 0));
     }
@@ -348,4 +351,140 @@ TEST_CASE("a search without trees can't be reused") {
         CHECK(search.result(0).moves.empty());
         CHECK_FALSE(search.reuse({CommandTypes::ENDTURN}, config));
     }
+}
+
+TEST_CASE("tie-breaks pick between equally valued moves, and reported values stay pure") {
+    // a network that thinks every position is won at 0.8; one square, (2,2),
+    // is better by the tie-break being tested
+    struct Flat : Evaluator {
+        bool scoreBreak;
+        explicit Flat(bool score) : scoreBreak(score) {}
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                const Game &g = *requests[i].game;
+                std::size_t n = requests[i].moves ? requests[i].moves->size() : 0;
+                results[i].priors.assign(n, n ? 1.0f / static_cast<float>(n) : 0.0f);
+                // player 0 is winning, whoever's turn it is
+                float side = requests[i].player == 0 ? 1.0f : -1.0f;
+                results[i].value = 0.8f * side;
+                const Unit *u = g.unitAt(g.index(2, 2));
+                bool there = u && u->owner == 0;
+                // ahead on score there, or closer to the end
+                results[i].scoreLead = scoreBreak && there ? 0.5f * side : 0.0f;
+                results[i].turnsLeft = !scoreBreak && there ? 0.2f : 1.0f;
+            }
+        }
+    };
+    Game game = emptyGame();
+    addUnit(game, 0, UnitTypes::WARRIOR, 1, 1);
+    REQUIRE(hasCommand(game, {MOVE, game.index(1, 1), game.index(2, 2)}));
+    for (bool score : {true, false}) {
+        CAPTURE(score);
+        Flat network(score);
+        for (bool gumbel : {false, true}) {
+            CAPTURE(gumbel);
+            SearchConfig config{.simulations = 120, .samples = 1, .horizon = 0,
+                                .gumbel = gumbel, .gumbelCandidates = 32,
+                                .scoreUtility = score ? 0.05 : 0.0,
+                                .winSooner = score ? 0.0 : 0.05};
+            SearchResult r = search(game, priorBeliefs(makeView(game, 0)), network, config, 2);
+            Command chosen = best(r);
+            CHECK(chosen.type == MOVE);
+            CHECK(chosen.to == game.index(2, 2));
+            // what's reported is the pure value
+            for (std::size_t i = 0; i < r.moves.size(); i++) {
+                if (r.visits[i]) {
+                    CHECK(r.values[i] == doctest::Approx(0.8));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("depth stats: a narrower search goes deeper") {
+    // a network with a clear favourite at every node, so a low exploration
+    // constant follows it down
+    struct Peaked : Evaluator {
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                std::size_t n = requests[i].moves ? requests[i].moves->size() : 0;
+                results[i].priors.assign(n, n > 1 ? 0.3f / static_cast<float>(n - 1) : 1.0f);
+                if (n > 1) {
+                    results[i].priors[0] = 0.7f;
+                }
+                results[i].value = 0;
+            }
+        }
+    } network;
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    auto depth = [&](double exploration) {
+        SearchConfig config{.simulations = 200, .samples = 1, .exploration = exploration};
+        BatchedSearch search({&game}, {priorBeliefs(makeView(game, 0))}, config, 4);
+        run(search, network);
+        BatchedSearch::DepthStats d = search.takeDepthStats();
+        CHECK(d.simulations == config.simulations);
+        // taken: the next read starts from zero
+        CHECK(search.takeDepthStats().simulations == 0);
+        return static_cast<double>(d.depth) / d.simulations;
+    };
+    double wide = depth(3.0), narrow = depth(0.3);
+    MESSAGE("mean depth " << wide << " wide, " << narrow << " narrow");
+    CHECK(narrow > wide);
+}
+
+TEST_CASE("exploration candidates find a move the policy has all but ruled out") {
+    // a winning capture the network rates at almost nothing
+    struct Blind : Evaluator {
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                const EvalRequest &r = requests[i];
+                std::size_t n = r.moves ? r.moves->size() : 0;
+                results[i].priors.assign(n, 1.0f);
+                for (std::size_t a = 0; a < n; a++) {
+                    if ((*r.moves)[a].type == CAPTURE) {
+                        results[i].priors[a] = 1e-7f;
+                    }
+                }
+                float sum = 0;
+                for (float p : results[i].priors) {
+                    sum += p;
+                }
+                for (float &p : results[i].priors) {
+                    p /= sum;
+                }
+                const Game &g = *r.game;
+                results[i].value = g.gameOver() ? (g.winner == r.player ? 1.0f : -1.0f) : 0.0f;
+            }
+        }
+    } network;
+    Game game = emptyGame();
+    addUnit(game, 0, UnitTypes::WARRIOR, 6, 6);
+    REQUIRE(hasCommand(game, {CAPTURE, game.index(6, 6)}));
+    int found = 0, without = 0;
+    for (std::uint64_t seed = 1; seed <= 12; seed++) {
+        for (int explore : {0, 2}) {
+            SearchConfig config{.simulations = 32, .samples = 1, .horizon = 0,
+                                .rootNoise = true, .gumbel = true, .gumbelCandidates = 4,
+                                .exploreCandidates = explore};
+            SearchResult r = search(game, priorBeliefs(makeView(game, 0)), network, config, seed);
+            bool captured = best(r).type == CAPTURE;
+            (explore ? found : without) += captured;
+            // the policy target keeps the network's real logits: a captured
+            // win raises it, but it's still a target, not a ban lifted by fiat
+            for (std::size_t i = 0; i < r.moves.size(); i++) {
+                CHECK(r.policy[i] >= 0);
+            }
+        }
+    }
+    MESSAGE("capture played in " << found << " of 12 searches with exploration, " << without
+                                 << " without");
+    CHECK(without == 0);
+    CHECK(found > 0);
 }

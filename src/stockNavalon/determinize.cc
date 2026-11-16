@@ -285,6 +285,27 @@ std::optional<Game> sample(const Game &real, int player,
     if (!beliefs.terrain.empty()) {
         sampleUnexplored(g, beliefs, known, rng);
     }
+    // the shore on explored shallow water shows which unexplored tiles beside
+    // it are land: make the sample agree
+    for (int t = 0; t < tiles; t++) {
+        int land = view.tiles[t].knownLand;
+        Tile &tile = g.tiles[t];
+        if (land < 0 || land == !TerrainTypes::isWater(tile.terrain)) {
+            continue;
+        }
+        // the shore shows water, not which kind: ruins stand on land or
+        // ocean, never shallow water
+        tile.terrain = land ? TerrainTypes::FIELD
+                       : tile.building == ImprovementTypes::RUIN ? TerrainTypes::OCEAN
+                                                                 : TerrainTypes::WATER;
+        if (!resourceFitsTerrain(tile.resource, tile.terrain)) {
+            tile.resource = ResourceTypes::NONE;
+        }
+        // villages stand on land
+        if (!land && tile.building == ImprovementTypes::VILLAGE) {
+            tile.building = ImprovementTypes::NONE;
+        }
+    }
     // on explored tiles the player knows which roads are theirs, and in 1v1
     // on a map that started without roads, who built the rest
     for (int t = 0; t < tiles; t++) {
@@ -341,8 +362,9 @@ std::optional<Game> sample(const Game &real, int player,
         }
         std::vector<float> weights(tiles, 0);
         for (int t = 0; t < tiles; t++) {
-            // the terrain here was just sampled, and a city makes it a field
-            if (known(t) ||
+            // the terrain here was just sampled, and a city makes it a field;
+            // but not where the shore shows water
+            if (known(t) || view.tiles[t].knownLand == 0 ||
                 (isCapital && !capitalTiles.empty() && !capitalOk[t])) {
                 continue;
             }

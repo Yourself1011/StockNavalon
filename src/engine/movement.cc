@@ -1,4 +1,5 @@
 #include "game.h"
+#include "moveSearch.h"
 
 namespace {
 int sign(int v) { return (v > 0) - (v < 0); }
@@ -9,33 +10,17 @@ bool Game::canEnterTerrain(const Unit &unit, int tile) const {
     const Player &player = players[unit.owner];
     // naval units may use shallow water without Fishing: owning a boat
     // already means they got onto the water
-    if (unit.isNaval()) {
-        return t.terrain == TerrainTypes::WATER ||
-               (t.terrain == TerrainTypes::OCEAN &&
-                player.hasTech(TechTypes::SAILING));
-    }
-    switch (t.terrain) {
-    case TerrainTypes::FIELD:
-    case TerrainTypes::FOREST:
-        return true;
-    case TerrainTypes::MOUNTAIN:
-        return player.hasTech(TechTypes::CLIMBING);
-    case TerrainTypes::WATER:
-        // a bridge
-        return t.road;
-    default:
-        return false;
-    }
+    return terrainEnterable(unit.isNaval(), t.terrain, t.road,
+                            player.hasTech(TechTypes::SAILING),
+                            player.hasTech(TechTypes::CLIMBING));
 }
 
 bool Game::isRoadFor(int tile, int player) const {
     const Tile &t = tiles[tile];
-    if (!t.road && t.building != ImprovementTypes::CITY) {
-        return false;
-    }
     // a peace treaty opens the ally's roads
     int owner = tileOwner(tile);
-    return owner < 0 || !hostile(owner, player);
+    return roadFor(t.road || t.building == ImprovementTypes::CITY, owner,
+                   owner >= 0 && hostile(owner, player));
 }
 
 bool Game::nextToEnemy(int tile, int player) const {
@@ -84,95 +69,72 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
     Unit passenger = unit;
     passenger.type = unit.passenger;
 
-    // movement is counted in half steps, since a road step costs half.
-    // The buffers are reused between calls: this runs for every unit on
-    // every legal-move query.
-    thread_local std::vector<int> best, stack, arrival;
+    // the buffers are reused between calls: this runs for every unit on
+    // every legal-move query
+    thread_local std::vector<int> arrival;
     thread_local std::vector<char> destination, landing;
-    best.assign(tiles.size(), -1);
     if (parents) {
         // the most movement left on arriving at each tile, to keep the best
         // route to it
         arrival.assign(tiles.size(), -1);
         parents->assign(tiles.size(), -1);
     }
-    auto arrive = [&](int from, int to, int remaining) {
+    destination.assign(tiles.size(), 0);
+    landing.assign(tiles.size(), 0);
+
+    // what the mover's owner knows of each step (the rules are searchMoves')
+    auto facts = [&](int from, int to) {
+        StepFacts f;
+        const Tile &t = tiles[to];
+        // moves never touch unexplored tiles
+        if (!explored(unit.owner, to)) {
+            return f;
+        }
+        // what the mover's owner sees on the tile: hidden enemies look
+        // like empty ground
+        const Unit *other = t.unit >= 0 ? &units[t.unit] : nullptr;
+        // allies are passed through like friends
+        bool seenFriend = other && !hostile(unit.owner, other->owner);
+        bool seenEnemy = other && !seenFriend && canSee(unit.owner, *other);
+        bool looksFree = !seenFriend && !seenEnemy;
+        f.free = looksFree;
+        if (naval && !TerrainTypes::isWater(t.terrain)) {
+            f.land = looksFree && canEnterTerrain(passenger, to);
+            return f;
+        }
+        f.embark = !naval && t.building == ImprovementTypes::PORT && tileOwner(to) >= 0 &&
+                   !hostile(tileOwner(to), unit.owner);
+        // friendly units can be passed through; enemies only by Hide units
+        f.enter = (f.embark || canEnterTerrain(unit, to)) && !(seenEnemy && !hide);
+        if (!f.enter) {
+            return f;
+        }
+        f.road = !naval && isRoadFor(from, unit.owner) && isRoadFor(to, unit.owner);
+        f.mountain = t.terrain == TerrainTypes::MOUNTAIN;
+        f.forest = t.terrain == TerrainTypes::FOREST;
+        f.nextToEnemy = !ignoreZoc && nextToEnemy(to, unit.owner);
+        return f;
+    };
+    auto arrive = [&](int from, int to, int remaining, const StepFacts &f) {
+        if (f.land) {
+            landing[to] = 1;
+        } else {
+            // Hide units can pass through an enemy city but not stop on it;
+            // they infiltrate it instead
+            int city = cityAt(to);
+            bool enemyCity = city >= 0 && hostile(unit.owner, cities[city].owner);
+            if (f.free && !(hide && enemyCity)) {
+                destination[to] = 1;
+            }
+        }
         if (parents && remaining > arrival[to]) {
             arrival[to] = remaining;
             (*parents)[to] = from;
         }
     };
-    destination.assign(tiles.size(), 0);
-    landing.assign(tiles.size(), 0);
-    best[unit.tile] = unit.data().movement * Rules::STEP_COST;
-    stack.assign(1, unit.tile);
-
-    while (!stack.empty()) {
-        int from = stack.back();
-        stack.pop_back();
-        int remaining = best[from];
-
-        forEachNeighbour(from, [&](int to) {
-            const Tile &t = tiles[to];
-            // moves never touch unexplored tiles
-            if (!explored(unit.owner, to)) {
-                return;
-            }
-            // what the mover's owner sees on the tile: hidden enemies look
-            // like empty ground
-            const Unit *other = t.unit >= 0 ? &units[t.unit] : nullptr;
-            // allies are passed through like friends
-            bool seenFriend = other && !hostile(unit.owner, other->owner);
-            bool seenEnemy = other && !seenFriend && canSee(unit.owner, *other);
-            bool looksFree = !seenFriend && !seenEnemy;
-
-            if (naval && !TerrainTypes::isWater(t.terrain)) {
-                if (remaining >= Rules::STEP_COST && looksFree &&
-                    canEnterTerrain(passenger, to)) {
-                    landing[to] = 1;
-                    arrive(from, to, remaining);
-                }
-                return;
-            }
-            bool embark = !naval && t.building == ImprovementTypes::PORT &&
-                          tileOwner(to) >= 0 &&
-                          !hostile(tileOwner(to), unit.owner);
-            if (!embark && !canEnterTerrain(unit, to)) {
-                return;
-            }
-            // friendly units can be passed through; enemies only by Hide
-            // units
-            if (seenEnemy && !hide) {
-                return;
-            }
-
-            bool roadStep = !naval && isRoadFor(from, unit.owner) &&
-                            isRoadFor(to, unit.owner);
-            int cost = roadStep ? Rules::ROAD_STEP_COST : Rules::STEP_COST;
-            if (remaining < cost) {
-                return;
-            }
-            // Hide units can pass through an enemy city but not stop on it;
-            // they infiltrate it instead
-            int city = cityAt(to);
-            bool enemyCity =
-                city >= 0 && hostile(unit.owner, cities[city].owner);
-            if (looksFree && !(hide && enemyCity)) {
-                destination[to] = 1;
-            }
-            arrive(from, to, remaining);
-
-            bool stop =
-                embark || t.terrain == TerrainTypes::MOUNTAIN ||
-                (t.terrain == TerrainTypes::FOREST && !roadStep && !creep) ||
-                (!ignoreZoc && nextToEnemy(to, unit.owner));
-            int left = remaining - cost;
-            if (!stop && left > best[to]) {
-                best[to] = left;
-                stack.push_back(to);
-            }
-        });
-    }
+    searchMoves(size, unit.tile,
+                {.movement = unit.data().movement, .creep = creep, .ignoreZoc = ignoreZoc},
+                facts, arrive);
 
     for (int tile = 0; tile < size * size; tile++) {
         if (moves && destination[tile] && tile != unit.tile) {

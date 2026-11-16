@@ -103,7 +103,16 @@ class PythonEvaluator : public Evaluator {
             throw std::invalid_argument(
                 "evaluate must return one logit per move and one value per position");
         }
-        evaluationsFromMoveLogits(requests, slots, logits.data(), values.data(), results);
+        // an optional fourth output: tie-breaks [B, 2]
+        std::optional<Floats> tieBreaks;
+        if (out.size() >= 4 && !out[3].is_none()) {
+            tieBreaks = nb::cast<Floats>(out[3]);
+            if (tieBreaks->size() != 2 * b) {
+                throw std::invalid_argument("evaluate's tie-breaks must be [B, 2]");
+            }
+        }
+        evaluationsFromMoveLogits(requests, slots, logits.data(), values.data(), results,
+                                  tieBreaks ? tieBreaks->data() : nullptr);
         if (!wanting.empty()) {
             if (out.size() < 3) {
                 throw std::invalid_argument("evaluate must return beliefs for belief_rows");
@@ -141,10 +150,11 @@ ExampleDict exampleDict(const EncodingConfig &c, std::size_t b, Fill fill) {
     std::size_t side = sideTargetCount(c);
     auto sideTargets = newArray<float>({b, side});
     auto sideMasks = newArray<std::uint8_t>({b, side});
+    auto turnPositions = newArray<float>({b});
     ExampleArrays out{planes.data(),      globals.data(),     legal.data(),
                       policy.data(),      value.data(),       valueWeight.data(),
                       targets.data(),     masks.data(),       sideTargets.data(),
-                      sideMasks.data()};
+                      sideMasks.data(),   turnPositions.data()};
     {
         nb::gil_scoped_release release;
         fill(out);
@@ -160,6 +170,7 @@ ExampleDict exampleDict(const EncodingConfig &c, std::size_t b, Fill fill) {
     d["target_masks"] = masks;
     d["side_targets"] = sideTargets;
     d["side_masks"] = sideMasks;
+    d["turn_positions"] = turnPositions;
     return d;
 }
 
@@ -615,6 +626,46 @@ void bindSearch(nb::module_ &m) {
         .def_rw("diplomacy_meets", &GameRecord::diplomacyMeets,
                 "Whether an embassy or peace offer introduced the sender "
                 "(GameSettings::diplomacyMeets); false for older records.")
+        .def_ro("head_start", &GameRecord::headStart,
+                "Each player's head start in stars, in a handicap game; empty "
+                "for an ordinary one.")
+        .def_ro("capital_income", &GameRecord::capitalIncome,
+                "Each player's capital income bonus, in a handicap game; empty "
+                "for the usual.")
+        .def_prop_ro("income_bonuses", [](const GameRecord &r) {
+                std::vector<std::tuple<int, int, int>> out;
+                for (const IncomeBonus &b : r.incomeBonuses) {
+                    out.emplace_back(b.player, b.fromTurn, b.extra);
+                }
+                return out;
+            }, "A catch-up game's boosts: (player, from turn, extra income).")
+        .def_ro("pool_opponent_seat", &GameRecord::poolOpponentSeat,
+                "In an opponent-pool game, the seat the earlier network "
+                "played; -1 otherwise.")
+        .def_ro("catch_up", &GameRecord::catchUp,
+                "A catch-up game, whether or not its boost was given: its "
+                "value targets count only from the boost on.")
+        .def_prop_ro("handicap_leader", [](const GameRecord &r) {
+                // the player given the edge, -1 in an ordinary game; in a
+                // catch-up game, the one the boosted side had fallen behind
+                if (!r.incomeBonuses.empty() && r.map.tribes.size() == 2) {
+                    return 1 - r.incomeBonuses[0].player;
+                }
+                for (std::size_t p = 0; p < r.headStart.size(); p++) {
+                    if (r.headStart[p] > 0) {
+                        return static_cast<int>(p);
+                    }
+                }
+                for (std::size_t p = 0; p < r.capitalIncome.size(); p++) {
+                    if (r.capitalIncome[p] > Rules::CAPITAL_INCOME) {
+                        return static_cast<int>(p);
+                    }
+                }
+                return -1;
+            }, "In a handicap game, the player given the edge; -1 otherwise.")
+        .def_rw("adjacent_pushes", &GameRecord::adjacentPushes,
+                "Whether pushed units only went to a neighbouring tile "
+                "(GameSettings::adjacentPushes); false for older records.")
         .def("replays_legally", &GameRecord::replaysLegally,
              "Whether every command is legal when replayed, and no player's "
              "stars go below zero.")
@@ -638,6 +689,15 @@ void bindSearch(nb::module_ &m) {
             },
             "The moves the search chose, which have a policy target")
         .def("start", &GameRecord::start, "The game before any command.")
+        .def_prop_ro("commands",
+                     [](const GameRecord &r) {
+                         std::vector<Command> out;
+                         for (const RecordedMove &m : r.moves) {
+                             out.push_back(m.command);
+                         }
+                         return out;
+                     },
+                     "Every command played, in order, from start().")
         .def("result", &GameRecord::result, "player"_a,
              "+1 or -1 for a win or loss, 0 for a game cut off by the turn limit.")
         .def_ro("final_territory", &GameRecord::finalTerritory,
@@ -698,7 +758,7 @@ void bindSearch(nb::module_ &m) {
             return playGames(config, count, seed, threads);
         },
         "count"_a, "seed"_a = 0, "threads"_a = 1, "simulations"_a = 100,
-        "samples"_a = 2, "horizon"_a = 1, "max_turns"_a = 50,
+        "samples"_a = 2, "horizon"_a = UNLIMITED_HORIZON, "max_turns"_a = 50,
         "temperature_turns"_a = 3, "map_size"_a = 11, "full_share"_a = 0.25,
         "quick_simulations"_a = 25, "stall_turns"_a = 0, "fog_share"_a = 1.0,
         "peace_treaties"_a = true,
@@ -723,8 +783,50 @@ void bindSearch(nb::module_ &m) {
                 const std::vector<std::string> &sides, bool paired, int stallTurns,
                 double fogShare, bool networkBeliefs, bool peaceTreaties,
                 bool firstPlayUrgency, bool treeReuse, const std::vector<bool> &gumbel,
-                int gumbelCandidates) {
+                int gumbelCandidates, double scoreUtility, double winSooner,
+                 const std::vector<double> &sideExploration,
+                 const std::vector<int> &sideGumbelCandidates, double handicapShare,
+                 const std::vector<int> &handicapStars, double handicapIncomeShare,
+                 const std::vector<int> &handicapIncome, double handicapCatchUpShare,
+                 int catchUpFromTurn, double catchUpBelow, int trailingSearchFactor,
+                 int exploreCandidates, bool randomSeats,
+                 const std::vector<bool> &trainSides,
+                 const std::vector<int> &sideSimulations) {
                  SelfPlayConfig config;
+                 config.randomSeats = randomSeats;
+                 if (trainSides.size() != 2) {
+                     throw std::invalid_argument("train_sides: one flag per side");
+                 }
+                 config.trainSides = {trainSides[0], trainSides[1]};
+                 config.exploreCandidates = exploreCandidates;
+                 config.handicapCatchUpShare = handicapCatchUpShare;
+                 config.catchUpFromTurn = catchUpFromTurn;
+                 config.catchUpBelow = catchUpBelow;
+                 config.trailingSearchFactor = trailingSearchFactor;
+                 config.handicapShare = handicapShare;
+                 config.handicapStars = handicapStars;
+                 config.handicapIncomeShare = handicapIncomeShare;
+                 config.handicapIncome = handicapIncome;
+                 if (!sideExploration.empty()) {
+                     if (sideExploration.size() != 2) {
+                         throw std::invalid_argument("side_exploration: one per side");
+                     }
+                     config.exploration = {sideExploration[0], sideExploration[1]};
+                 }
+                 if (!sideGumbelCandidates.empty()) {
+                     if (sideGumbelCandidates.size() != 2) {
+                         throw std::invalid_argument("side_gumbel_candidates: one per side");
+                     }
+                     config.gumbelCandidates = {sideGumbelCandidates[0], sideGumbelCandidates[1]};
+                 }
+                 if (!sideSimulations.empty()) {
+                     if (sideSimulations.size() != 2) {
+                         throw std::invalid_argument("side_simulations: one per side");
+                     }
+                     config.simulations = {sideSimulations[0], sideSimulations[1]};
+                 }
+                 config.search.scoreUtility = scoreUtility;
+                 config.search.winSooner = winSooner;
                  if (gumbel.size() != 2) {
                      throw std::invalid_argument("gumbel: one flag per side");
                  }
@@ -762,15 +864,50 @@ void bindSearch(nb::module_ &m) {
                  new (self) SelfPlaySession(config, parallel, games, seed);
              },
              "parallel"_a, "games"_a, "seed"_a = 0, "simulations"_a = 100,
-             "samples"_a = 2, "horizon"_a = 1, "max_turns"_a = 50,
+             "samples"_a = 2, "horizon"_a = UNLIMITED_HORIZON, "max_turns"_a = 50,
              "temperature_turns"_a = 3, "map_size"_a = 11, "root_noise"_a = true,
              "threads"_a = 1, "full_share"_a = 0.25, "quick_simulations"_a = 25,
              "sides"_a = std::vector<std::string>{"network", "network"},
              "paired"_a = false, "stall_turns"_a = 0, "fog_share"_a = 1.0,
              "network_beliefs"_a = false, "peace_treaties"_a = true,
              "first_play_urgency"_a = true, "tree_reuse"_a = true,
-             "gumbel"_a = std::vector<bool>{false, false}, "gumbel_candidates"_a = 16)
+             "gumbel"_a = std::vector<bool>{false, false}, "gumbel_candidates"_a = 16,
+             "score_utility"_a = 0.0, "win_sooner"_a = 0.0,
+             "side_exploration"_a = std::vector<double>{},
+             "side_gumbel_candidates"_a = std::vector<int>{},
+             "handicap_share"_a = 0.0, "handicap_stars"_a = std::vector<int>{3, 6, 10},
+             "handicap_income_share"_a = 0.75, "handicap_income"_a = std::vector<int>{1, 2},
+             "handicap_catch_up_share"_a = 0.5, "catch_up_from_turn"_a = 10,
+             "catch_up_below"_a = -0.5, "trailing_search_factor"_a = 2,
+             "explore_candidates"_a = 2, "random_seats"_a = false,
+             "train_sides"_a = std::vector<bool>{true, true},
+             "side_simulations"_a = std::vector<int>{})
         .def("done", &SelfPlaySession::done)
+        .def("clear_cache", &SelfPlaySession::clearCache,
+             "Forget the cached evaluations: after the network changes.")
+        .def(
+            "cache_stats",
+            [](SelfPlaySession &s) {
+                SelfPlaySession::CacheStats c = s.takeCacheStats();
+                return std::make_tuple(c.lookups, c.hits);
+            },
+            "(lookups, hits) of the evaluation cache since the last call.")
+        .def(
+            "depth_stats",
+            [](const SelfPlaySession &s) {
+                nb::list out;
+                for (const BatchedSearch::DepthStats &d : s.depthStats()) {
+                    nb::dict side;
+                    side["simulations"] = d.simulations;
+                    side["mean_depth"] = d.simulations ? static_cast<double>(d.depth) / d.simulations : 0.0;
+                    side["reached_opponent"] =
+                        d.simulations ? static_cast<double>(d.reachedOpponent) / d.simulations : 0.0;
+                    out.append(side);
+                }
+                return out;
+            },
+            "Per side: simulations so far, their mean depth in commands below "
+            "the root, and the share that reached the opponent's turn.")
         .def_prop_ro("finished_games", &SelfPlaySession::finishedGames)
         .def(
             "pending_inputs",
@@ -778,7 +915,9 @@ void bindSearch(nb::module_ &m) {
                 std::size_t b, n = c.mapSize;
                 {
                     nb::gil_scoped_release release;
-                    b = s.pending().size();
+                    // repeats are answered by the cache: only the rest come
+                    // back, and none only when no game has anything pending
+                    b = s.pendingForNetwork(c);
                 }
                 auto planes = newArray<float>(
                     {b, static_cast<std::size_t>(planeCount(c)), n, n});
@@ -788,8 +927,13 @@ void bindSearch(nb::module_ &m) {
                     {withLegal ? b : 0, static_cast<std::size_t>(actionCount(c))});
                 {
                     nb::gil_scoped_release release;
-                    encodeRequests(s.waiting(), c, planes.data(), globals.data(),
-                                   withLegal ? legal.data() : nullptr, s.threadPool());
+                    s.copyPrepared(planes.data(), globals.data());
+                    if (withLegal) {
+                        const std::size_t a = actionCount(c);
+                        for (std::size_t i = 0; i < b; i++) {
+                            legalMask(*s.waiting()[i].game, c, legal.data() + i * a);
+                        }
+                    }
                 }
                 return std::make_tuple(planes, globals, legal);
             },
@@ -813,7 +957,7 @@ void bindSearch(nb::module_ &m) {
                 std::vector<Evaluation> results;
                 evaluationsFromNetwork(s.waiting(), c, logits.data(),
                                        values.data(), results);
-                s.submit(results);
+                s.submitServed(results);
             },
             "encoding"_a, "logits"_a, "values"_a,
             "The network's policy logits [B, A] and values [B] for the "
@@ -869,7 +1013,7 @@ void bindSearch(nb::module_ &m) {
         .def(
             "submit_move_logits",
             [](SelfPlaySession &s, const EncodingConfig &c, Floats moveLogits,
-               Floats values, std::optional<Floats> beliefs) {
+               Floats values, std::optional<Floats> beliefs, std::optional<Floats> tieBreaks) {
                 std::vector<int> rows, slots;
                 requestSlots(s.waiting(), c, rows, slots);
                 if (moveLogits.size() != slots.size() ||
@@ -885,19 +1029,21 @@ void bindSearch(nb::module_ &m) {
                         "Need belief outputs [R, belief_output_count] for the "
                         "pending_belief_rows");
                 }
-                nb::gil_scoped_release release;
-                std::vector<Evaluation> results;
-                evaluationsFromMoveLogits(s.waiting(), slots, moveLogits.data(),
-                                          values.data(), results);
-                if (beliefs && wanted > 0) {
-                    attachBeliefs(s.waiting(), c, beliefs->data(), results);
+                if (tieBreaks && tieBreaks->size() != 2 * s.waiting().size()) {
+                    throw std::invalid_argument("Need tie_breaks [B, 2]");
                 }
-                s.submit(results);
+                nb::gil_scoped_release release;
+                s.submitMoveLogits(c, moveLogits.data(), values.data(),
+                                   tieBreaks ? tieBreaks->data() : nullptr,
+                                   beliefs && wanted > 0 ? beliefs->data() : nullptr);
             },
             "encoding"_a, "move_logits"_a, "values"_a, "beliefs"_a = nb::none(),
+            "tie_breaks"_a = nb::none(),
             "The logits gathered at pending_slots, the values [B], and for "
             "the pending_belief_rows their raw belief outputs [R, "
-            "belief_output_count] (without them, those take priorBeliefs).")
+            "belief_output_count] (without them, those take priorBeliefs). "
+            "tie_breaks [B, 2]: each position's predicted final score lead and "
+            "turns left, for the search's tie-breaks (score_utility, win_sooner).")
         .def(
             "submit_scores",
             [](SelfPlaySession &s) {
@@ -1021,7 +1167,8 @@ void bindSearch(nb::module_ &m) {
         "run_cli",
         [](std::vector<std::string> args, const EncodingConfig &encoding,
            nb::callable evaluate, int simulations, int samples, int horizon,
-           bool networkBeliefs, bool gumbel) {
+           bool networkBeliefs, bool gumbel, double scoreUtility, double winSooner,
+           double exploration, int gumbelCandidates, bool explain) {
             args.insert(args.begin(), "stocknavalon.play");
             std::vector<char *> argv;
             for (std::string &a : args) {
@@ -1029,24 +1176,96 @@ void bindSearch(nb::module_ &m) {
             }
             auto evaluator = std::make_shared<PythonEvaluator>(encoding, evaluate);
             SearchConfig config{.simulations = simulations, .samples = samples,
-                                .horizon = horizon, .gumbel = gumbel};
+                                .exploration = exploration, .horizon = horizon,
+                                .gumbel = gumbel, .gumbelCandidates = gumbelCandidates,
+                                .scoreUtility = scoreUtility, .winSooner = winSooner};
             return runCli(static_cast<int>(argv.size()), argv.data(),
-                          [config, evaluator, networkBeliefs](std::uint64_t seed) -> BotTurn {
+                          [config, evaluator, networkBeliefs, explain](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
-                return [config, evaluator, rng, networkBeliefs](Game &game) {
-                    return playTurn(game, *evaluator, config, *rng, networkBeliefs);
+                return [config, evaluator, rng, networkBeliefs, explain](Game &game) {
+                    int player = game.currentPlayer;
+                    float value;
+                    std::string decisions;
+                    BotResult result{.commands = playTurn(game, *evaluator, config, *rng,
+                                                          networkBeliefs, &value,
+                                                          explain ? &decisions : nullptr)};
+                    if (!std::isnan(value)) {
+                        // as the search sees it before ending the turn: the
+                        // value, and as a chance of winning
+                        char note[96];
+                        std::snprintf(note, sizeof note,
+                                      "player %d's evaluation: %+.2f (%.0f%% to win)", player,
+                                      value, 50.0 * (value + 1));
+                        result.note = note;
+                    }
+                    if (explain) {
+                        // each decision, indented under the note
+                        std::string text;
+                        for (std::size_t at = 0; at < decisions.size();) {
+                            std::size_t end = decisions.find('\n', at);
+                            text += "\n    " + decisions.substr(at, end - at);
+                            at = end + 1;
+                        }
+                        result.note += text;
+                    }
+                    return result;
                 };
             });
         },
         "args"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
-        "horizon"_a = 1, "network_beliefs"_a = true, "gumbel"_a = false,
+        "horizon"_a = UNLIMITED_HORIZON, "network_beliefs"_a = true, "gumbel"_a = false,
+        "score_utility"_a = 0.0, "win_sooner"_a = 0.0, "exploration"_a = 1.5,
+        "gumbel_candidates"_a = 16, "explain"_a = false,
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
         "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "
         "values, raw belief outputs of belief_rows or None), as with "
         "SelfPlaySession.submit_move_logits. With network_beliefs, each bot "
         "turn samples the hidden state from the network's beliefs (asked once "
-        "per turn), else from the fixed priors. Returns the exit code.");
+        "per turn), else from the fixed priors. With explain, each bot turn "
+        "also lists its decisions: the command played and the search's "
+        "leading moves, with priors, visits and values. Returns the exit code.");
+    m.def(
+        "search",
+        [](const Game &game, const EncodingConfig &encoding, nb::callable evaluate,
+           int simulations, int samples, int horizon, bool gumbel, bool networkBeliefs,
+           double exploration, int gumbelCandidates, std::uint64_t seed) {
+            PythonEvaluator evaluator(encoding, evaluate);
+            int me = game.currentPlayer;
+            std::optional<Beliefs> beliefs;
+            if (networkBeliefs) {
+                std::vector<Evaluation> results;
+                evaluator.evaluate({EvalRequest{.game = &game, .player = me, .moves = nullptr,
+                                                .wantsBeliefs = true}},
+                                   results);
+                beliefs = std::move(results.at(0).beliefs);
+            }
+            if (!beliefs) {
+                beliefs = priorBeliefs(makeView(game, me));
+            }
+            SearchConfig config{.simulations = simulations, .samples = samples,
+                                .exploration = exploration, .horizon = horizon,
+                                .gumbel = gumbel, .gumbelCandidates = gumbelCandidates};
+            SearchResult r = search(game, *beliefs, evaluator, config, seed);
+            // per move, per leaf kind: (count, mean value for the searcher)
+            std::vector<std::vector<std::pair<int, double>>> leaves;
+            for (std::size_t i = 0; i < r.moves.size(); i++) {
+                auto &row = leaves.emplace_back();
+                for (int k = 0; k < LEAF_KINDS; k++) {
+                    int n = r.leafCounts[i][k];
+                    row.push_back({n, n ? r.leafValues[i][k] / n : 0.0});
+                }
+            }
+            return std::make_tuple(r.moves, r.visits, r.values, r.priors, r.chosen, leaves);
+        },
+        "game"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
+        "horizon"_a = UNLIMITED_HORIZON, "gumbel"_a = true, "network_beliefs"_a = true,
+        "exploration"_a = 1.5, "gumbel_candidates"_a = 16, "seed"_a = 0,
+        "One search for the player to move, as the CLI's bot does, `evaluate` as "
+        "for run_cli. Returns (moves, visits, values, priors, chosen index, "
+        "leaves): leaves per move are (count, mean value for the searcher) of "
+        "where its simulations ended: in the searcher's own turn, an "
+        "opponent's, the searcher's later turns, the game's end.");
     m.def(
         "play_random_games",
         [](int games, std::vector<TribeTypes::Tribe> tribes,
@@ -1090,6 +1309,15 @@ void bindEncoding(nb::module_ &m) {
     m.attr("UNEXPLORED_LAYERS") = UnexploredHead::LAYERS;
     m.attr("SIDE_SCORE_SOON") = SideTargets::SCORE_SOON;
     m.attr("SIDE_SCORE_END") = SideTargets::SCORE_END;
+    m.attr("SIDE_STARS_AHEAD") = SideTargets::STARS_AHEAD;
+    m.attr("SIDE_INCOME_AHEAD") = SideTargets::INCOME_AHEAD;
+    m.attr("SIDE_SHORT_TERM_VALUE") = SideTargets::SHORT_TERM_VALUE;
+    m.attr("SHORT_TERM_HORIZONS") = std::vector<double>(SideTargets::SHORT_TERM_HORIZONS.begin(),
+                                                        SideTargets::SHORT_TERM_HORIZONS.end());
+    m.attr("UNLIMITED_HORIZON") = UNLIMITED_HORIZON;
+    m.attr("SIDE_TURNS_LEFT") = SideTargets::TURNS_LEFT;
+    m.attr("TURNS_LEFT_SCALE") = SideTargets::TURNS_LEFT_SCALE;
+    m.attr("TURNS_LEFT_CAP") = SideTargets::TURNS_LEFT_CAP;
     m.attr("SIDE_TERRITORY") = SideTargets::TERRITORY;
     m.attr("TERRITORY_CLASSES") = SideTargets::TERRITORY_CLASSES;
     m.attr("HIDDEN_UNIT_COUNT_CAP") = HIDDEN_UNIT_COUNT_CAP;
@@ -1281,6 +1509,21 @@ void bindEncoding(nb::module_ &m) {
         return out;
     };
     TribeInferenceConfig defaults;
+    m.def(
+        "determinize",
+        [](const Game &game, int player, std::uint64_t seed, const EncodingConfig *config,
+           std::optional<nb::ndarray<const float, nb::ndim<1>, nb::c_contig>> beliefs)
+            -> std::optional<Game> {
+            PlayerView view = makeView(game, player);
+            Beliefs b = beliefs && config ? decodeBeliefs(view, *config, beliefs->data())
+                                          : priorBeliefs(view);
+            return determinize(game, player, b, seed);
+        },
+        "game"_a, "player"_a, "seed"_a, "encoding"_a = nb::none(), "beliefs"_a = nb::none(),
+        "A game agreeing with everything `player` knows of `game`, the rest "
+        "sampled as the search does: from the network's raw belief outputs "
+        "for the player's position (with `encoding`), else the fixed priors. "
+        "None if no sample fit.");
     m.def(
         "possible_tribes",
         [tribeList](const PlayerView &view, int opponent, int turns,

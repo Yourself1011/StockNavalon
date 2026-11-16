@@ -1,6 +1,7 @@
 #include "tribeInference.h"
 #include "game.h"
 #include "mapgen.h"
+#include "moveSearch.h"
 #include "view.h"
 #include <algorithm>
 #include <functional>
@@ -85,6 +86,8 @@ struct CityState {
 // unit's score stays until it's disbanded.
 struct OpState {
     int stars = 0, territory = 0, explored = 0;
+    // their capital income bonus, public (GameSettings::capitalIncome)
+    int capitalIncome = Rules::CAPITAL_INCOME;
     // how far from their capital (Chebyshev) any of their units could be
     int reach = 0;
     // whether they've had the stars for meeting the player
@@ -192,7 +195,8 @@ int income(const OpState &s) {
     for (std::size_t c = 0; c < s.cities.size(); c++) {
         const CityState &city = s.cities[c];
         // the first city is the capital
-        stars += Rules::cityIncome(city.level, c == 0, city.workshop, city.parks);
+        stars += Rules::cityIncome(city.level, c == 0, city.workshop, city.parks,
+                                   s.capitalIncome);
     }
     // Their embassies in the player's capital. A peace treaty would pay more,
     // but needs the player's agreement, and the player hasn't met them.
@@ -225,9 +229,7 @@ bool roadsFor(const OpState &s, const Context &ctx) {
 int moveLength(UnitType type, const OpState &s, const Context &ctx) {
     const UnitData &data = unitInfo(type);
     bool naval = data.abilities.test(Abilities::WATER);
-    int cost = !naval && roadsFor(s, ctx) ? Rules::ROAD_STEP_COST
-                                          : Rules::STEP_COST;
-    return data.movement * Rules::STEP_COST / cost;
+    return mostSteps(data.movement, !naval && roadsFor(s, ctx));
 }
 
 // whether their techs let land units onto mountains, for the wider sight
@@ -1213,7 +1215,8 @@ using FrontierCache =
                        FrontierHash>;
 
 std::shared_ptr<const Frontier> startFrontier(TribeTypes::Tribe tribe,
-                                              int startingScore) {
+                                              int startingScore, int headStart,
+                                              int capitalIncome) {
     auto frontier = std::make_shared<Frontier>();
     const TribeData &data = tribeData[tribe];
     // the tribe's starting state, from the engine's tables
@@ -1229,7 +1232,9 @@ std::shared_ptr<const Frontier> startFrontier(TribeTypes::Tribe tribe,
         frontier->status = Frontier::RULED_OUT;
         return frontier;
     }
-    start.stars = data.startStars;
+    // with any head start, public (GameSettings::headStart)
+    start.stars = data.startStars + headStart;
+    start.capitalIncome = capitalIncome;
     frontier->states = {start};
     return frontier;
 }
@@ -1349,14 +1354,20 @@ bool scoreChangesFit(const PlayerView &view, int opponent,
     // The player's roads outside their borders are open to the opponent too.
     // (Generated maps start without roads.)
     bool foreignRoads = view.techs.test(ROADS);
+    const int headStart = opponent < static_cast<int>(view.headStart.size())
+                              ? view.headStart[opponent]
+                              : 0;
+    const int capitalIncome = opponent < static_cast<int>(view.capitalIncome.size())
+                                  ? view.capitalIncome[opponent]
+                                  : Rules::CAPITAL_INCOME;
     FrontierKey key{view.size,       tribe,          meetingStars,
                     config.maxStates, config.maxWork, startingScore,
-                    foreignRoads};
+                    foreignRoads,    headStart,      capitalIncome};
     std::shared_ptr<const Frontier> frontier;
     if (auto found = cache.find(key); found != cache.end()) {
         frontier = found->second;
     } else {
-        frontier = startFrontier(tribe, startingScore);
+        frontier = startFrontier(tribe, startingScore, headStart, capitalIncome);
         cache.emplace(key, frontier);
     }
     Context board{.size = view.size,

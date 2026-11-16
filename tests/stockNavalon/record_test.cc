@@ -7,6 +7,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <set>
 #include <tuple>
@@ -24,6 +25,16 @@ bool sameMoves(const GameRecord &a, const GameRecord &b) {
         }
     }
     return true;
+}
+// the moves the search chose, which are training positions
+std::vector<int> searchedMovesOf(const GameRecord &r) {
+    std::vector<int> out;
+    for (std::size_t m = 0; m < r.moves.size(); m++) {
+        if (!r.moves[m].visits.empty()) {
+            out.push_back(static_cast<int>(m));
+        }
+    }
+    return out;
 }
 } // namespace
 
@@ -72,9 +83,10 @@ TEST_CASE("recorded games replay exactly, and survive a save and load") {
     }
     CHECK(loaded[0].finalValues[0] == doctest::Approx(0.25));
     CHECK(std::isnan(loaded[0].finalValues[1]));
-    // games recorded now keep the rule that diplomacy introduces the sender
+    // games recorded now keep the current rules
     for (const GameRecord &r : loaded) {
         CHECK(r.diplomacyMeets);
+        CHECK(r.adjacentPushes);
     }
 }
 
@@ -83,9 +95,15 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
     config.search.simulations = 8;
     config.maxTurns = 2;
     std::vector<GameRecord> records = playGames(config, 1, 4, 1);
+    // no tables, so the header ends with the rule flags, three empty tables
+    // and no head start
+    records[0].turnStars.clear();
+    records[0].turnIncome.clear();
+    records[0].turnValues.clear();
     auto path = std::filesystem::temp_directory_path() / "stocknavalon_old_records_test.txt";
     saveRecords(records, path.string(), false);
-    // drop the header's last token, as files written before it were
+    // drop the header's tokens from the rule flag on, as files written
+    // before them were
     std::string text;
     {
         std::ifstream in(path);
@@ -94,8 +112,8 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
         text = all.str();
     }
     std::size_t end = text.find('\n');
-    REQUIRE(text.compare(end - 4, 4, " 1 1") == 0);
-    text.erase(end - 2, 2);
+    REQUIRE(text.compare(end - 23, 23, " 1 1 0 0 0 1 0 0 0 0 -1") == 0);
+    text.erase(end - 21, 21);
     {
         std::ofstream out(path, std::ios::trunc);
         out << text;
@@ -105,6 +123,8 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
     REQUIRE(loaded.size() == 1);
     CHECK_FALSE(loaded[0].diplomacyMeets);
     CHECK_FALSE(loaded[0].start().settings.diplomacyMeets);
+    CHECK_FALSE(loaded[0].adjacentPushes);
+    CHECK_FALSE(loaded[0].start().settings.adjacentPushes);
     CHECK(sameMoves(loaded[0], records[0]));
 }
 
@@ -498,6 +518,45 @@ TEST_CASE("the value target can blend in the city lead, and cut-off games weigh 
     CHECK(weight[1] == 1);
 }
 
+TEST_CASE("examples count the positions in their player's turn") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.maxTurns = 4;
+    config.fullShare = 0.5;
+    std::vector<GameRecord> records = playGames(config, 1, 23, 1);
+    const GameRecord &r = records[0];
+    // the expected counts: by (turn, player), replaying the game
+    std::map<std::pair<int, int>, int> perTurn;
+    std::vector<std::pair<int, int>> positions;
+    std::vector<std::pair<int, int>> turnOf;
+    Game game = r.start();
+    for (std::size_t i = 0; i < r.moves.size(); i++) {
+        if (!r.moves[i].visits.empty()) {
+            perTurn[{game.turn, game.currentPlayer}]++;
+            positions.push_back({0, static_cast<int>(i)});
+            turnOf.push_back({game.turn, game.currentPlayer});
+        }
+        game.apply(r.moves[i].command);
+    }
+    REQUIRE(positions.size() > 4);
+    EncodingConfig enc;
+    const std::size_t b = positions.size(), c = planeCount(enc) * enc.mapSize * enc.mapSize,
+                      a = actionCount(enc), t = targetCount(enc);
+    std::vector<float> planes(b * c), globals(b * globalCount(enc)), policy(b * a), value(b),
+        weight(b), targets(b * t), turnPositions(b);
+    std::vector<std::uint8_t> legal(b * a), masks(b * t);
+    ExampleArrays out{planes.data(), globals.data(), legal.data(), policy.data(),
+                      value.data(),  weight.data(),  targets.data(), masks.data()};
+    out.turnPositions = turnPositions.data();
+    encodeExamples(records, positions, enc, out);
+    bool someLong = false;
+    for (std::size_t i = 0; i < b; i++) {
+        CHECK(turnPositions[i] == perTurn[turnOf[i]]);
+        someLong |= turnPositions[i] > 1;
+    }
+    CHECK(someLong);
+}
+
 TEST_CASE("records keep the final cities and whether peace treaties were allowed") {
     SelfPlayConfig config;
     config.search.simulations = 6;
@@ -787,5 +846,634 @@ TEST_CASE("a record replays legally only under the rules it was played with") {
         // a command that was never legal
         r.moves.insert(r.moves.begin(), {.player = 0, .command = {CommandTypes::CAPTURE, 0}});
         CHECK_FALSE(r.replaysLegally());
+    }
+}
+
+TEST_CASE("side targets: the player's own stars and income some turns ahead") {
+    using namespace SideTargets;
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.maxTurns = 14;
+    SelfPlaySession session(config, 2, 2, 17);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 2);
+    // kept through a save and load
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_economy_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    EncodingConfig enc;
+    const int count = sideTargetCount(enc);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        const GameRecord &r = records[g];
+        CHECK(loaded[g].turnStars == r.turnStars);
+        CHECK(loaded[g].turnIncome == r.turnIncome);
+        REQUIRE(r.turnStars.size() == static_cast<std::size_t>(r.turns + 1) * 2);
+        // replayed, each player's stars and income as their turn starts are
+        // what was recorded
+        Game game = r.start();
+        int turn = -1, mover = -1;
+        for (const RecordedMove &m : r.moves) {
+            if (game.turn != turn || game.currentPlayer != mover) {
+                turn = game.turn;
+                mover = game.currentPlayer;
+                std::size_t at = static_cast<std::size_t>(turn) * 2 + mover;
+                CHECK(r.turnStars[at] == game.players[mover].stars);
+                CHECK(r.turnIncome[at] == game.income(mover));
+            }
+            game.apply(m.command);
+        }
+        // the target at turn 1 is the player's from turn 11
+        std::vector<float> t(count);
+        std::vector<std::uint8_t> mask(count);
+        encodeSideTargets(r, 1, 0, enc, t.data(), mask.data());
+        REQUIRE(mask[STARS_AHEAD]);
+        CHECK(t[STARS_AHEAD] == doctest::Approx(r.turnStars[11 * 2] / STARS_SCALE));
+        CHECK(t[INCOME_AHEAD] == doctest::Approx(r.turnIncome[11 * 2] / INCOME_SCALE));
+    }
+    // an older record has none
+    GameRecord older = records[0];
+    older.turnStars.clear();
+    older.turnIncome.clear();
+    std::vector<float> t(count);
+    std::vector<std::uint8_t> mask(count);
+    encodeSideTargets(older, 1, 0, enc, t.data(), mask.data());
+    CHECK_FALSE(mask[STARS_AHEAD]);
+    CHECK_FALSE(mask[INCOME_AHEAD]);
+    // after a capture, the loser has nothing
+    GameRecord lost = records[0];
+    lost.winner = 1;
+    std::fill(lost.turnStars.end() - 2, lost.turnStars.end() - 1, 0);
+    std::fill(lost.turnIncome.end() - 2, lost.turnIncome.end() - 1, 0);
+    encodeSideTargets(lost, lost.turns - 1, 0, enc, t.data(), mask.data());
+    CHECK(t[STARS_AHEAD] == 0);
+    CHECK(t[INCOME_AHEAD] == 0);
+}
+
+TEST_CASE("side targets: short-term values are lambda-returns of the player's search values") {
+    using namespace SideTargets;
+    EncodingConfig enc;
+    const int count = sideTargetCount(enc);
+    GameRecord r;
+    r.map.size = 11;
+    r.winner = 0;
+    r.turns = 4;
+    r.finalScores = {1000, 900};
+    // turns x players; player 1 has no value in turn 2
+    const float nan = std::nanf("");
+    r.turnValues = {0.2f, -0.2f, 0.4f, -0.4f, 0.6f, nan, 0.8f, -0.8f};
+    std::vector<float> t(count);
+    std::vector<std::uint8_t> mask(count);
+    for (int player : {0, 1}) {
+        CAPTURE(player);
+        encodeSideTargets(r, 1, player, enc, t.data(), mask.data());
+        for (std::size_t h = 0; h < SHORT_TERM_HORIZONS.size(); h++) {
+            double lambda = 1 - 1 / SHORT_TERM_HORIZONS[h];
+            // from the result back to turn 1, skipping the missing value
+            double ret = player == 0 ? 1 : -1;
+            for (int turn = 3; turn >= 1; turn--) {
+                float v = r.turnValues[turn * 2 + player];
+                if (!std::isnan(v)) {
+                    ret = (1 - lambda) * v + lambda * ret;
+                }
+            }
+            REQUIRE(mask[SHORT_TERM_VALUE + h]);
+            CHECK(t[SHORT_TERM_VALUE + h] == doctest::Approx(ret));
+        }
+    }
+    // the shortest follows the coming turns, the longest the result
+    encodeSideTargets(r, 1, 1, enc, t.data(), mask.data());
+    CHECK(t[SHORT_TERM_VALUE] > t[SHORT_TERM_VALUE + 2]);
+    // an older record has none
+    r.turnValues.clear();
+    encodeSideTargets(r, 1, 0, enc, t.data(), mask.data());
+    CHECK_FALSE(mask[SHORT_TERM_VALUE]);
+}
+
+TEST_CASE("self-play records each player's search values per turn, and they survive a save") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.maxTurns = 5;
+    SelfPlaySession session(config, 2, 2, 23);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 2);
+    for (const GameRecord &r : records) {
+        REQUIRE(r.turnValues.size() == static_cast<std::size_t>(r.turns + 1) * 2);
+        // every turn played has a value for its player
+        for (int turn = 0; turn < r.turns; turn++) {
+            CHECK_FALSE(std::isnan(r.turnValues[turn * 2]));
+            CHECK(std::abs(r.turnValues[turn * 2]) <= 1);
+        }
+    }
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_values_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        REQUIRE(loaded[g].turnValues.size() == records[g].turnValues.size());
+        for (std::size_t i = 0; i < records[g].turnValues.size(); i++) {
+            float a = records[g].turnValues[i], b = loaded[g].turnValues[i];
+            CHECK((std::isnan(a) ? std::isnan(b) : b == doctest::Approx(a).epsilon(1e-4)));
+        }
+    }
+    // bootstrap games (score leads, not chances of winning) keep none
+    for (const GameRecord &r : playGames(config, 1, 3, 1)) {
+        CHECK(r.turnValues.empty());
+    }
+}
+
+TEST_CASE("side targets: turns left, only for games that ended in a capture") {
+    using namespace SideTargets;
+    EncodingConfig enc;
+    const int count = sideTargetCount(enc);
+    GameRecord r;
+    r.map.size = 11;
+    r.finalScores = {1000, 900};
+    r.turns = 40;
+    r.winner = 1;
+    std::vector<float> t(count);
+    std::vector<std::uint8_t> mask(count);
+    encodeSideTargets(r, 10, 0, enc, t.data(), mask.data());
+    REQUIRE(mask[TURNS_LEFT]);
+    CHECK(t[TURNS_LEFT] == doctest::Approx(30 / TURNS_LEFT_SCALE));
+    // capped
+    r.turns = 150;
+    encodeSideTargets(r, 0, 0, enc, t.data(), mask.data());
+    CHECK(t[TURNS_LEFT] == doctest::Approx(TURNS_LEFT_CAP / TURNS_LEFT_SCALE));
+    // a cut-off game says nothing about when its end would have come
+    r.winner = -1;
+    encodeSideTargets(r, 10, 0, enc, t.data(), mask.data());
+    CHECK_FALSE(mask[TURNS_LEFT]);
+}
+
+TEST_CASE("handicap games: one side's head start, recorded, replayed and encoded") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.maxTurns = 3;
+    config.handicapShare = 1;
+    // head starts only, here; the other kinds have their own tests
+    config.handicapIncomeShare = 0;
+    config.handicapCatchUpShare = 0;
+    SelfPlaySession session(config, 4, 6, 3);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 6);
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_handicap_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    EncodingConfig enc;
+    const int G = globalCount(enc);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        const GameRecord &r = records[g];
+        REQUIRE(r.headStart.size() == 2);
+        // exactly one side ahead, by one of the configured amounts
+        int ahead = r.headStart[0] > 0 ? 0 : 1;
+        CHECK(r.headStart[1 - ahead] == 0);
+        CHECK(std::find(config.handicapStars.begin(), config.handicapStars.end(),
+                        r.headStart[ahead]) != config.handicapStars.end());
+        CHECK(loaded[g].headStart == r.headStart);
+        CHECK(r.replaysLegally());
+        // the start has it, and each player's input shows it, relative
+        Game game = r.start();
+        CHECK(game.players[ahead].stars ==
+              tribeData[r.map.tribes[ahead]].startStars + r.headStart[ahead]);
+        std::vector<float> planes(planeCount(enc) * enc.mapSize * enc.mapSize), globals(G);
+        encodeState(game, ahead, enc, planes.data(), globals.data());
+        CHECK(globals[G - 4] == doctest::Approx(r.headStart[ahead] / 50.0f));
+        CHECK(globals[G - 3] == 0);
+        encodeState(game, 1 - ahead, enc, planes.data(), globals.data());
+        CHECK(globals[G - 4] == 0);
+        CHECK(globals[G - 3] == doctest::Approx(r.headStart[ahead] / 50.0f));
+    }
+    // ordinary games have none
+    for (const GameRecord &r : playGames(SelfPlayConfig{.maxTurns = 2}, 1, 1, 1)) {
+        CHECK(r.headStart.empty());
+    }
+}
+
+TEST_CASE("handicap games by income: one side's capital earns more, recorded and encoded") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.maxTurns = 3;
+    config.handicapShare = 1;
+    config.handicapIncomeShare = 1;
+    config.handicapCatchUpShare = 0;
+    SelfPlaySession session(config, 4, 4, 5);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 4);
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_income_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    EncodingConfig enc;
+    const int G = globalCount(enc);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        const GameRecord &r = records[g];
+        REQUIRE(r.capitalIncome.size() == 2);
+        CHECK(r.headStart.empty());
+        int ahead = r.capitalIncome[0] > Rules::CAPITAL_INCOME ? 0 : 1;
+        CHECK(r.capitalIncome[1 - ahead] == Rules::CAPITAL_INCOME);
+        int extra = r.capitalIncome[ahead] - Rules::CAPITAL_INCOME;
+        CHECK((extra == 1 || extra == 2));
+        CHECK(loaded[g].capitalIncome == r.capitalIncome);
+        CHECK(r.replaysLegally());
+        Game game = r.start();
+        CHECK(game.capitalIncome(ahead) == Rules::CAPITAL_INCOME + extra);
+        std::vector<float> planes(planeCount(enc) * enc.mapSize * enc.mapSize), globals(G);
+        encodeState(game, 1 - ahead, enc, planes.data(), globals.data());
+        // from the trailing side's seat, the opponent is relative player 1
+        CHECK(globals[G - 2] == 0);
+        CHECK(globals[G - 1] == doctest::Approx(extra / 30.0f));
+    }
+}
+
+TEST_CASE("catch-up games: the side that falls behind after meeting gets more income from then on") {
+    // a network that always calls player 1 lost
+    struct Grim : Evaluator {
+        void evaluate(const std::vector<EvalRequest> &requests,
+                      std::vector<Evaluation> &results) override {
+            results.resize(requests.size());
+            for (std::size_t i = 0; i < requests.size(); i++) {
+                std::size_t n = requests[i].moves ? requests[i].moves->size() : 0;
+                results[i].priors.assign(n, n ? 1.0f / static_cast<float>(n) : 0.0f);
+                results[i].value = requests[i].player == 1 ? -0.9f : 0.9f;
+            }
+        }
+    } network;
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.maxTurns = 25;
+    config.handicapShare = 1;
+    config.handicapCatchUpShare = 1;
+    config.catchUpFromTurn = 3;
+    SelfPlaySession session(config, 6, 6, 9);
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        network.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 6);
+    int boosted = 0;
+    for (const GameRecord &r : records) {
+        // no edge at the start
+        CHECK(r.headStart.empty());
+        CHECK(r.capitalIncome.empty());
+        CHECK(r.replaysLegally());
+        if (r.incomeBonuses.empty()) {
+            continue;
+        }
+        boosted++;
+        REQUIRE(r.incomeBonuses.size() == 1);
+        const IncomeBonus &b = r.incomeBonuses[0];
+        CHECK(b.player == 1);
+        CHECK(b.fromTurn > config.catchUpFromTurn);
+        CHECK((b.extra == 1 || b.extra == 2));
+        // replayed: nothing extra before its turn; from then on it pays, and
+        // the players had met (it's given during the turn before, after
+        // meeting)
+        Game game = r.start();
+        CHECK(game.capitalIncome(1) == Rules::CAPITAL_INCOME);
+        for (std::size_t m = 0; m < r.moves.size() && game.turn < b.fromTurn; m++) {
+            game.applyUnchecked(r.moves[m].command);
+        }
+        if (game.turn >= b.fromTurn) {
+            CHECK(game.players[0].hasMet(1));
+            CHECK(game.players[1].hasMet(0));
+            CHECK(game.capitalIncome(1) == Rules::CAPITAL_INCOME + b.extra);
+        }
+    }
+    CHECK(boosted > 0);
+    // kept through a save and load
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_catchup_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        CHECK(loaded[g].incomeBonuses == records[g].incomeBonuses);
+        CHECK(loaded[g].catchUp);
+    }
+    // the value trains only from the boost on; a catch-up game without one
+    // never trains it, an ordinary game always does
+    EncodingConfig enc;
+    for (const GameRecord &r : records) {
+        std::vector<std::pair<int, int>> positions;
+        for (int m : searchedMovesOf(r)) {
+            positions.push_back({0, m});
+        }
+        if (positions.empty()) {
+            continue;
+        }
+        const std::size_t n = positions.size(), a = actionCount(enc);
+        std::vector<float> planes(n * planeCount(enc) * enc.mapSize * enc.mapSize),
+            globals(n * globalCount(enc)), policy(n * a), value(n), weight(n),
+            targets(n * targetCount(enc)), side(n * sideTargetCount(enc));
+        std::vector<std::uint8_t> legal(n * a), masks(n * targetCount(enc)),
+            sideMasks(n * sideTargetCount(enc));
+        encodeExamples({r}, positions, enc,
+                       {planes.data(), globals.data(), legal.data(), policy.data(), value.data(),
+                        weight.data(), targets.data(), masks.data(), side.data(),
+                        sideMasks.data()});
+        Game game = r.start();
+        std::size_t k = 0;
+        for (std::size_t m = 0; m < r.moves.size() && k < n; m++) {
+            if (static_cast<int>(m) == positions[k].second) {
+                CHECK((weight[k] > 0) == r.valueCounts(game.turn));
+                const std::size_t S = sideTargetCount(enc);
+                bool anySide = std::any_of(sideMasks.begin() + k * S, sideMasks.begin() + (k + 1) * S,
+                                           [](std::uint8_t x) { return x != 0; });
+                CHECK(anySide == r.valueCounts(game.turn));
+                if (r.incomeBonuses.empty()) {
+                    CHECK(weight[k] == 0);
+                }
+                k++;
+            }
+            game.applyUnchecked(r.moves[m].command);
+        }
+    }
+    GameRecord ordinary;
+    CHECK(ordinary.valueCounts(0));
+}
+
+TEST_CASE("the evaluation cache answers repeats exactly as the network would") {
+    // a stand-in network whose answers depend only on its input
+    EncodingConfig enc;
+    const std::size_t P = planeCount(enc) * enc.mapSize * enc.mapSize, G = globalCount(enc);
+    auto summary = [&](const float *planes, const float *globals) {
+        double s = 0;
+        for (std::size_t k = 0; k < P; k++) {
+            s += planes[k] * static_cast<double>(k % 97 + 1);
+        }
+        for (std::size_t k = 0; k < G; k++) {
+            s += globals[k] * static_cast<double>(k % 89 + 3);
+        }
+        return s;
+    };
+    auto play = [&](bool cached, SelfPlaySession::CacheStats &stats, int parallel) {
+        SelfPlayConfig config;
+        config.search.simulations = 24;
+        config.quickSimulations = 8;
+        config.fullShare = 0.5;
+        config.maxTurns = 6;
+        config.fogShare = 0.5;
+        config.search.gumbel = false;
+        SelfPlaySession session(config, parallel, 4, 17);
+        while (!session.done()) {
+            // as the Python side does: arrays for the batch, copied into
+            // even when it's empty, and an empty batch is the end
+            std::size_t b = cached ? session.pendingForNetwork(enc) : session.pending().size();
+            const std::vector<EvalRequest> &requests = session.waiting();
+            std::vector<float> planes(b * P), globals(b * G);
+            if (cached) {
+                session.copyPrepared(planes.data(), globals.data());
+            } else {
+                encodeRequests(requests, enc, planes.data(), globals.data(), nullptr);
+            }
+            if (b == 0) {
+                break;
+            }
+            std::vector<int> rows, slots;
+            requestSlots(requests, enc, rows, slots);
+            std::vector<float> logits(slots.size()), values(b), ties(2 * b);
+            std::vector<double> sums(b);
+            for (std::size_t i = 0; i < b; i++) {
+                sums[i] = summary(planes.data() + i * P, globals.data() + i * G);
+                values[i] = static_cast<float>(std::tanh(sums[i] * 1e-3));
+                ties[2 * i] = static_cast<float>(std::sin(sums[i]));
+                ties[2 * i + 1] = static_cast<float>(std::fabs(std::cos(sums[i])));
+            }
+            for (std::size_t k = 0; k < slots.size(); k++) {
+                logits[k] = static_cast<float>(std::sin(sums[rows[k]] * 0.01 + slots[k] * 0.37));
+            }
+            if (cached) {
+                session.submitMoveLogits(enc, logits.data(), values.data(), ties.data(), nullptr);
+            } else {
+                std::vector<Evaluation> results;
+                evaluationsFromMoveLogits(requests, slots, logits.data(), values.data(), results,
+                                          ties.data());
+                session.submit(results);
+            }
+        }
+        stats = session.takeCacheStats();
+        std::vector<GameRecord> records = session.takeFinished();
+        std::sort(records.begin(), records.end(),
+                  [](const GameRecord &a, const GameRecord &b) { return a.gameSeed < b.gameSeed; });
+        return records;
+    };
+    // one game at a time, where whole batches come from the cache, and four
+    for (int parallel : {1, 4}) {
+        CAPTURE(parallel);
+        SelfPlaySession::CacheStats none, stats;
+        std::vector<GameRecord> plain = play(false, none, parallel),
+                                cached = play(true, stats, parallel);
+        // every game finished: a batch the cache answered whole doesn't end it
+        REQUIRE(plain.size() == 4);
+        REQUIRE(plain.size() == cached.size());
+        for (std::size_t g = 0; g < plain.size(); g++) {
+            CHECK(sameMoves(plain[g], cached[g]));
+        }
+        MESSAGE("cache, " << parallel << " at a time: " << stats.hits << " hits of "
+                          << stats.lookups << " lookups");
+        CHECK(none.lookups == 0);
+        CHECK(stats.hits > 0);
+    }
+}
+
+TEST_CASE("the evaluation cache with belief requests and two networks, as Python drives it") {
+    EncodingConfig enc;
+    const std::size_t P = planeCount(enc) * enc.mapSize * enc.mapSize, G = globalCount(enc),
+                      B = beliefOutputCount(enc);
+    for (bool match : {false, true}) {
+        CAPTURE(match);
+        SelfPlayConfig config;
+        config.search.simulations = 16;
+        config.quickSimulations = 4;
+        config.maxTurns = 6;
+        config.fogShare = 1;
+        config.networkBeliefs = true;
+        config.search.gumbel = true;
+        config.gumbel = {true, true};
+        if (match) {
+            config.paired = true;
+        }
+        config.handicapShare = 0.5;
+        SelfPlaySession session(config, 4, 6, 29);
+        // past the end too, as Python's loop asks once more before stopping
+        for (int extra = 0; extra < 2;) {
+            std::size_t b = session.pendingForNetwork(enc);
+            const std::vector<EvalRequest> &requests = session.waiting();
+            REQUIRE(requests.size() == b);
+            REQUIRE(session.waitingSides().size() == b);
+            std::vector<float> planes(b * P), globals(b * G);
+            session.copyPrepared(planes.data(), globals.data());
+            if (b == 0) {
+                extra++;
+                continue;
+            }
+            std::vector<int> rows, slots;
+            requestSlots(requests, enc, rows, slots);
+            std::size_t wanted = 0;
+            for (const EvalRequest &r : requests) {
+                wanted += r.wantsBeliefs;
+            }
+            std::vector<float> logits(slots.size(), 0.1f), values(b), ties(2 * b, 0.0f),
+                beliefs(wanted * B, 0.0f);
+            // an untrained network's belief outputs: anything
+            std::mt19937_64 noise(b * 7919 + wanted);
+            std::normal_distribution<float> normal(0.0f, 2.0f);
+            for (float &x : beliefs) {
+                x = normal(noise);
+            }
+            for (std::size_t i = 0; i < b; i++) {
+                values[i] = session.waitingSides()[i] == 0 ? 0.2f : -0.1f;
+            }
+            session.submitMoveLogits(enc, logits.data(), values.data(), ties.data(),
+                                     wanted ? beliefs.data() : nullptr);
+        }
+        CHECK(session.takeFinished().size() == 6);
+        SelfPlaySession::CacheStats stats = session.takeCacheStats();
+        CHECK(stats.lookups > 0);
+    }
+    // and games on threads afterwards still play
+    SelfPlayConfig plain;
+    plain.search.simulations = 10;
+    plain.maxTurns = 4;
+    CHECK(playGames(plain, 4, 5, 2).size() == 4);
+}
+
+TEST_CASE("each side can search with its own number of simulations") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.fullShare = 1;
+    config.maxTurns = 3;
+    config.treeReuse = false;
+    config.simulations = {4, 32};
+    // simulations count per determinized game: one each
+    config.search.samples = 1;
+    SelfPlaySession session(config, 2, 2, 43);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 2);
+    // side 0 plays seat 0 (not paired): simulations per searched move
+    std::array<int, 2> searched{0, 0};
+    for (const GameRecord &r : records) {
+        for (const RecordedMove &m : r.moves) {
+            searched[m.player] += !m.visits.empty();
+        }
+    }
+    REQUIRE(searched[0] > 0);
+    REQUIRE(searched[1] > 0);
+    const auto &depth = session.depthStats();
+    double per0 = static_cast<double>(depth[0].simulations) / searched[0],
+           per1 = static_cast<double>(depth[1].simulations) / searched[1];
+    CHECK(per0 <= 4);
+    CHECK(per1 > 8);
+    CHECK(per1 <= 32);
+}
+
+TEST_CASE("opponent-pool games: only the current network's moves train, at either seat") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.quickSimulations = 4;
+    config.fullShare = 1;
+    config.maxTurns = 4;
+    config.randomSeats = true;
+    config.trainSides = {true, false};
+    SelfPlaySession session(config, 4, 8, 41);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 8);
+    std::set<int> seats;
+    for (const GameRecord &r : records) {
+        REQUIRE((r.poolOpponentSeat == 0 || r.poolOpponentSeat == 1));
+        CHECK(r.poolOpponentSeat == 1 - r.seatZeroSide);
+        seats.insert(r.poolOpponentSeat);
+        CHECK(r.replaysLegally());
+        int trained = 0;
+        for (const RecordedMove &m : r.moves) {
+            if (m.player == r.poolOpponentSeat) {
+                CHECK(m.visits.empty());
+            } else {
+                trained += !m.visits.empty();
+            }
+        }
+        CHECK(trained > 0);
+    }
+    // both seats come up
+    CHECK(seats.size() == 2);
+    // kept through a save and load
+    auto path = std::filesystem::temp_directory_path() / "stocknavalon_pool_test.txt";
+    saveRecords(records, path.string(), false);
+    std::vector<GameRecord> loaded = loadRecords(path.string());
+    std::filesystem::remove(path);
+    for (std::size_t g = 0; g < records.size(); g++) {
+        CHECK(loaded[g].poolOpponentSeat == records[g].poolOpponentSeat);
     }
 }

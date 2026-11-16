@@ -17,6 +17,16 @@
             "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
         },
         {
+            "name": "check",
+            "displayName": "Check",
+            "description": "Optimized with sanitizers and container checks: the full test suite, fast",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "POLYENGINE_SANITIZE": "ON"
+            }
+        },
+        {
             "name": "dev",
             "displayName": "Dev",
             "description": "Debug info, sanitizers and checked containers; also what the editor uses (.clangd)",
@@ -29,12 +39,18 @@
     ],
     "buildPresets": [
         {"name": "release", "configurePreset": "release"},
+        {"name": "check", "configurePreset": "check"},
         {"name": "dev", "configurePreset": "dev"}
     ],
     "testPresets": [
         {
             "name": "release",
             "configurePreset": "release",
+            "output": {"outputOnFailure": true}
+        },
+        {
+            "name": "check",
+            "configurePreset": "check",
             "output": {"outputOnFailure": true}
         },
         {

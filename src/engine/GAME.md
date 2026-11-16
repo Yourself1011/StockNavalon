@@ -40,7 +40,7 @@ Polytopia is a turn-based strategy game played on a square grid. Players gain st
 - **Capturing and examining ruins:** a unit can only capture a village or city, or examine a ruin, if it _started_ its turn on that tile. So each takes at least 2 turns.
 - **Actions that end a unit's turn** (bengreff): embarking, disembarking, capturing, examining a ruin, Recover, Heal Others.
 - **Units without their tech:** units can come from ruins, city rewards, the starting unit or conversion without the player owning their tech. They work normally (bengreff).
-- **Meeting a tribe** means seeing one of its units or one of its cities; a tile inside its borders alone doesn't count (game). The first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (wiki). This is why the engine has to track score (section 3).
+- **Meeting a tribe** means seeing one of its units or one of its cities; a tile inside its borders alone doesn't count (game). Sending a tribe a peace offer or building an embassy in its capital also reveals you to them: they meet you then (game). The first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (wiki). This is why the engine has to track score (section 3).
 
 Sources: <https://polytopia.fandom.com/wiki/Game_Modes>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md> (rules doc only)
 
@@ -67,7 +67,7 @@ The real game has one command per kind of action. The engine should use the same
   - 2 for Luxidoor
 - **Income** is added at the start of each of the player's turns. It is the sum of:
   - each city's level in stars
-  - +1 for the capital, so a level-1 capital makes 2 (bengreff, from the code). The bonus is a per-player "handicap": humans and Normal bots get 1, Easy 0, Hard 2, Crazy 4. We use 1 for every player.
+  - +1 for the capital, so a level-1 capital makes 2 (bengreff, from the code). The bonus is a per-player "handicap": humans and Normal bots get 1, Easy 0, Hard 2, Crazy 4. The engine uses 1 for every player unless a game sets it per player (`GameSettings::capitalIncome`, used for training handicap games).
   - +1 per Workshop and +1 per Park (section 7)
   - Market income (section 6)
   - embassy income (section 15)
@@ -177,7 +177,7 @@ You can only build on tiles inside your own borders, unless a row says otherwise
 | Market           | 5    | 0                          | Field, next to at least one Windmill, Sawmill or Forge. Each turn, gives +1 star per level of each adjacent Windmill, Sawmill and Forge. Max level 8. One per city. |
 | Port             | 7    | +1                         | Shallow water only. Lets units embark (section 10). Connects cities over water (section 7). You can't use a Port in enemy territory.                                |
 | Road             | 3    | –                          | Field or forest, on a free or own tile. Not on mountains. Can be built outside your borders.                                                                        |
-| Bridge           | 5    | –                          | One shallow-water tile; acts as a road                                                                                                                              |
+| Bridge           | 5    | –                          | One shallow-water tile with land on opposite sides, north and south or east and west, so it spans water rather than leading into it (game); acts as a road                                                                                                                              |
 | Temple           | 20   | +1                         | Field                                                                                                                                                               |
 | Forest Temple    | 15   | +1                         | Forest                                                                                                                                                              |
 | Mountain Temple  | 20   | +1                         | Mountain                                                                                                                                                            |
@@ -196,6 +196,7 @@ You can only build on tiles inside your own borders, unless a row says otherwise
 - **Can be built outside your borders:** Road, Bridge and Starfish Harvest (the data file's `freelance` flag).
 - **Harvests remove the resource:** Fruit, Hunting, Fishing, Starfish, Clear Forest and Burn Forest consume it (`consumed` flag).
 - **Done by a unit:** Starfish Harvest needs a unit standing on the tile (`manual` flag).
+- **An enemy unit blocks the tile:** while an enemy unit stands on a tile, nothing can be built, harvested or destroyed there, even inside your own borders, until it's killed or moves off (game).
 - **Removed:** Customs House and Whale Hunting no longer exist.
 
 Sources: <https://polytopia.fandom.com/wiki/Buildings>, <https://polytopia.fandom.com/wiki/Market>, <https://polytopia.fandom.com/wiki/Temples>, <https://polytopia.fandom.com/wiki/Port>, <https://steamcommunity.com/app/874390/discussions/0/3757726983059762031/>, <https://polytopia.io/2025-balance-pass/>
@@ -270,8 +271,8 @@ When a Giant spawns on a city tile that already has a unit on it, that unit is p
 - A new unit is pushed toward the centre of the map.
 - A friendly unit is pushed onward in the direction it was moving.
 - An enemy unit is pushed backward.
-- If the target tile is blocked, try the next tiles counter-clockwise, then clockwise, at increasing distance.
-- If no tile is free, the pushed unit is destroyed.
+- If the target tile is blocked, try the next neighbouring tiles counter-clockwise, then clockwise.
+- Only the 8 neighbouring tiles count. If none is free, the pushed unit is destroyed: the "houdini" (game).
 - Pushing an enemy off a city this way lifts the siege (bengreff).
 
 The push directions are confirmed (game).
@@ -356,6 +357,7 @@ Source: <https://polytopia.fandom.com/wiki/Unit_Skills>
 - **Mountains** need Climbing.
 - **Roads:**
   - A step from a road or city tile to another road or city tile costs 0.5. Cities count as roads.
+  - Any movement left allows one more step, even one costing more than what's left: a unit with movement 1 can take a road step and then an ordinary step (game). That step uses up the rest.
   - That step ignores the forest penalty, but not zone of control.
   - A bridge counts as a road.
 - **Zone of control:**
@@ -486,12 +488,13 @@ Source: <https://polytopia.fandom.com/wiki/Monuments>
   - At most one embassy per tribe.
   - Gives +2 stars per turn to both the builder and the host, or +4 each while they have a peace treaty.
   - The builder sees the 3×3 area around the host's capital.
+  - The host meets the builder, if it hadn't already (section 2).
   - **Attacking destroys embassies:** attacking a tribe (one of its units or cities) destroys the attacker's embassy in the defender's capital and the defender's embassy in the attacker's capital.
   - Embassies can also be destroyed with an explicit action (bengreff).
   - The data file also has embassy levels, an upgrade cost and a tech-price multiplier, but none of these exist in the game (game; wiki). Ignore them.
 - **Capital Vision** (Diplomacy): shows the capitals of tribes you have met.
 - **Peace treaty** (Strategy):
-  - One side proposes and the other accepts.
+  - One side proposes and the other accepts. The offer reveals the proposer: the other side meets them, if it hadn't already (section 2).
   - While it lasts: neither side can attack the other, each can use the other's roads, and embassy income doubles.
   - Either side can cancel it.
   - **Breaking it:** the breaker can't attack that turn, and their active units freeze. Their units inside the other tribe's borders are disbanded with no refund.
@@ -510,6 +513,7 @@ Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/E
   - A moving unit reveals around every tile along its path, not just where it stops (game). Units can't move into unexplored tiles, so a path only ever runs through explored ground.
 - **Climate:** every tile belongs to one tribe's climate region, and its look shows which, unambiguously, including near region borders (game). So exploring a foreign climate reveals that its tribe is in the game, before meeting them. In 1v1 that identifies the opponent's tribe, unless it's a mirror match: both players can pick the same tribe (game).
 - **Start:** each player starts with the 5×5 area around their capital explored.
+- **The shore:** an explored shallow-water tile shows, on each of its four sides, whether the neighbour there is land (game). So an unexplored tile directly beside explored shallow water is known to be land or water, though not which kind.
 - **Explored tiles stay explored.** A per-player flag goes from unexplored to explored and never back.
 - **What explored tiles show:** their live contents, including enemy units, whether or not one of your units can currently see them.
   - Source: the game's code, per bengreff, who also lists the wiki's "stale last-seen view" as wrong.
@@ -726,7 +730,7 @@ The details below aren't public. The engine uses these defaults for now. They'll
 | Climate regions                                  | Each capital grows its region outward one tile per round, all capitals at once, with ties broken at random, until every tile has a region.                                                    |
 | Capping resource modifiers                       | Per tile, each resource's chance is (its rate ÷ the terrain's share) × the tribe modifier. If a terrain's chances add up to more than 1, scale them down to add up to 1, so no tile is empty. |
 | Kickoo's water modifier                          | No effect, apart from the 2 fish water tiles at its capital on Drylands.                                                                                                                      |
-| Who gets the meeting bonus                       | Only the player who sees the other tribe. The other tribe meets them when it sees one of theirs.                                                                                              |
+| Who gets the meeting bonus                       | Only the player who meets the other tribe. The other tribe meets them when it sees one of theirs, or receives their peace offer or embassy.                                                   |
 | Archipelago water ruins                          | At most a third, like Lakes and Pangea.                                                                                                                                                       |
 | Where starting resources go                      | Random tiles next to the capital, with the terrain changed to fit the resource if needed (e.g. fish needs water).                                                                             |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10.                                                                                                                                                         |

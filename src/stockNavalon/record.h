@@ -57,12 +57,38 @@ struct GameRecord {
     // whether the game was played with fog; without it, its positions are
     // encoded with full information (SelfPlayConfig::fogShare)
     bool fog = true;
+    // each player's stars and income at the start of each of their turns,
+    // turns x players, -1 where they had no turn; for the side targets.
+    // Empty in older records.
+    std::vector<int> turnStars, turnIncome;
+    // each player's mean root value over their decisions searched with the
+    // network in each turn, turns x players, NaN where there were none; for
+    // the short-term value targets. Empty in older records.
+    std::vector<float> turnValues;
     // whether peace treaties were allowed (GameSettings::peaceTreaties), so
     // a replay has the same legal commands
     bool peaceTreaties = true;
     // whether diplomacy introduced the sender (GameSettings::diplomacyMeets):
     // false for games recorded before the engine had the rule
     bool diplomacyMeets = true;
+    // each player's head start in stars (GameSettings::headStart): a
+    // handicap game's; empty for an ordinary game
+    std::vector<int> headStart;
+    // each player's capital income bonus (GameSettings::capitalIncome): a
+    // handicap game's; empty for the usual
+    std::vector<int> capitalIncome;
+    // more capital income from a turn on (GameSettings::incomeBonuses): a
+    // catch-up handicap game's
+    std::vector<IncomeBonus> incomeBonuses;
+    // a catch-up game, whether or not the boost was ever given: its value
+    // targets only count from the boost on (valueCounts)
+    bool catchUp = false;
+    // in an opponent-pool game, the seat the earlier network played; -1 in an
+    // ordinary game
+    int poolOpponentSeat = -1;
+    // whether pushed units only went to a neighbouring tile
+    // (GameSettings::adjacentPushes): false for games recorded before
+    bool adjacentPushes = true;
     // each player's cities when the game ended, for the early city term of
     // the value target; empty in older records
     std::vector<int> finalCities;
@@ -75,6 +101,15 @@ struct GameRecord {
 
     // the game before any command
     Game start() const;
+    // Whether a position at this turn trains the value and the side heads
+    // (everything about how the game went on). In a catch-up game, only from
+    // the boost on: before it the position looks like an ordinary game's but
+    // its future isn't (whoever falls behind gets help), so its result would
+    // teach the value to expect rescues it can't see. The policy and belief
+    // targets, about the position itself, always train.
+    bool valueCounts(int turn) const {
+        return !catchUp || (!incomeBonuses.empty() && turn >= incomeBonuses[0].fromTurn);
+    }
     // whether every command is legal when replayed, and no player's stars go
     // below zero: a check that the record replays as it was played
     bool replaysLegally() const;
@@ -135,6 +170,10 @@ struct ExampleArrays {
     // the side targets and their masks [B][S]; skipped if null
     float *sideTargets = nullptr;
     std::uint8_t *sideMasks = nullptr;
+    // [B]: how many positions with a policy target the position's player
+    // had in that turn (counting itself), so training can weigh each player
+    // turn the same however many moves it took; skipped if null
+    float *turnPositions = nullptr;
 };
 
 // The side targets for `player` at game turn `turn` of a recorded game

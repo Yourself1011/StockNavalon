@@ -1,4 +1,5 @@
 import math
+import os
 
 import pytest
 
@@ -41,6 +42,24 @@ def test_weights_saved_before_the_global_vector_grew_load_and_play_the_same():
     saved["globals.weight"] = saved["globals.weight"][:, :-new_inputs].clone()
     model = sn.Network(enc, channels=16, blocks=2).eval()
     assert load_weights(model, saved) == ["globals.weight"]
+    planes = torch.randn(2, enc.plane_count, 11, 11)
+    globals_ = torch.randn(2, enc.global_count)
+    with torch.no_grad():
+        a, b = old(planes, globals_), model(planes, globals_)
+    assert torch.equal(a["policy"], b["policy"]) and torch.equal(a["value"], b["value"])
+
+
+def test_weights_saved_before_the_shore_planes_load_and_play_the_same():
+    from stocknavalon.model import load_weights
+    enc = pe.Encoding()
+    torch.manual_seed(1)
+    old = sn.Network(enc, channels=16, blocks=2).eval()
+    with torch.no_grad():
+        old.stem.weight[:, -2:] = 0
+    saved = old.state_dict()
+    saved["stem.weight"] = saved["stem.weight"][:, :-2].clone()
+    model = sn.Network(enc, channels=16, blocks=2).eval()
+    assert load_weights(model, saved) == ["stem.weight"]
     planes = torch.randn(2, enc.plane_count, 11, 11)
     globals_ = torch.randn(2, enc.global_count)
     with torch.no_grad():
@@ -266,3 +285,44 @@ def test_a_step_with_a_loss_that_is_not_finite_is_skipped(buffer, monkeypatch):
     monkeypatch.setattr(train, "losses", real)
     assert trainer.step(buffer, 8)
     assert all(torch.isfinite(v).all() for v in model.state_dict().values() if v.is_floating_point())
+
+
+def test_opponent_pool_games_train_only_the_current_network_at_either_seat(tmp_path):
+    from stocknavalon.run import pool_snapshots
+    from stocknavalon.selfplay import PoolPlay
+    enc = pe.Encoding()
+    current = sn.Network(enc, channels=16, blocks=1).eval()
+    earlier = sn.Network(enc, channels=16, blocks=1).eval()
+    runner = PoolPlay(enc, torch.device("cpu"), parallel=8, seed=3, simulations=8,
+                      samples=1, max_turns=8, quick_simulations=4, full_share=1.0)
+    games, evaluated = runner.play(current, earlier, 6)
+    assert len(games) >= 6 and evaluated > 0
+    assert {g.pool_opponent_seat for g in games} == {0, 1}
+    # the earlier network's moves have no policy targets: only the current
+    # network's train (the C++ tests check which moves those are)
+    buf = pe.ReplayBuffer(100_000)
+    buf.add(games)
+    assert 0 < buf.positions
+
+    # the pool: the latest earlier bests from both folders, not the current
+    for folder, steps in (("checkpoints", (10, 30)), ("pool", (20, 30, 40))):
+        (tmp_path / folder).mkdir()
+        for s in steps:
+            (tmp_path / folder / f"step_{s}.pt").touch()
+    names = [p.split(os.sep)[-2:] for p in pool_snapshots(str(tmp_path), 2, 40)]
+    assert [n[1] for n in names] == ["step_20.pt", "step_30.pt"]
+    assert len(pool_snapshots(str(tmp_path), 8, None)) == 4
+    assert pool_snapshots(str(tmp_path), 0, None) == []
+
+
+def test_value_per_turn_trains_and_held_out_reports_the_bias(buffer):
+    from stocknavalon.train import heldout_losses
+    enc = pe.Encoding()
+    model = sn.Network(enc, channels=16, blocks=2)
+    trainer = sn.Trainer(model, enc, torch.device("cpu"), value_per_turn=True)
+    stats = trainer.step(buffer, 16)
+    assert math.isfinite(stats["total"]) and math.isfinite(stats["value"])
+    examples = buffer.sample_examples(enc, 32, 1)
+    assert (examples["turn_positions"] >= 1).all()
+    held = heldout_losses(model, torch.device("cpu"), examples)
+    assert -2 <= held["value_bias"] <= 2

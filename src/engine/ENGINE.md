@@ -7,6 +7,7 @@ How the engine implements GAME.md: what's done, and the calls made where the spe
 - `game.h`: the `Game` class, a plain value (copy it to branch a search). Everything refers to everything else by index; HP, attack and defence are stored ×10.
 - `game.cc`: setup, queries, turn order, `legalCommands()` / `isLegal()` / `apply()`
 - `movement.cc`, `combat.cc`, `cities.cc` (population, rewards, connections, capture, pushes, win), `build.cc`
+- `moveSearch.h`: the movement rules as one search (`searchMoves`), plus terrain entry, road use and the most steps a move can take. The engine's legal moves use it with what the mover's owner knows; the bot's encoding uses it for where enemy units could go, and tribe inference for how far. Anything that works out movement calls it rather than having its own copy.
 - `fog.cc`: exploration, sight, lighthouses, resource visibility, the Explorer
 - `score.cc`: score, meeting tribes and Capital Vision
 - `ruins.cc`: ruins and their rewards
@@ -56,14 +57,18 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 - **Boats** can always use shallow water; ocean needs Sailing. Boats can pass under and stop on bridges.
 - **Cloak and Dinghy** can only target enemy cities (Infiltrate), never units or villages.
 - **Infiltrated Daggers and Pirates** fill the city tile first, then free tiles further out in its borders. They can't act until the next turn, and they belong to no city.
-- **Giant pushes**: "counter-clockwise" is as seen on screen, with y growing downward. Tiles at each distance are tried in order of their angle from the push direction.
+- **Capital income per player** (`GameSettings::capitalIncome`): the game's own handicap (GAME.md section 3), public in every view (`PlayerView::capitalIncome`) and in tribe inference's income; 1 for everyone by default.
+- **Income bonuses from a turn on** (`GameSettings::incomeBonuses`): more capital income for a player from a given turn, for training catch-up games; public, through `Game::capitalIncome`.
+- **Head starts** (`GameSettings::headStart`): extra starting stars per player, for training handicap games; public, so every player's view has them (`PlayerView::headStart`) and tribe inference adds them to that player's starting stars. Not part of the real game.
+- **Giant pushes**: "counter-clockwise" is as seen on screen, with y growing downward. The 8 neighbouring tiles are tried in order of their angle from the push direction; with none free the unit is destroyed. Games recorded before this replay with `GameSettings::adjacentPushes` off, which searched rings further out.
 
 ### Cities and building
 
 - **Losing the capital** leaves the player with no capital: no +1 income and no connections. No other city takes over.
 - **Roads** can't go on villages, ruins or lighthouses. They can share a tile with a building, and buildings can go on road tiles. Ports and bridges need water with nothing on it.
-- **Bridge** placement only checks for shallow water. It doesn't check that there's land on both sides.
-- **No building on a tile with a visible enemy unit.**
+- **Bridge** placement needs land on opposite sides of the water tile, north and south or east and west; the map's edge isn't land.
+- **The shore** (`PlayerView::TileView::knownLand`): an unexplored tile directly beside explored shallow water (not ocean) shows as land or water, nothing more.
+- **Nothing can be done to a tile with a visible enemy unit on it:** no building, harvesting or destroying, inside your borders too, until the unit is killed or moves off. A hidden enemy unit doesn't block, since legal moves mustn't give it away.
 - **The shared neutral road rule:** a network of neutral road tiles "touches" a player when any of its tiles is next to a tile inside that player's borders. When it touches several players, only the first of them in seat order can use it for new connections; connections that already exist keep using it.
 
 ### Fog
@@ -77,7 +82,7 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 
 ### Score, meeting and ruins
 
-- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities. Only the player who sees gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one.
+- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities, or receives its peace offer or embassy (`Game::meet`, one path for all three). Only the player who meets gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one, so meeting at a different time gives a different bonus: games recorded before diplomacy introduced the sender replay with `GameSettings::diplomacyMeets` off.
 - **What a player knows of their own past,** for reading others' scores: `Game::firstOccupied` (the first turn each tile held one of their units or cities: others meet them by seeing those) and `Player::attackedOnTurns`, both in the view.
 - **Converted units** keep counting for the score of the player who first had them, and come off that score when they die.
 - **Examining a ruin** works like capturing: the unit must have started its turn on the ruin and not moved or attacked yet (the game confirms the first part). It ends the unit's turn. A hidden unit stays hidden.

@@ -55,12 +55,15 @@ constexpr int techCost(int tier, int cities, bool literacy) {
 }
 
 // a city's income: its level, +1 for the capital, +1 for a workshop and per
-// park (markets and sieges come on top, in Game::cityIncome)
+// park (markets and sieges come on top, in Game::cityIncome). The capital's
+// +1 is a per-player handicap in the game: humans and Normal bots 1, Easy 0,
+// Hard 2, Crazy 4 (GameSettings::capitalIncome)
 constexpr int CAPITAL_INCOME = 1;
 constexpr int WORKSHOP_INCOME = 1;
 constexpr int PARK_INCOME = 1;
-constexpr int cityIncome(int level, bool capital, bool workshop, int parks) {
-    return level + CAPITAL_INCOME * capital + WORKSHOP_INCOME * workshop +
+constexpr int cityIncome(int level, bool capital, bool workshop, int parks,
+                         int capitalIncome = CAPITAL_INCOME) {
+    return level + capitalIncome * capital + WORKSHOP_INCOME * workshop +
            PARK_INCOME * parks;
 }
 

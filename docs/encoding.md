@@ -9,18 +9,27 @@ struct EncodingConfig {
     int mapSize = 11;       // N: every map is padded to N x N
     int players = 2;        // P: seats encoded, the player to move first
 };
-constexpr int ENCODING_VERSION = 6;
+constexpr int ENCODING_VERSION = 15;
 ```
 
 - **First target: 11×11 (Tiny), 1v1.** That's the smallest game that still has the whole game in it, so it's the fastest way to find out whether the architecture learns at all. Every number in this document is derived from the config; the concrete counts shown are for N = 11, P = 2.
 - **Expanding later:**
   - **A larger N:** nothing changes but the padding. Every per-tile part of the layout is the same at any size. A fully convolutional trunk with pooled heads runs at any N, so a model trained at 11 can be fine-tuned at 14 or 16 rather than retrained from scratch.
   - **More players:** the planes and slots that exist once per player grow, so the network's first and last layers change shape. The trunk can still be carried over.
-- **Versioning:** `ENCODING_VERSION` goes up whenever the meaning of any plane or slot changes. Saved training data and model checkpoints record the version and the config, so mismatches fail loudly instead of training on misread data.
+- **Versioning:** `ENCODING_VERSION` goes up whenever the meaning of any plane or slot changes. A run's saved held-out set records it, and is encoded again from its games when it differs. Game records hold commands, not encoded positions, so they're encoded with the current version anyway; networks load across versions by shape (zero-padded new inputs, `load_weights`).
   - Version 2: an opponent's tribe is hidden until met, and each opponent's starting score was added.
   - Version 3: climate planes, the tribes each opponent could be, and the climates seen.
   - Version 4: each opponent's opening score changes, and where each tribe they could be puts their capital (section 4.2).
   - Version 5: the map-wide `unexplored` belief head (section 8.2).
+  - Version 15: reach and danger follow the movement rule that any movement left allows a step (a road step, then an ordinary one); no layout change.
+  - Version 14: each player's capital income bonus (section 4), last.
+  - Version 13: each player's head start (section 4), last.
+  - Version 12: the turns-left side target (section 8.5), before the territory.
+  - Version 11: the lethal plane (section 3) and the doomed-defender globals (section 4), last.
+  - Version 10: the reach planes (section 3) and the city-danger globals (section 4), last.
+  - Version 9: the shore planes (section 3), last. A network saved before them loads with zero weights for them (`load_weights`).
+  - Version 8: the short-term value side targets (section 8.5), before the territory.
+  - Version 7: the stars and income side targets (section 8.5), before the territory.
   - Version 6: the map type, at the end of the global vector. A network saved before it loads with zeros for the new inputs, so it plays exactly as before until it learns them (`load_weights`).
 
 ## 2. Conventions
@@ -34,7 +43,7 @@ constexpr int ENCODING_VERSION = 6;
 
 ## 3. Spatial planes: `[C, N, N]`
 
-C = 94 + 3P, which is **100** for P = 2.
+C = 99 + 3P, which is **105** for P = 2.
 
 ### Board (50 planes)
 
@@ -90,9 +99,33 @@ Computed from the view alone. Enemy reach assumes the opponent owns every moveme
 | enemy damage | 1 | the most damage any one of them could deal there next turn: to the player's unit on the tile, or else to a full-HP Warrior without defence bonus. In HP, ÷ 15. |
 | own attackers | 1 | how many of the player's units can attack this tile this turn, with the moves and attacks they have left, ÷ 4 |
 
+### Shore (2 planes)
+
+| Planes | Count | Value |
+| --- | --- | --- |
+| known land | 1 | 1 on an unexplored tile directly beside explored shallow water whose shore shows it's land (`PlayerView::TileView::knownLand`) |
+| known water | 1 | the same where it shows water |
+
+Both are 0 everywhere else, including every tile with full information (section 10).
+
+### Reach (2 planes)
+
+A city is captured by a unit that starts its turn on it, so an empty city an enemy can step onto falls the turn after unless it's defended; the threat planes, about attacks, don't show it.
+
+| Planes | Count | Value |
+| --- | --- | --- |
+| enemy reach | 1 | how many visible enemy units could move onto this tile on their next turn, under the same worst case as the threats, ÷ 4 |
+| own reach | 1 | how many of the player's units could move onto this tile this turn, ÷ 4 |
+
+### Lethal (1 plane)
+
+| Planes | Count | Value |
+| --- | --- | --- |
+| lethal | 1 | on each of the player's units: the total damage every visible enemy that could hit it next turn would deal (each as the threats' damage, against this unit on this tile), over its HP, capped at 1. At 1 it dies if they all attack it: the worst case, ignoring retaliation and order. A weak unit put on a city under attack shows 1. |
+
 ## 4. Global vector: `[G]`
 
-G = 58 + 6 + 15P + 45(P − 1), which is **139** for P = 2.
+G = 58 + 6 + 6 + 17P + 45(P − 1), which is **149** for P = 2.
 
 | Features | Count | Value |
 | --- | --- | --- |
@@ -118,7 +151,10 @@ G = 58 + 6 + 15P + 45(P − 1), which is **139** for P = 2.
 | task progress | 3 | kills ÷ 10, peaceful turns ÷ 5, lighthouses found ÷ 4 |
 | diplomacy | 5(P − 1) | per opponent: at peace, they asked for peace, we asked, our embassy there, their embassy here |
 | reward pending | 1 | 1 if a city level-up reward must be chosen now |
-| map type | 6 | one-hot: drylands, lakes, pangea, continents, archipelago, waterworld. Public from the start, and what the unexplored tiles are likely to be. Last, so older networks load with zero weights for it. |
+| map type | 6 | one-hot: drylands, lakes, pangea, continents, archipelago, waterworld. Public from the start, and what the unexplored tiles are likely to be. |
+| cities in danger | 4 | the player's cities with an enemy unit on them (captured at the start of the enemy's next turn unless it's removed) ÷ 4; the player's empty cities an enemy could step onto next turn ÷ 4; then each as 1 or 0 for the capital alone; then the player's cities held only by a defender the visible enemies could kill (lethal 1) ÷ 4, and 1 or 0 for the capital |
+| head start | P | per relative player, the extra stars they started with in a handicap game (`GameSettings::headStart`, public), ÷ 50; 0 in ordinary games |
+| capital income | P | per relative player, their capital income bonus above the usual 1 (`GameSettings::capitalIncome`, public; the game's bot handicap), ÷ 30, as income is. Last, so older networks load with zero weights for these and the values above. |
 
 ### 4.1 Score features: exact numbers, not raw history
 
@@ -308,15 +344,21 @@ An output layout change bumps `ENCODING_VERSION` like an input change, since a c
 
 ### 8.5 Side targets
 
-For side heads the search never reads, from how the game went: denser targets than one result per game, for the shared trunk to learn from (`encodeSideTargets` in `record.h`, layout in `encoding.h`'s `SideTargets`). A separate array per example, `[S]` with S = 2 + 3N² (365 for N = 11):
+For side heads the search never reads, from how the game went: denser targets than one result per game, for the shared trunk to learn from (`encodeSideTargets` in `record.h`, layout in `encoding.h`'s `SideTargets`). A separate array per example, `[S]` with S = 8 + 3N² (371 for N = 11):
 
 | Offset | Target | Mask |
 | --- | --- | --- |
 | 0 | the score lead 5 turns later: `tanh((the player's score − the best opponent's) / 500)`, from each player's latest published score at that turn, or the final scores if the game ends sooner | the record has a score table |
 | 1 | the same with the final scores | always |
-| 2 … | `[3][N][N]`: each map tile's owner when the game ended, one-hot over mine, an opponent's, nobody's | map tiles, where the record has the final territory |
+| 2 | the player's own stars 10 turns later (their latest turn by then, or their last if the game ended first; 0 once captured) ÷ 50 | the record has the economy tables |
+| 3 | the same for their income ÷ 30 | the same |
+| 4, 5, 6 | short-term values (KataGo's), for horizons of 3, 10 and 30 turns: the λ-return of the player's own search values with λ = 1 − 1/horizon, from the game's value at the end (the result, or a cut-off game's final value) back to this turn: G = (1 − λ) × v + λ × G' each turn, v the mean of the player's search values that turn, a turn without one passing G' on | the record has the per-turn values |
+| 7 | turns until the game ended, min(turns, 100) ÷ 50 (Leela Chess Zero's moves left) | games that ended in a capture: a cut-off game says nothing about when its end would have come |
+| 8 … | `[3][N][N]`: each map tile's owner when the game ended, one-hot over mine, an opponent's, nobody's | map tiles, where the record has the final territory |
 
-- **From the record:** self-play stores the final territory (`finalTerritory`) and each player's latest published score at every turn (`turnScores`) when a game ends, so no extra replay is needed. Older records have neither, and train only the final lead.
+- **From the record:** self-play stores the final territory (`finalTerritory`) and each player's latest published score at every turn (`turnScores`) when a game ends, and each player's stars and income as each of their turns starts (`turnStars`, `turnIncome`) and the mean of their search values in each turn (`turnValues`; none for the score-evaluator bootstrap, whose values are score leads) as it goes, so no extra replay is needed. Older records lack some or all of them, and train only what they have.
+- **The short-term values** give the trunk lower-variance value signals than the game's one result, while the main value head stays the result alone: the search reads only that one.
+- **The economy targets** are for planning the one-turn search can't see: what's built now pays off in stars and income over the next turns, a denser signal than winning.
 - **Relative to the player to move**, like everything else.
 - **Spatial,** so the territory moves with the map under a symmetry (section 9).
 

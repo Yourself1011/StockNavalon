@@ -94,8 +94,22 @@ class Network(nn.Module):
         self.unit_type = nn.Conv2d(channels, k * self.unit_types, 1)
 
         # side heads, never read by the search: the score lead soon and at
-        # the end, and each tile's final owner (docs/encoding.md section 8.5)
+        # the end, the player's stars and income ahead, and each tile's final
+        # owner (docs/encoding.md section 8.5)
         self.score_lead = nn.Linear(2 * channels, 2)
+        # the player's own stars and income some turns ahead, scaled
+        self.economy = nn.Linear(2 * channels, 2)
+        # short-term values (KataGo's): the player's own search values over
+        # the coming turns, one per horizon
+        self.short_term = nn.Linear(2 * channels, len(pe.SHORT_TERM_HORIZONS))
+        # turns until the game ends, scaled (Leela Chess Zero's moves left):
+        # with the final score lead, the search's tie-breaks
+        self.turns_left = nn.Linear(2 * channels, 1)
+        # added to trained networks: starting at 0 they don't jolt the trunk
+        # with large errors, and the economy head has no squash to bound them
+        for head in (self.economy, self.short_term, self.turns_left):
+            nn.init.zeros_(head.weight)
+            nn.init.zeros_(head.bias)
         self.territory = nn.Conv2d(channels, pe.TERRITORY_CLASSES, 1)
         # the unexplored tiles: terrain, resource and feature, per tile
         self.unexplored = nn.Conv2d(channels, pe.UNEXPLORED_LAYERS, 1)
@@ -122,6 +136,10 @@ class Network(nn.Module):
             b, k, self.unit_types, self.n * self.n)
         lead = torch.tanh(self.score_lead(pooled))
         out["score_soon"], out["score_end"] = lead[:, 0], lead[:, 1]
+        economy = self.economy(pooled)
+        out["stars_ahead"], out["income_ahead"] = economy[:, 0], economy[:, 1]
+        out["short_term_value"] = torch.tanh(self.short_term(pooled))
+        out["turns_left"] = self.turns_left(pooled).squeeze(1)
         out["territory"] = self.territory(x).reshape(b, pe.TERRITORY_CLASSES, -1)
         out["unexplored"] = self.unexplored(x).reshape(b, pe.UNEXPLORED_LAYERS, -1)
         return out
@@ -129,11 +147,13 @@ class Network(nn.Module):
 
 # heads added after networks were already trained: weights saved before them
 # load without them, and these start fresh
-NEWER_HEADS = ("score_lead.", "territory.", "unexplored.")
-# layers reading the global vector, which grows at its end (the map type,
-# encoding version 6): weights saved before get zeros for the new inputs, so
-# the network computes exactly what it did
-WIDER_INPUTS = ("globals.weight",)
+NEWER_HEADS = ("score_lead.", "territory.", "unexplored.", "economy.", "short_term.",
+               "turns_left.")
+# layers reading the input, which grows at its end (the map type in the
+# global vector, encoding version 6; the shore planes, version 9): weights
+# saved before get zeros for the new inputs, so the network computes exactly
+# what it did
+WIDER_INPUTS = ("globals.weight", "stem.weight")
 
 
 def load_weights(model: nn.Module, weights: dict) -> list[str]:
@@ -147,7 +167,7 @@ def load_weights(model: nn.Module, weights: dict) -> list[str]:
         saved, now = weights.get(key), current[key]
         if saved is not None and saved.shape[0] == now.shape[0] and saved.shape[1] < now.shape[1]:
             weights[key] = torch.cat([saved, saved.new_zeros(
-                (saved.shape[0], now.shape[1] - saved.shape[1]))], dim=1)
+                (saved.shape[0], now.shape[1] - saved.shape[1], *saved.shape[2:]))], dim=1)
             widened.append(key)
     missing, unexpected = model.load_state_dict(weights, strict=False)
     wrong = [k for k in missing if not k.startswith(NEWER_HEADS)]
@@ -169,6 +189,12 @@ def belief_outputs(out: dict[str, torch.Tensor], rows: torch.Tensor,
         part = out[name][rows] if opponent == 0 else out[name][rows, opponent - 1]
         result[:, offset:offset + size] = part.reshape(len(rows), -1)
     return result
+
+
+def tie_breaks(out: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Each position's predicted final score lead and turns left [B, 2], for
+    the search's tie-breaks (score_utility, win_sooner)."""
+    return torch.stack([out["score_end"], out["turns_left"]], dim=1)
 
 
 # Inference precisions (training stays in float32)

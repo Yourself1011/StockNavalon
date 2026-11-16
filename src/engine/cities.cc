@@ -333,9 +333,12 @@ void Game::pushUnit(int unitIdx, int owner) {
         dy = -dy;
     }
 
-    // y grows downward, so flip it to measure angles counter-clockwise
+    // y grows downward, so flip it to measure angles counter-clockwise; only
+    // the neighbouring tiles, and with none free it's gone (older records:
+    // any distance)
     double primary = std::atan2(-dy, dx);
-    for (int radius = 1; radius < size; radius++) {
+    const int reach = settings.adjacentPushes ? 1 : size - 1;
+    for (int radius = 1; radius <= reach; radius++) {
         std::vector<std::pair<double, int>> ring;
         forEachInRadius(unit.tile, radius, [&](int t) {
             if (distance(t, unit.tile) != radius) {

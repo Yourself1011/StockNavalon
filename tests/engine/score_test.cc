@@ -190,7 +190,7 @@ TEST_CASE("ruin rewards and their conditions") {
     }
 }
 
-TEST_CASE("a pushed examiner goes further out when nearby tiles are blocked") {
+TEST_CASE("a pushed examiner with nowhere to go next to it is destroyed (the houdini)") {
     // the ruin is a forest tile ringed by mountains, without Climbing
     std::vector<std::string> ring;
     for (int y = 4; y <= 6; y++) {
@@ -202,15 +202,28 @@ TEST_CASE("a pushed examiner goes further out when nearby tiles are blocked") {
         }
     }
     ring.push_back("5 5 TR");
-    Game game = makeGame(bigMap(ring));
-    clearUnits(game);
-    int unit = addUnit(game, 0, UnitTypes::WARRIOR, 5, 5);
-    game.giveRuinReward(unit, Game::RUIN_UNIT);
-    REQUIRE(game.unitAt(game.index(5, 5)));
-    CHECK(game.unitAt(game.index(5, 5))->type == UnitTypes::SWORDSMAN);
-    // toward the centre, two tiles out
-    CHECK(game.units[unit].alive);
-    CHECK(game.units[unit].tile == game.index(7, 7));
+    for (bool adjacent : {true, false}) {
+        CAPTURE(adjacent);
+        Game game = makeGame(bigMap(ring));
+        game.settings.adjacentPushes = adjacent;
+        clearUnits(game);
+        int unit = addUnit(game, 0, UnitTypes::WARRIOR, 5, 5);
+        game.giveRuinReward(unit, Game::RUIN_UNIT);
+        REQUIRE(game.unitAt(game.index(5, 5)));
+        CHECK(game.unitAt(game.index(5, 5))->type == UnitTypes::SWORDSMAN);
+        int warriors = 0;
+        for (const Unit &u : game.units) {
+            warriors += u.alive && u.type == UnitTypes::WARRIOR;
+        }
+        if (adjacent) {
+            CHECK(warriors == 0);
+        } else {
+            // games recorded before: toward the centre, two tiles out
+            CHECK(warriors == 1);
+            REQUIRE(game.unitAt(game.index(7, 7)));
+            CHECK(game.unitAt(game.index(7, 7))->type == UnitTypes::WARRIOR);
+        }
+    }
 }
 
 TEST_CASE("an Explorer from a ruin needs fog nearby") {

@@ -23,7 +23,8 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
         const TribeData &tribe = tribeData[tribes[i]];
         Player &player = players.emplace_back();
         player.tribe = tribe.tribe;
-        player.stars = tribe.startStars;
+        player.stars = tribe.startStars +
+                       (i < settings.headStart.size() ? settings.headStart[i] : 0);
         player.techs.set(TechTypes::BASIC);
         player.techs.set(tribe.startTech);
     }
@@ -161,7 +162,7 @@ int Game::cityIncome(int city) const {
         return 0;
     }
     int stars = Rules::cityIncome(c.level, players[c.owner].capital == city,
-                                  c.workshop, c.parks);
+                                  c.workshop, c.parks, capitalIncome(c.owner));
     forEachInRadius(c.tile, Rules::MAX_BORDER_RADIUS, [&](int t) {
         if (tiles[t].territory == city &&
             tiles[t].building == ImprovementTypes::MARKET) {

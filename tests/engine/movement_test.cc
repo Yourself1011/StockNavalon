@@ -71,13 +71,34 @@ TEST_CASE("road steps cost half") {
     CHECK_FALSE(canReach(game, r, 6, 3));
 }
 
+TEST_CASE("any movement left allows one more step") {
+    // a warrior (movement 1) takes a road step, and with half a step left
+    // can still step off the road; without the road step it couldn't go 2
+    Game game = makeGame(fieldMap({"1 3 F=", "2 3 F="}));
+    clearUnits(game);
+    int w = addUnit(game, 0, WARRIOR, 1, 3);
+    CHECK(canReach(game, w, 2, 3));
+    CHECK(canReach(game, w, 3, 3));
+    CHECK(canReach(game, w, 3, 4));
+    // the last step uses up what's left
+    CHECK_FALSE(canReach(game, w, 4, 3));
+    CHECK_FALSE(canReach(game, w, 4, 4));
+    // and off the road, one step as before
+    int other = addUnit(game, 0, WARRIOR, 1, 6);
+    CHECK(canReach(game, other, 2, 7));
+    CHECK_FALSE(canReach(game, other, 3, 6));
+}
+
 TEST_CASE("roads in enemy territory don't help") {
     Game game = makeGame(fieldMap({"3 6 F=", "4 6 F=", "5 6 F=", "6 7 F=",
                                    "7 7 F="}));
     clearUnits(game);
     int r = addUnit(game, 0, RIDER, 3, 6);
     CHECK(canReach(game, r, 5, 6));
-    CHECK_FALSE(canReach(game, r, 6, 7));
+    // the step into their borders costs a whole step, so only the half step
+    // left takes it on to (6, 7); with their roads it would reach (7, 7)
+    CHECK(canReach(game, r, 6, 7));
+    CHECK_FALSE(canReach(game, r, 7, 7));
 }
 
 TEST_CASE("embarking and disembarking") {

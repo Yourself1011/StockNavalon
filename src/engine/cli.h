@@ -7,12 +7,19 @@
 #include "command.h"
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 class Game;
 
-// Plays the whole of the current player's turn and returns its commands
-using BotTurn = std::function<std::vector<Command>(Game &game)>;
+// A bot's turn: its commands, and a note shown with them (empty for none),
+// such as how the bot rates its position
+struct BotResult {
+    std::vector<Command> commands;
+    std::string note;
+};
+// Plays the whole of the current player's turn
+using BotTurn = std::function<BotResult(Game &game)>;
 // makes the bot for a game, given the game's seed
 using BotMaker = std::function<BotTurn(std::uint64_t seed)>;
 

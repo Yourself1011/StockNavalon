@@ -40,7 +40,7 @@ import torch
 import polyengine as pe
 
 from .model import DTYPES, NEWER_HEADS, Network, load_weights, pick_device
-from .selfplay import SelfPlay
+from .selfplay import PoolPlay, SelfPlay
 from .evaluate import gate_settled, gate_verdict, match
 from .fog import FogSchedule
 from .rating import run_ratings
@@ -132,7 +132,9 @@ def load_heldout(path: str, records: list[pe.GameRecord], encoding: pe.Encoding,
     # a set saved without its version can only be judged by its shapes
     current = (int(saved.get("version", pe.ENCODING_VERSION)) == pe.ENCODING_VERSION
                and saved["targets"].shape[1] == encoding.target_count
-               and saved["globals"].shape[1] == encoding.global_count)
+               and saved["globals"].shape[1] == encoding.global_count
+               and saved["side_targets"].shape[1] == encoding.side_target_count
+               and "turn_positions" in saved)
     if current:
         return without_positions(saved)
     if "game_seeds" in saved:
@@ -177,21 +179,42 @@ def pretty(e: dict[str, Any]) -> str:
             f"play {_num(e['games_per_minute'], 1)} games/min, "
             f"{_num(e['positions_per_second'])} pos/s" + (
                 " (CPU {cpu:.0%}, GPU {gpu:.0%}, lock {lock:.0%})".format(**e["selfplay_time"])
-                if e.get("selfplay_time") else ""),
+                if e.get("selfplay_time") else "") + (
+                f", cache {100 * e['cache_hits']:.0f}%" if e.get("cache_hits") is not None else ""),
             f"decided {_num(e.get('decided_recent_percent'))}% "
             f"(buffer {_num(e.get('decided_buffer_percent'))}%), "
             f"stalemate {_num(e.get('stalled_recent_percent'))}%",
+            (f"handicap: trailing side won {_num(100 * e['handicap']['trailing_won'])}% "
+             f"of {e['handicap']['games']}  |  " if e.get("handicap") else "") +
+            (f"pool: current won {_num(100 * e['pool']['current_won'])}% "
+             f"of {e['pool']['games']}  |  " if e.get("pool") else "") +
             f"{_num(e.get('commands_per_turn'), 1)} commands/turn "
-            f"(best {_num(e.get('best'))}, fog "
-            f"{_num(None if e.get('fog_share') is None else 100 * e['fog_share'])}%)",
-            f"reuse {_num(e['reuse'], 1)}, city weight {_num(e.get('city_weight'), 2)}, "
-            f"lr {e['learning_rate']:.1e}" if e.get('learning_rate') is not None else
-            f"reuse {_num(e['reuse'], 1)}, city weight {_num(e.get('city_weight'), 2)}",
+            f"(best {_num(e.get('best'))}" + (
+                f", fog {_num(100 * e['fog_share'])}%"
+                if e.get("fog_share") is not None and e["fog_share"] < 1 else "") + ")",
+        ]
+        # settings that change while they matter, left out once settled: the
+        # city weight faded to 0, the learning rate at its floor, the reuse
+        # at its target
+        settings = []
+        if e.get("reuse") is not None and not (
+                e.get("reuse_target") and abs(e["reuse"] - e["reuse_target"]) <= 0.05 * e["reuse_target"]):
+            settings.append(f"reuse {_num(e['reuse'], 1)}")
+        if e.get("city_weight"):
+            settings.append(f"city weight {_num(e['city_weight'], 2)}")
+        lr = e.get("learning_rate")
+        if lr is not None and not (e.get("lr_floor") and abs(lr - e["lr_floor"]) <= 1e-3 * e["lr_floor"]):
+            settings.append(f"lr {lr:.1e}")
+        if settings:
+            parts.append(", ".join(settings))
+        parts += [
             f"loss {_num(losses.get('total'), 3)} "
             f"(policy KL {_num(losses.get('policy_kl'), 3)}, "
             f"value {_num(losses.get('value'), 3)})",
             f"held-out {_num(held.get('total'), 3)} "
-            f"(KL {_num(held.get('policy_kl'), 3)}, value {_num(held.get('value'), 3)})",
+            f"(KL {_num(held.get('policy_kl'), 3)}, value {_num(held.get('value'), 3)}"
+            + (f", bias {held['value_bias']:+.3f}" if held.get("value_bias") is not None else "")
+            + ")",
         ]
         return f"{when}  {_style('status', '1')}  " + "  |  ".join(parts)
     if kind == "evaluation":
@@ -320,21 +343,71 @@ def main():
     p.add_argument("--cut-off-weight", type=float, default=0.3,
                    help="the value loss weight of positions from games cut off "
                         "by the turn limit or a stalemate (decided games: 1)")
-    p.add_argument("--search-value-weight", type=float, default=0.25,
+    p.add_argument("--search-value-weight", type=float, default=0.0,
                    help="the share of the value target from each position's own "
-                        "search value; the rest is the result (against an "
-                        "overconfident value: every position of a decided game "
-                        "otherwise has the same ±1 target)")
+                        "search value; the rest is the result. Off: the value "
+                        "is the result alone, and the search's values train "
+                        "the short-term value heads instead")
+    p.add_argument("--value-per-turn", action=argparse.BooleanOptionalAction, default=False,
+                   help="weigh each player turn the same in the value loss, not "
+                        "each move, against the network rating the player to move "
+                        "too well (the held-out bias); off: the bias fell to about "
+                        "0 without it")
     p.add_argument("--value-share", type=float, default=0.1,
                    help="the share of samples the value trains on, so each "
                         "game's result is repeated less")
-    p.add_argument("--parallel", type=int, default=64,
+    p.add_argument("--parallel", type=int, default=128,
                    help="self-play games at once, in each of two sessions")
     p.add_argument("--simulations", type=int, default=64)
-    p.add_argument("--gumbel", action=argparse.BooleanOptionalAction, default=False,
+    p.add_argument("--gumbel", action=argparse.BooleanOptionalAction, default=True,
                    help="Gumbel search at the root, in self-play and gates: "
                         "sampled candidates, sequential halving, the improved "
                         "policy as the target")
+    p.add_argument("--score-utility", type=float, default=0.05,
+                   help="search tie-break: the predicted final score lead's weight "
+                        "in choosing moves, so a decided game isn't played "
+                        "aimlessly; values stay pure chances of winning")
+    p.add_argument("--win-sooner", type=float, default=0.05,
+                   help="search tie-break: prefer a quicker win (or slower loss) "
+                        "by the predicted turns left")
+    p.add_argument("--handicap-share", type=float, default=0.2,
+                   help="share of self-play games where one side, at random, "
+                        "gets an edge, so the bot learns to fight from behind; "
+                        "kept out of the held-out set and the self-play measures")
+    p.add_argument("--handicap-income-share", type=float, default=0.75,
+                   help="of handicap games, the share where the edge is extra "
+                        "capital income each turn, as the game's own bots get "
+                        "(Hard +1, Crazy +3); the rest get a head start in stars")
+    p.add_argument("--handicap-income", type=int, nargs="+", default=[1, 2],
+                   help="the extra capital income handicap games draw from")
+    p.add_argument("--handicap-stars", type=int, nargs="+", default=[3, 6, 10],
+                   help="the head starts handicap games draw from")
+    p.add_argument("--handicap-catch-up-share", type=float, default=0.5,
+                   help="of handicap games, the share that are catch-up games "
+                        "instead: once a side's search value falls below "
+                        "--catch-up-below in the mid or late game, it gets "
+                        "--handicap-income more capital income from then on")
+    p.add_argument("--catch-up-from-turn", type=int, default=10)
+    p.add_argument("--catch-up-below", type=float, default=-0.5)
+    p.add_argument("--trailing-search-factor", type=int, default=2,
+                   help="in handicap games, a side whose value is below "
+                        "--catch-up-below searches with this many times the "
+                        "simulations")
+    p.add_argument("--pool-share", type=float, default=0.2,
+                   help="share of self-play games against an earlier best "
+                        "network (the opponent pool) instead of the current one, "
+                        "so the bot keeps beating strategies it has moved past; "
+                        "only the current network's moves train")
+    p.add_argument("--pool-size", type=int, default=8,
+                   help="the opponent pool: this many of the latest earlier "
+                        "best networks, drawn from uniformly")
+    p.add_argument("--exploration", type=float, default=1.5,
+                   help="the search's exploration constant below the root: lower "
+                        "follows the policy's favourites more closely")
+    p.add_argument("--explore-candidates", type=int, default=2,
+                   help="of the Gumbel candidates in self-play's full searches, "
+                        "how many are random legal moves, so moves the policy "
+                        "has all but ruled out still get tried")
     p.add_argument("--gumbel-candidates", type=int, default=16,
                    help="root moves Gumbel search considers")
     p.add_argument("--samples", type=int, default=1)
@@ -342,7 +415,9 @@ def main():
                    help="share of decisions with the full search, recorded for "
                         "the policy; the rest get a quick search")
     p.add_argument("--quick-simulations", type=int, default=16)
-    p.add_argument("--horizon", type=int, default=1)
+    p.add_argument("--horizon", type=int, default=pe.UNLIMITED_HORIZON,
+                   help="turn changes a search line may cross before it's scored; "
+                        "by default no cutoff")
     p.add_argument("--max-turns", type=int, default=150,
                    help="games stop here at the latest (truncated, not drawn)")
     p.add_argument("--fog-share", type=float, default=None,
@@ -375,7 +450,7 @@ def main():
                    help="games per evaluation match, in seat-swapped pairs")
     p.add_argument("--eval-simulations", type=int, default=50)
     p.add_argument("--eval-max-minutes", type=float, default=10.0,
-                   help="once 90% of a match's games are done the rest get 50 "
+                   help="once 90%% of a match's games are done the rest get 50 "
                         "more moves; past this many minutes they end at once "
                         "(scored by the lead)")
     p.add_argument("--holdout-every", type=int, default=20,
@@ -395,7 +470,8 @@ def main():
     trainer = Trainer(model, encoding, device, lr=args.lr, per_game=args.per_game,
                       augment=args.augment, ema_decay=args.ema_decay,
                       cut_off_weight=args.cut_off_weight, value_share=args.value_share,
-                      search_value_weight=args.search_value_weight)
+                      search_value_weight=args.search_value_weight,
+                      value_per_turn=args.value_per_turn)
     iteration = 0
     initialized = False
     if os.path.exists(checkpoint_path):
@@ -507,6 +583,18 @@ def main():
         threads=args.session_threads,
         gumbel=[args.gumbel, args.gumbel],
         gumbel_candidates=args.gumbel_candidates,
+        score_utility=args.score_utility,
+        win_sooner=args.win_sooner,
+        side_exploration=[args.exploration, args.exploration],
+        handicap_share=args.handicap_share,
+        handicap_stars=args.handicap_stars,
+        handicap_income_share=args.handicap_income_share,
+        handicap_income=args.handicap_income,
+        handicap_catch_up_share=args.handicap_catch_up_share,
+        catch_up_from_turn=args.catch_up_from_turn,
+        catch_up_below=args.catch_up_below,
+        trailing_search_factor=args.trailing_search_factor,
+        explore_candidates=args.explore_candidates,
     )
 
     # 1. bootstrap until the buffer is full, in chunks so progress is saved.
@@ -635,6 +723,10 @@ def main():
             if now - last_log >= args.log_seconds and not evaluator.busy.is_set():
                 entry = status(window, player, buffer, trainer, samples,
                                added_at_start, now - last_log, warmup, city_weight())
+                # what the settled values settle at, so the terminal line can
+                # leave them out (the log keeps everything)
+                entry["reuse_target"] = args.reuse
+                entry["lr_floor"] = args.lr_floor
                 # why training is idle, before it has enough to train on
                 if buffer.positions < args.min_positions:
                     entry["filling"] = [buffer.positions, args.min_positions]
@@ -704,6 +796,8 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
         "positions_per_second": round(played["evaluated"] / seconds),
         # where self-play's time went: the CPU, waiting for the GPU lock, the GPU
         "selfplay_time": player.take_times(),
+        # the share of evaluations the cache answered instead of the network
+        "cache_hits": player.take_cache_rate(),
         # games ending in a capture rather than the turn limit: the latest
         # games, and the whole buffer
         "decided_recent_percent": round(100 * player.decided_recent(), 1),
@@ -711,6 +805,10 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
         # ended by the stalemate cutoff, of this session's latest games
         "stalled_recent_percent": (None if player.stalled_recent() is None
                                    else round(100 * player.stalled_recent(), 1)),
+        # handicap games: how often the side that started behind came back
+        "handicap": player.handicap_recent(),
+        # opponent-pool games: how often the current network beat an earlier best
+        "pool": player.pool_recent(),
         "commands_per_turn": (None if player.commands_per_turn() is None
                               else round(player.commands_per_turn(), 2)),
         # samples per new position, past the warm start
@@ -722,6 +820,22 @@ def status(window: Window, player: "SelfPlayThread", buffer: pe.ReplayBuffer,
         "learning_rate": trainer.optimizer.param_groups[0]["lr"],
         "fog_share": round(player.fog_share, 3),
     }
+
+
+def pool_snapshots(run_dir: str, size: int, best_steps: int | None) -> list[str]:
+    """The opponent pool: the latest `size` earlier best networks, from the
+    snapshots kept at each promotion (pool/) and the anchored ones
+    (checkpoints/), leaving out the current best."""
+    found = {}
+    for folder in ("checkpoints", "pool"):
+        path = os.path.join(run_dir, folder)
+        if not os.path.isdir(path):
+            continue
+        for name in os.listdir(path):
+            if name.startswith("step_") and name.endswith(".pt"):
+                found[int(name[5:-3])] = os.path.join(path, name)
+    steps = sorted(s for s in found if s != best_steps)[-size:] if size > 0 else []
+    return [found[s] for s in steps]
 
 
 class SelfPlayThread(threading.Thread):
@@ -753,9 +867,12 @@ class SelfPlayThread(threading.Thread):
         # stood at the last status line
         self._runner = None
         self._times_then = None
+        self._cache_then = None
         # whether each of the latest games ended in a capture, starting from
         # the run's games so far
-        self._decided = collections.deque((g.winner >= 0 for g in recent),
+        self._decided = collections.deque((g.winner >= 0 for g in recent
+                                           if g.handicap_leader < 0 and not g.catch_up
+                                           and g.pool_opponent_seat < 0),
                                           maxlen=RECENT_GAMES)
         # commands per player turn in the latest games of this session only:
         # how active the current network plays, the first thing to fall when
@@ -763,6 +880,16 @@ class SelfPlayThread(threading.Thread):
         self._activity = collections.deque(maxlen=ACTIVITY_GAMES)
         # whether each of the latest games ended in a stalemate
         self._stalled = collections.deque(maxlen=RECENT_GAMES)
+        # handicap games, apart: who won each, the side with the head start
+        # ("leader"), the other ("trailing"), or nobody
+        self._handicap = collections.deque(maxlen=RECENT_GAMES)
+        # opponent-pool games: how the current network did in each (1 won,
+        # 0 lost, 0.5 neither), and the games played of each kind
+        self._pool = collections.deque(maxlen=RECENT_GAMES)
+        self._played = {"self": 0, "pool": 0}
+        # pool networks, loaded once each, by snapshot path
+        self._opponents: dict[str, Network] = {}
+        self._pool_rng = np.random.default_rng(seed)
         self.totals = {"games": 0}
 
     def publish(self, weights: dict, steps: int):
@@ -775,6 +902,16 @@ class SelfPlayThread(threading.Thread):
         with self._lock:
             window, self._window = self._window, {"games": 0, "evaluated": 0}
         return window
+
+    def take_cache_rate(self) -> float | None:
+        """The share of evaluations the cache answered since the last call."""
+        if self._runner is None:
+            return None
+        now = list(self._runner.cache)
+        then, self._cache_then = self._cache_then, now
+        if then is None or now[0] == then[0]:
+            return None
+        return round((now[1] - then[1]) / (now[0] - then[0]), 3)
 
     def take_times(self) -> dict[str, float] | None:
         """The shares of self-play's time since the last call spent on the
@@ -804,6 +941,66 @@ class SelfPlayThread(threading.Thread):
         with self._lock:
             return len(self._decided) == self._decided.maxlen
 
+    def handicap_recent(self) -> dict | None:
+        """Of the latest handicap games, the share each side won."""
+        with self._lock:
+            if not self._handicap:
+                return None
+            n = len(self._handicap)
+            return {"games": n,
+                    "leader_won": round(self._handicap.count("leader") / n, 3),
+                    "trailing_won": round(self._handicap.count("trailing") / n, 3)}
+
+    def pool_recent(self) -> dict | None:
+        """Of the latest opponent-pool games, the share the current network won."""
+        with self._lock:
+            if not self._pool:
+                return None
+            return {"games": len(self._pool),
+                    "current_won": round(float(np.mean(self._pool)), 3)}
+
+    def _opponent(self) -> Network | None:
+        """A pool network to play, drawn uniformly; None with an empty pool."""
+        paths = pool_snapshots(self.args.dir, self.args.pool_size, self.best_steps)
+        for path in list(self._opponents):
+            if path not in paths:
+                del self._opponents[path]
+        if not paths:
+            return None
+        path = paths[self._pool_rng.integers(len(paths))]
+        if path not in self._opponents:
+            net = Network(self.encoding, self.args.channels, self.args.blocks).to(
+                self.device, DTYPES[self.args.inference_dtype]).eval()
+            load_weights(net, torch.load(path, map_location="cpu")["model"])
+            self._opponents[path] = net
+        return self._opponents[path]
+
+    def _play_pool(self, runner: PoolPlay) -> bool:
+        """A few opponent-pool games, if they're due (`pool_share` of all
+        games) and the pool has any. Returns whether it played."""
+        share = self.args.pool_share
+        total = self._played["self"] + self._played["pool"]
+        if share <= 0 or self._played["pool"] >= share * total:
+            return False
+        opponent = self._opponent()
+        if opponent is None:
+            return False
+        games, evaluated = runner.play(self.model, opponent, 8)
+        # the buffer and the record file, but not the held-out set or
+        # self-play's measures
+        with _records_lock:
+            pe.save_records(games, self.records_path)
+            self.buffer.add(games)
+        with self._lock:
+            self._window["games"] += len(games)
+            self._window["evaluated"] += evaluated
+            for g in games:
+                current = 1 - g.pool_opponent_seat
+                self._pool.append(0.5 if g.winner < 0 else float(g.winner == current))
+            self._played["pool"] += len(games)
+            self.totals["games"] += len(games)
+        return True
+
     def stalled_recent(self) -> float | None:
         with self._lock:
             return float(np.mean(self._stalled)) if self._stalled else None
@@ -817,13 +1014,24 @@ class SelfPlayThread(threading.Thread):
             runner = SelfPlay(self.encoding, self.device, parallel=self.args.parallel,
                               seed=self.seed, gpu_lock=self.gpu_lock, **self.session)
             self._runner = runner
+            pool = PoolPlay(self.encoding, self.device, parallel=self.args.parallel,
+                            seed=self.seed + 1, gpu_lock=self.gpu_lock,
+                            **self.session) if self.args.pool_share > 0 else None
             while not self.stop.is_set():
                 with self._lock:
                     weights, self._weights = self._weights, None
                 if weights is not None:
                     with self.gpu_lock:
                         load_weights(self.model, weights)
+                    # answers from the old network no longer hold
+                    runner.clear_caches()
+                    if pool is not None:
+                        pool.clear_cache()
                 runner.set_fog_share(self.fog_share)
+                if pool is not None:
+                    pool.session.set_fog_share(self.fog_share)
+                    if self._play_pool(pool):
+                        continue
                 # a few games at a time, so new weights come in often; the
                 # positions evaluated are counted as they go, not only once a
                 # game finishes
@@ -838,10 +1046,14 @@ class SelfPlayThread(threading.Thread):
                                            progress_seconds=2.0)
                 # one game in `holdout_every` kept out of training
                 kept, held = [], []
+                ordinary = [g for g in games if g.handicap_leader < 0 and not g.catch_up]
                 for g in games:
                     self.finished += 1
                     every = self.args.holdout_every
-                    (held if every and self.finished % every == 0 else kept).append(g)
+                    # handicap games train, but aren't held out
+                    hold = (every and self.finished % every == 0 and g.handicap_leader < 0
+                            and not g.catch_up)
+                    (held if hold else kept).append(g)
                 with _records_lock:
                     pe.save_records(kept, self.records_path)
                     self.buffer.add(kept)
@@ -851,12 +1063,18 @@ class SelfPlayThread(threading.Thread):
                 with self._lock:
                     self._window["games"] += len(games)
                     self._window["evaluated"] += int(stats["evaluated"]) - counted[0]
-                    self._decided.extend(g.winner >= 0 for g in games)
-                    self._stalled.extend(g.stalled for g in games)
+                    self._decided.extend(g.winner >= 0 for g in ordinary)
+                    self._stalled.extend(g.stalled for g in ordinary)
                     # every seat plays each turn
                     self._activity.extend(
-                        g.move_count / max(1, len(g.tribes) * g.turns) for g in games)
+                        g.move_count / max(1, len(g.tribes) * g.turns) for g in ordinary)
+                    for g in games:
+                        leader = g.handicap_leader
+                        if leader >= 0:
+                            self._handicap.append("nobody" if g.winner < 0 else
+                                                  "leader" if g.winner == leader else "trailing")
                     self.totals["games"] += len(games)
+                    self._played["self"] += len(games)
         except Exception as e:  # handed to the training thread to raise
             self.error = e
 
@@ -939,6 +1157,10 @@ class EvaluationThread(threading.Thread):
                      threads=self.args.session_threads,
                      gumbel=[self.args.gumbel, self.args.gumbel],
                      gumbel_candidates=self.args.gumbel_candidates,
+                     score_utility=self.args.score_utility,
+                     win_sooner=self.args.win_sooner,
+                     side_exploration=(self.args.exploration, self.args.exploration),
+                     horizon=self.args.horizon,
                      settled=(gate_settled(self.args.gate_threshold,
                                            self.args.gate_min_decided) if gate else None),
                      seed=steps, gpu_lock=self.gpu_lock, progress=report,
@@ -972,6 +1194,11 @@ class EvaluationThread(threading.Thread):
             self.best = {"model": weights, "steps": steps}
             torch.save(self.best, self.best_path + ".tmp")
             os.replace(self.best_path + ".tmp", self.best_path)
+            # kept for the opponent pool (apart from the anchors' snapshots,
+            # which mark the networks already anchored)
+            pool = os.path.join(self.args.dir, "pool")
+            os.makedirs(pool, exist_ok=True)
+            torch.save(self.best, os.path.join(pool, f"step_{steps}.pt"))
             self.on_new_best(weights, steps)
         self._log_rating()
 

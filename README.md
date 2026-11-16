@@ -27,7 +27,10 @@ Two presets, each building into `build/<preset>`:
 cmake --preset release        # optimized
 cmake --build --preset release
 
-cmake --preset dev            # debug info, sanitizers, checked containers
+cmake --preset check          # optimized, with the sanitizers and container checks
+cmake --build --preset check
+
+cmake --preset dev            # debug info, sanitizers, full debug checks (the editor's)
 cmake --build --preset dev
 ```
 
@@ -43,11 +46,12 @@ The configure step (`cmake --preset ...`) only needs rerunning when the build se
 ## Test
 
 ```bash
-ctest --preset release        # C++ and Python tests
-ctest --preset dev            # C++ tests under the sanitizers (slower)
+ctest --preset release        # C++ and Python tests (seconds)
+ctest --preset check          # C++ tests under the sanitizers (about 40 seconds)
+ctest --preset dev            # the same with full debug checks, unoptimized (10+ minutes)
 ```
 
-The Python tests run against the module just built, not the pip-installed one. The dev build compiles the Python module but doesn't test it, since a sanitized module can't load into a normal Python. Add `-R cpp` or `-R python` to run one suite.
+`check` is the one to run before finishing a change: optimized, it runs the whole suite under the address and undefined-behaviour sanitizers in well under a minute, and still catches out-of-bounds writes and the like. `dev` adds libc++'s full debug mode and no optimization, which is good for stepping through code but slow for the full suite. The Python tests run against the module just built, not the pip-installed one. The sanitized builds compile the Python module but don't test it, since a sanitized module can't load into a normal Python. Add `-R cpp` or `-R python` to run one suite.
 
 ## Run
 
@@ -60,7 +64,7 @@ The Python tests run against the module just built, not the pip-installed one. T
 - **The map:** a map type (`drylands`, `lakes`, `pangea`, `continents`, `archipelago` or `waterworld`) generates a map of that type, 14x14 unless `--size` says otherwise. Otherwise it loads a map file (format in `src/engine/map.h`), by default `src/engine/map.txt`.
 - **Players:** every player defaults to Imperius.
 - **`--bot N`** makes seat N a random bot; repeat it for more bots. It plays its whole turn as soon as yours ends. With every seat a bot, the game plays itself, stopping after 300 turns, and shows the final map.
-- **`--watch`:** in a game of bots only, shows the board after every turn and waits for Enter (`q` to stop). **`--delay S`** does the same without waiting, S seconds a turn.
+- **`--watch`:** in a game of bots only, shows the board after every turn and waits for Enter (`q` to stop). **`--delay S`** does the same without waiting, S seconds a turn. **`--pov`** watches from each bot's point of view instead: after its turn, its own status and the map through its fog (with `--delay` too).
 - **`--no-treaties`:** no peace treaties (training games are played without them).
 - **The map display:** drawn with emojis. Add `--ascii` for a letter view, if your terminal shows emojis badly.
 - **`--reveal`:** the map only shows what the current player has explored; this shows everything, including the bot's commands, which would otherwise give away what's in the fog.
@@ -78,7 +82,7 @@ The Python tests run against the module just built, not the pip-installed one. T
 ```
 
 - **Fair play:** it searches on determinized games, so it only knows what its own player could.
-- **Its options:** `--simulations N` per determinized game (default 200), `--samples N` determinized games per command (default 4), and `--horizon N`, the turn changes its search looks across (default 1, so it considers your reply).
+- **Its options:** `--simulations N` per determinized game (default 200), `--samples N` determinized games per command (default 4), and `--horizon N`, the turn changes its search may look across (by default no cutoff: it goes as deep as its simulations reach).
 - **How it plays:** `play_stocknavalon` judges positions by the score lead, so expect it to build up score rather than attack. A turn takes it about a third of a second.
 - **Against a trained network:** `stocknavalon.play` runs the same CLI with the network's search, from a run directory (its best network, `best.pt`) or a `.pt` snapshot, with the same options plus `--device`:
 
@@ -86,7 +90,7 @@ The Python tests run against the module just built, not the pip-installed one. T
   .venv/bin/python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
   ```
 
-  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). Without `--seed` it picks a random one and prints it, so a game can be replayed. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`.
+  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). Without `--seed` it picks a random one and prints it, so a game can be replayed. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`, or `--pov` to see what each bot sees. After each of its turns it shows its own evaluation of the position, as the search's value and a chance of winning (with fog, from what that player can see). `--explain` also lists each decision: the command played and the search's leading moves, with their priors, visits and values.
 
 ### CLI commands
 
@@ -132,6 +136,7 @@ uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.measure          # network and self-play speed
 .venv/bin/python -m stocknavalon.rating runs/NAME # Elo of each best network so far
 .venv/bin/python -m stocknavalon.searches runs/NAME  # Gumbel search against PUCT, same network
+.venv/bin/python -m stocknavalon.versus runs/NAME    # the training network's average against the best, a full match
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 

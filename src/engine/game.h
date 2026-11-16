@@ -29,6 +29,13 @@ struct ScoreRecord {
     bool operator==(const ScoreRecord &) const = default;
 };
 
+// From a turn on, a player's capital earns this much more (a handicap added
+// partway through a game, GameSettings::incomeBonuses)
+struct IncomeBonus {
+    int player = 0, fromTurn = 0, extra = 0;
+    bool operator==(const IncomeBonus &) const = default;
+};
+
 struct GameSettings {
     WinConditions::WinCondition winCondition = WinConditions::MIGHT;
     // seeds Game::rng
@@ -42,6 +49,21 @@ struct GameSettings {
     // engine had this rule, which would otherwise replay into states that
     // never happened (the meeting stars come at a different time).
     bool diplomacyMeets = true;
+    // A pushed unit (a Giant or a ruin's unit appearing where it stands) only
+    // goes to one of the 8 neighbouring tiles, and with none free it's
+    // destroyed: the "houdini" (game). Off only to replay games recorded
+    // before, when it could land anywhere on the map.
+    bool adjacentPushes = true;
+    // Extra stars each player starts with, on top of their tribe's: a
+    // handicap for training, public to every player. Empty for none.
+    std::vector<int> headStart;
+    // Each player's capital income bonus (Rules::CAPITAL_INCOME for everyone
+    // when empty): the real game's per-player handicap, which its built-in
+    // bots' difficulty sets. Public.
+    std::vector<int> capitalIncome;
+    // more capital income from a given turn on, on top of capitalIncome: a
+    // handicap for training given to a side that fell behind. Public.
+    std::vector<IncomeBonus> incomeBonuses;
 };
 
 // The whole game state. Everything refers to everything else by index, so a
@@ -140,6 +162,16 @@ class Game {
     bool canResearch(int player, TechTypes::TechType tech) const;
     int income(int player) const;
     int cityIncome(int city) const;
+    // the player's capital income bonus (GameSettings::capitalIncome)
+    int capitalIncome(int player) const {
+        int income = player >= 0 && player < static_cast<int>(settings.capitalIncome.size())
+                         ? settings.capitalIncome[player]
+                         : Rules::CAPITAL_INCOME;
+        for (const IncomeBonus &b : settings.incomeBonuses) {
+            income += b.player == player && turn >= b.fromTurn ? b.extra : 0;
+        }
+        return income;
+    }
     int marketIncome(int tile) const;
     bool gameOver() const { return winner >= 0; }
     // uniform in [0, n)

@@ -1,4 +1,5 @@
 #include "selfPlay.h"
+#include <cstring>
 #include "bots/randomBot.h"
 #include "parallel.h"
 #include "view.h"
@@ -64,8 +65,17 @@ struct SelfPlaySession::Slot {
     // each seat's root value at its latest decision with the network, for a
     // game the turn limit cuts off (GameRecord::finalValues)
     std::vector<float> lastValues;
+    // each player's root values in each turn, summed and counted, turns x
+    // players (GameRecord::turnValues)
+    std::vector<double> valueSums;
+    std::vector<int> valueCounts;
     // the turn of the latest attack or capture, -1 before the first
     int lastCombat = -1;
+    // a handicap game, and for a catch-up one, whether the boost is still to
+    // give (SelfPlayConfig::handicapCatchUpShare)
+    bool handicap = false, catchUpPending = false;
+    // this turn's evaluations, by their exact input (prepare())
+    Cache cache;
     // the network's beliefs for this turn's player, asked for once per turn
     // (networkBeliefs), and whether the slot is waiting for them
     std::optional<Beliefs> beliefs;
@@ -106,15 +116,50 @@ void SelfPlaySession::startGame(Slot &slot) {
                            static_cast<std::uint32_t>(setup)};
     slot.rng.seed(sequence);
     slot.record = newRecord(config, slot.rng);
-    slot.record.seatZeroSide = config.paired ? number % 2 : 0;
+    slot.record.seatZeroSide = config.paired        ? number % 2
+                               : config.randomSeats ? static_cast<int>(slot.rng() & 1)
+                                                    : 0;
+    // side 1's seat, when it's a pool opponent that doesn't train
+    slot.record.poolOpponentSeat =
+        config.trainSides[1] ? -1 : 1 - slot.record.seatZeroSide;
     // a pair's games share their fog setting too
     slot.record.fog = std::bernoulli_distribution(config.fogShare)(slot.rng);
     slot.record.peaceTreaties = config.peaceTreaties;
+    slot.handicap = slot.catchUpPending = false;
+    slot.cache.clear();
+    if (config.handicapShare > 0 &&
+        std::bernoulli_distribution(config.handicapShare)(slot.rng)) {
+        slot.handicap = true;
+        const std::size_t players = slot.record.map.tribes.size();
+        std::uniform_int_distribution<std::size_t> who(0, players - 1);
+        std::size_t leader = who(slot.rng);
+        bool catchUp = !config.handicapIncome.empty() &&
+                       std::bernoulli_distribution(config.handicapCatchUpShare)(slot.rng);
+        bool income = !config.handicapIncome.empty() &&
+                      (config.handicapStars.empty() ||
+                       std::bernoulli_distribution(config.handicapIncomeShare)(slot.rng));
+        const std::vector<int> &amounts = income ? config.handicapIncome : config.handicapStars;
+        int amount = amounts[std::uniform_int_distribution<std::size_t>(
+            0, amounts.size() - 1)(slot.rng)];
+        if (catchUp) {
+            // given later, to whoever falls behind
+            slot.catchUpPending = true;
+            slot.record.catchUp = true;
+        } else if (income) {
+            slot.record.capitalIncome.assign(players, Rules::CAPITAL_INCOME);
+            slot.record.capitalIncome[leader] += amount;
+        } else {
+            slot.record.headStart.assign(players, 0);
+            slot.record.headStart[leader] = amount;
+        }
+    }
     // the rest of the game's randomness differs between the pair's games
     slot.rng.seed(slot.rng() ^ static_cast<std::uint64_t>(number));
     slot.randomBot.emplace(slot.rng());
     slot.game.emplace(slot.record.start());
     slot.lastValues.assign(slot.game->players.size(), std::nanf(""));
+    slot.valueSums.clear();
+    slot.valueCounts.clear();
     slot.lastCombat = -1;
     slot.beliefs.reset();
     slot.beliefsTurn = slot.beliefsPlayer = -1;
@@ -122,6 +167,39 @@ void SelfPlaySession::startGame(Slot &slot) {
     slot.commandsThisTurn = 0;
     slot.turn = slot.mover = -1;
     slot.moveLimit = -1;
+}
+
+// A catch-up game's boost: once the side to move has fallen behind in the
+// mid or late game, and both players have met (so neither infers the other's
+// tribe from its income), more capital income from its next turn on
+void SelfPlaySession::maybeCatchUp(Slot &slot, float value) {
+    Game &game = *slot.game;
+    int p = game.currentPlayer, q = 1 - p;
+    if (!slot.catchUpPending || game.turn < config.catchUpFromTurn ||
+        value >= config.catchUpBelow || game.players.size() != 2 ||
+        !game.players[p].hasMet(q) || !game.players[q].hasMet(p)) {
+        return;
+    }
+    const std::vector<int> &amounts = config.handicapIncome;
+    int extra = amounts[std::uniform_int_distribution<std::size_t>(0, amounts.size() - 1)(slot.rng)];
+    IncomeBonus bonus{.player = p, .fromTurn = game.turn + 1, .extra = extra};
+    game.settings.incomeBonuses.push_back(bonus);
+    slot.record.incomeBonuses.push_back(bonus);
+    slot.catchUpPending = false;
+}
+
+// the mover's stars and income as their turn starts, for the side targets
+void SelfPlaySession::noteEconomy(Slot &slot) {
+    const Game &game = *slot.game;
+    const std::size_t players = game.players.size(),
+                      need = static_cast<std::size_t>(game.turn + 1) * players;
+    if (slot.record.turnStars.size() < need) {
+        slot.record.turnStars.resize(need, -1);
+        slot.record.turnIncome.resize(need, -1);
+    }
+    std::size_t at = static_cast<std::size_t>(game.turn) * players + game.currentPlayer;
+    slot.record.turnStars[at] = game.players[game.currentPlayer].stars;
+    slot.record.turnIncome[at] = game.income(game.currentPlayer);
 }
 
 // an attack or a capture restarts the stalemate clock
@@ -155,6 +233,9 @@ void SelfPlaySession::advance(Slot &slot) {
                 slot.turn = game.turn;
                 slot.mover = game.currentPlayer;
                 slot.commandsThisTurn = 0;
+                noteEconomy(slot);
+                // repeats come within a turn: keep the cache small
+                slot.cache.clear();
             }
             // a turn always ends, but cap it in case
             if (slot.commandsThisTurn >= 200) {
@@ -180,6 +261,15 @@ void SelfPlaySession::advance(Slot &slot) {
             SearchConfig search = config.search;
             search.fullInformation = !slot.record.fog;
             search.gumbel = config.gumbel[slot.side];
+            if (config.exploration[slot.side] > 0) {
+                search.exploration = config.exploration[slot.side];
+            }
+            if (config.gumbelCandidates[slot.side] > 0) {
+                search.gumbelCandidates = config.gumbelCandidates[slot.side];
+            }
+            if (config.simulations[slot.side] > 0) {
+                search.simulations = config.simulations[slot.side];
+            }
             // with fog, the network's beliefs, once per turn: wait for them
             bool fromNetwork = !search.fullInformation && config.networkBeliefs &&
                                config.sides[slot.side] == SideKind::NETWORK;
@@ -197,6 +287,15 @@ void SelfPlaySession::advance(Slot &slot) {
             if (!slot.full) {
                 search.simulations = config.quickSimulations;
                 search.rootNoise = false;
+            } else if (search.rootNoise) {
+                // training's full searches explore; matches search without
+                // root noise, and so without this
+                search.exploreCandidates = config.exploreCandidates;
+            }
+            // a side behind in a handicap game searches harder
+            if (slot.handicap && config.trailingSearchFactor > 1 &&
+                slot.lastValues[game.currentPlayer] < config.catchUpBelow) {
+                search.simulations *= config.trailingSearchFactor;
             }
             // Gumbel search picks its move by its noise: on in the opening
             // turns, for varied openings, as the temperature is otherwise
@@ -225,6 +324,10 @@ void SelfPlaySession::advance(Slot &slot) {
         }
         // the decision is made: play it and record it
         SearchResult result = slot.search->result(0);
+        {
+            std::lock_guard<std::mutex> lock(depthMutex);
+            depth[slot.side] += slot.search->takeDepthStats();
+        }
         // kept for the next decision's tree reuse
         slot.previous = std::move(slot.search);
         // the search's value of the position for the player to move: the
@@ -240,6 +343,16 @@ void SelfPlaySession::advance(Slot &slot) {
             if (visits > 0) {
                 rootValue = static_cast<float>(total / visits);
                 slot.lastValues[game.currentPlayer] = rootValue;
+                maybeCatchUp(slot, rootValue);
+                const std::size_t players = game.players.size(),
+                                  at = static_cast<std::size_t>(game.turn) * players +
+                                       game.currentPlayer;
+                if (slot.valueSums.size() <= at) {
+                    slot.valueSums.resize((game.turn + 1) * players, 0);
+                    slot.valueCounts.resize((game.turn + 1) * players, 0);
+                }
+                slot.valueSums[at] += rootValue;
+                slot.valueCounts[at]++;
             }
         }
         double temperature = game.turn < config.temperatureTurns ? 1.0 : 0.0;
@@ -247,7 +360,9 @@ void SelfPlaySession::advance(Slot &slot) {
                           .command = result.choose(temperature, slot.rng),
                           .rootValue = rootValue};
         // only a full search's visits are worth training the policy on
-        for (std::size_t i = 0; slot.full && i < result.moves.size(); i++) {
+        for (std::size_t i = 0; slot.full && config.trainSides[slot.side] &&
+                                i < result.moves.size();
+             i++) {
             int weight = result.chosen >= 0
                              ? static_cast<int>(std::lround(result.policy[i] * POLICY_WEIGHT_SCALE))
                              : result.visits[i];
@@ -295,6 +410,23 @@ void SelfPlaySession::finishGame(Slot &slot) {
     for (int t = 0; t < game.size * game.size; t++) {
         slot.record.finalTerritory[t] = game.tileOwner(t);
     }
+    // a player who's gone has nothing from then on
+    slot.record.turnStars.resize(static_cast<std::size_t>(game.turn + 1) * players, -1);
+    slot.record.turnIncome.resize(slot.record.turnStars.size(), -1);
+    for (int p = 0; p < players; p++) {
+        std::size_t at = static_cast<std::size_t>(game.turn) * players + p;
+        if (!game.players[p].alive) {
+            slot.record.turnStars[at] = slot.record.turnIncome[at] = 0;
+        }
+    }
+    slot.record.turnValues.assign(static_cast<std::size_t>(game.turn + 1) * players,
+                                  std::nanf(""));
+    for (std::size_t i = 0; i < slot.valueSums.size() && i < slot.record.turnValues.size(); i++) {
+        if (slot.valueCounts[i] > 0) {
+            slot.record.turnValues[i] =
+                static_cast<float>(slot.valueSums[i] / slot.valueCounts[i]);
+        }
+    }
     slot.record.turnScores.assign(static_cast<std::size_t>(game.turn + 1) * players, 0);
     std::vector<int> latest(players, 0);
     std::size_t next = 0;
@@ -338,6 +470,11 @@ void SelfPlaySession::finishAfter(int moves) {
 bool SelfPlaySession::done() const { return finished >= total; }
 
 const std::vector<EvalRequest> &SelfPlaySession::pending() {
+    // the last batch's cache state goes: nothing of it may be copied again
+    prepared = false;
+    served.clear();
+    servedSides.clear();
+    servedFrom.clear();
     // each game on its own, in parallel: they share nothing
     pool->run(static_cast<int>(slots.size()), [&](int i) {
         Slot &slot = *slots[i];
@@ -414,6 +551,186 @@ void SelfPlaySession::submit(const std::vector<Evaluation> &results) {
     owners.clear();
 }
 
+namespace {
+// A 128-bit fingerprint of a block of floats: two independent 64-bit mixes
+void fingerprint(const float *data, std::size_t count, std::uint64_t &a, std::uint64_t &b) {
+    a = 0x243f6a8885a308d3ULL;
+    b = 0x13198a2e03707344ULL;
+    const auto *bytes = reinterpret_cast<const unsigned char *>(data);
+    std::size_t n = count * sizeof(float), i = 0;
+    for (; i + 8 <= n; i += 8) {
+        std::uint64_t w;
+        std::memcpy(&w, bytes + i, 8);
+        a = (a ^ w) * 0x9e3779b97f4a7c15ULL;
+        a ^= a >> 29;
+        b = (b + w) * 0xbf58476d1ce4e5b9ULL;
+        b ^= b >> 31;
+    }
+    for (; i < n; i++) {
+        a = (a ^ bytes[i]) * 0x9e3779b97f4a7c15ULL;
+        b = (b + bytes[i]) * 0xbf58476d1ce4e5b9ULL;
+    }
+}
+} // namespace
+
+std::size_t SelfPlaySession::prepare(const EncodingConfig &config) {
+    const std::size_t n = requests.size(), N = config.mapSize;
+    planeSize = planeCount(config) * N * N;
+    globalSize = globalCount(config);
+    encodedPlanes.resize(n * planeSize);
+    encodedGlobals.resize(n * globalSize);
+    keys.resize(n);
+    // which game each request is for
+    requestSlot.clear();
+    for (auto [slot, count] : owners) {
+        requestSlot.insert(requestSlot.end(), count, slot);
+    }
+    pool->run(static_cast<int>(n), [&](int i) {
+        const EvalRequest &r = requests[i];
+        float *planes = encodedPlanes.data() + i * planeSize;
+        float *globals = encodedGlobals.data() + i * globalSize;
+        encodeState(*r.game, r.player, config, planes, globals, r.fullInformation);
+        std::uint64_t pa, pb, ga, gb;
+        fingerprint(planes, planeSize, pa, pb);
+        fingerprint(globals, globalSize, ga, gb);
+        keys[i] = {.a = pa ^ (ga * 0x9e3779b97f4a7c15ULL), .b = pb ^ (gb * 0xc2b2ae3d27d4eb4fULL),
+                   .side = requestSides[i]};
+    });
+    // answer what the cache can: every move asked about must be there
+    answered.assign(n, 0);
+    answers.assign(n, Evaluation{});
+    served.clear();
+    servedSides.clear();
+    servedFrom.clear();
+    std::vector<int> rows, slotsOf;
+    for (std::size_t i = 0; i < n; i++) {
+        const EvalRequest &r = requests[i];
+        bool hit = false;
+        if (!r.wantsBeliefs) {
+            cacheStats.lookups++;
+            const Cache &cache = slots[requestSlot[i]]->cache;
+            auto found = cache.find(keys[i]);
+            if (found != cache.end()) {
+                // the logits of this request's moves, from the cached slots
+                const CachedEvaluation &c = found->second;
+                std::vector<EvalRequest> one{r};
+                requestSlots(one, config, rows, slotsOf);
+                std::vector<float> logits(slotsOf.size(), 0.0f);
+                hit = true;
+                for (std::size_t m = 0; m < slotsOf.size() && hit; m++) {
+                    if (slotsOf[m] < 0) {
+                        continue;
+                    }
+                    auto at = std::lower_bound(c.logits.begin(), c.logits.end(),
+                                               std::make_pair(slotsOf[m], -1e30f));
+                    if (at == c.logits.end() || at->first != slotsOf[m]) {
+                        hit = false;
+                    } else {
+                        logits[m] = at->second;
+                    }
+                }
+                if (hit) {
+                    float value = c.value, ties[2] = {c.scoreLead, c.turnsLeft};
+                    std::vector<Evaluation> result;
+                    evaluationsFromMoveLogits(one, slotsOf, logits.data(), &value, result, ties);
+                    answers[i] = std::move(result[0]);
+                    answered[i] = 1;
+                    cacheStats.hits++;
+                }
+            }
+        }
+        if (!hit) {
+            served.push_back(r);
+            servedSides.push_back(requestSides[i]);
+            servedFrom.push_back(static_cast<int>(i));
+        }
+    }
+    prepared = true;
+    return served.size();
+}
+
+std::size_t SelfPlaySession::pendingForNetwork(const EncodingConfig &config) {
+    while (true) {
+        if (pending().empty()) {
+            return 0;
+        }
+        std::size_t b = prepare(config);
+        if (b > 0) {
+            return b;
+        }
+        // all answered: hand them over, and on to the next positions
+        submitServed({});
+    }
+}
+
+void SelfPlaySession::copyPrepared(float *planes, float *globals) const {
+    if (!prepared) {
+        return; // nothing pending: an empty batch
+    }
+    for (std::size_t j = 0; j < servedFrom.size(); j++) {
+        std::size_t i = static_cast<std::size_t>(servedFrom[j]);
+        std::copy_n(encodedPlanes.data() + i * planeSize, planeSize, planes + j * planeSize);
+        std::copy_n(encodedGlobals.data() + i * globalSize, globalSize, globals + j * globalSize);
+    }
+}
+
+void SelfPlaySession::submitServed(const std::vector<Evaluation> &results) {
+    if (!prepared) {
+        submit(results);
+        return;
+    }
+    std::vector<Evaluation> all = std::move(answers);
+    for (std::size_t j = 0; j < servedFrom.size() && j < results.size(); j++) {
+        all[servedFrom[j]] = results[j];
+    }
+    prepared = false;
+    submit(all);
+}
+
+void SelfPlaySession::submitMoveLogits(const EncodingConfig &config, const float *moveLogits,
+                                       const float *values, const float *tieBreaks,
+                                       const float *beliefs) {
+    std::vector<int> rows, slotsOf;
+    requestSlots(waiting(), config, rows, slotsOf);
+    std::vector<Evaluation> results;
+    evaluationsFromMoveLogits(waiting(), slotsOf, moveLogits, values, results, tieBreaks);
+    if (beliefs) {
+        attachBeliefs(waiting(), config, beliefs, results);
+    }
+    if (prepared) {
+        // keep each answer for the rest of the turn
+        std::size_t k = 0;
+        for (std::size_t j = 0; j < served.size(); j++) {
+            const EvalRequest &r = served[j];
+            std::size_t moves = r.moves ? r.moves->size() : 0;
+            if (!r.wantsBeliefs) {
+                std::size_t i = static_cast<std::size_t>(servedFrom[j]);
+                CachedEvaluation c{.value = values[j],
+                                   .scoreLead = tieBreaks ? tieBreaks[2 * j] : 0.0f,
+                                   .turnsLeft = tieBreaks ? tieBreaks[2 * j + 1] : 0.0f};
+                for (std::size_t m = 0; m < moves; m++) {
+                    if (slotsOf[k + m] >= 0) {
+                        c.logits.push_back({slotsOf[k + m], moveLogits[k + m]});
+                    }
+                }
+                std::sort(c.logits.begin(), c.logits.end());
+                c.logits.erase(std::unique(c.logits.begin(), c.logits.end(),
+                                           [](auto &x, auto &y) { return x.first == y.first; }),
+                               c.logits.end());
+                slots[requestSlot[i]]->cache.insert_or_assign(keys[i], std::move(c));
+            }
+            k += moves;
+        }
+    }
+    submitServed(results);
+}
+
+void SelfPlaySession::clearCache() {
+    for (std::unique_ptr<Slot> &slot : slots) {
+        slot->cache.clear();
+    }
+}
+
 std::vector<GameRecord> SelfPlaySession::takeFinished() {
     std::lock_guard<std::mutex> lock(doneMutex);
     return std::exchange(done_, {});
@@ -445,6 +762,7 @@ std::vector<GameRecord> playGames(const SelfPlayConfig &config, int count,
             // its values are score leads, not chances of winning: a game cut
             // off here is a draw, and no position has a search value
             records[i].finalValues.clear();
+            records[i].turnValues.clear();
             for (RecordedMove &m : records[i].moves) {
                 m.rootValue = std::nanf("");
             }
@@ -517,13 +835,15 @@ void attachBeliefs(const std::vector<EvalRequest> &requests,
 void evaluationsFromMoveLogits(const std::vector<EvalRequest> &requests,
                                const std::vector<int> &slots,
                                const float *moveLogits, const float *values,
-                               std::vector<Evaluation> &results) {
+                               std::vector<Evaluation> &results, const float *tieBreaks) {
     results.resize(requests.size());
     std::size_t k = 0;
     for (std::size_t i = 0; i < requests.size(); i++) {
         const EvalRequest &r = requests[i];
         Evaluation &e = results[i];
         e.value = std::clamp(values[i], -1.0f, 1.0f);
+        e.scoreLead = tieBreaks ? std::clamp(tieBreaks[2 * i], -1.0f, 1.0f) : 0.0f;
+        e.turnsLeft = tieBreaks ? std::max(0.0f, tieBreaks[2 * i + 1]) : 0.0f;
         e.priors.clear();
         if (!r.moves) {
             continue;

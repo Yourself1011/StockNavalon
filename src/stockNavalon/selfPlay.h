@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 // Who plays a side of a game: the caller's network, the search with the
@@ -73,6 +74,42 @@ struct SelfPlayConfig {
     // Gumbel search at the root for each side (SearchConfig::gumbel), so a
     // match can put the two searches against each other
     std::array<bool, 2> gumbel{false, false};
+    // Opponent-pool games: side 1 is an earlier network, at a random seat;
+    // only the sides with trainSides true record policy targets (training
+    // only samples moves with targets, so the other side's never train), and
+    // records mark the pool opponent's seat (GameRecord::poolOpponentSeat)
+    bool randomSeats = false;
+    std::array<bool, 2> trainSides{true, true};
+    // Handicap games: this share of games give one player, at random, an
+    // edge, so the bot sees games where it's behind and can come back. Most
+    // (handicapIncomeShare) as the real game handicaps its bots: an extra
+    // capital income of one of handicapIncome stars a turn
+    // (GameSettings::capitalIncome); the rest as a head start of one of
+    // handicapStars stars (GameSettings::headStart).
+    double handicapShare = 0, handicapIncomeShare = 0.75;
+    std::vector<int> handicapIncome{1, 2};
+    std::vector<int> handicapStars{3, 6, 10};
+    // Of handicap games, this share are catch-up games instead: from turn
+    // catchUpFromTurn on, once both players have met, the first side whose
+    // search value falls below catchUpBelow gets one of handicapIncome more
+    // capital income from its next turn on (GameSettings::incomeBonuses), so
+    // a side behind in the mid or late game can come back
+    double handicapCatchUpShare = 0.5;
+    int catchUpFromTurn = 10;
+    double catchUpBelow = -0.5;
+    // in handicap games, a side whose search value is below catchUpBelow
+    // searches with this many times the simulations, for better moves where
+    // the bot tends to give up
+    int trailingSearchFactor = 2;
+    // on full searches only, this many of the root's Gumbel candidates are
+    // random legal moves (SearchConfig::exploreCandidates)
+    int exploreCandidates = 2;
+    // per side, overriding search.exploration, search.gumbelCandidates and
+    // search.simulations (full searches) where positive: for comparing search
+    // settings in a match
+    std::array<double, 2> exploration{-1, -1};
+    std::array<int, 2> gumbelCandidates{-1, -1};
+    std::array<int, 2> simulations{-1, -1};
 };
 
 // One game. The evaluator scores positions for the search.
@@ -103,11 +140,14 @@ void requestSlots(const std::vector<EvalRequest> &requests,
                   const EncodingConfig &config, std::vector<int> &rows,
                   std::vector<int> &slots);
 // Evaluations from the logits of those slots alone ([K], in that order) and
-// the values [B]: each request's priors are the softmax of its moves' logits
+// the values [B]: each request's priors are the softmax of its moves' logits.
+// With `tieBreaks` [B][2], each position's predicted score lead and turns left
+// (Evaluation::scoreLead, turnsLeft).
 void evaluationsFromMoveLogits(const std::vector<EvalRequest> &requests,
                                const std::vector<int> &slots,
                                const float *moveLogits, const float *values,
-                               std::vector<Evaluation> &results);
+                               std::vector<Evaluation> &results,
+                               const float *tieBreaks = nullptr);
 // The network's raw belief outputs ([R][beliefOutputCount], one row per
 // request that wants beliefs, in order), decoded into those requests'
 // results
@@ -142,12 +182,47 @@ class SelfPlaySession {
     // every waiting position, across all games; valid until submit(). Empty
     // once advancing the games finished the last of them.
     const std::vector<EvalRequest> &pending();
-    // the last pending() again, without advancing any game
-    const std::vector<EvalRequest> &waiting() const { return requests; }
+    // the last pending() again, without advancing any game; after
+    // prepare(), only the positions the cache couldn't answer
+    const std::vector<EvalRequest> &waiting() const { return prepared ? served : requests; }
     // for each of those, the side whose search it's for (only NETWORK sides'
     // positions are pending; the others are played in C++)
-    const std::vector<int> &waitingSides() const { return requestSides; }
+    const std::vector<int> &waitingSides() const {
+        return prepared ? servedSides : requestSides;
+    }
     void submit(const std::vector<Evaluation> &results);
+
+    // ---- the evaluation cache ----
+    // Between pending() and the network: encodes every pending position (as
+    // encodeRequests does) and answers those whose exact input this game's
+    // search already had evaluated this turn, by the same side's network.
+    // waiting() is then only the rest, in order, and copyPrepared gives their
+    // inputs; returns how many. A position a later search asks about again,
+    // when tree reuse couldn't continue, or moves in a different order, cost
+    // a fifth to a quarter of all evaluations.
+    std::size_t prepare(const EncodingConfig &config);
+    // pending() then prepare(), over again while the cache answers every
+    // waiting position (its answers submitted each time): how many positions
+    // need the network, 0 only once nothing is pending. What a caller that
+    // takes an empty batch as the end should use.
+    std::size_t pendingForNetwork(const EncodingConfig &config);
+    // the inputs of the waiting() positions: planes [B][C][N][N], globals [B][G]
+    void copyPrepared(float *planes, float *globals) const;
+    // The network's answers for the waiting() positions (as
+    // evaluationsFromMoveLogits takes them; tieBreaks and beliefs may be
+    // null), kept in the cache, then with the cache's answers submitted
+    void submitMoveLogits(const EncodingConfig &config, const float *moveLogits,
+                          const float *values, const float *tieBreaks,
+                          const float *beliefs);
+    // evaluations for the waiting() positions, with the cache's answers
+    // submitted (nothing kept in the cache)
+    void submitServed(const std::vector<Evaluation> &results);
+    // forget every game's cached evaluations: after the network changes
+    void clearCache();
+    struct CacheStats {
+        std::int64_t lookups = 0, hits = 0;
+    };
+    CacheStats takeCacheStats() { return std::exchange(cacheStats, {}); }
     // the games finished since the last call
     std::vector<GameRecord> takeFinished();
     int finishedGames() const { return finished; }
@@ -162,6 +237,8 @@ class SelfPlaySession {
     // raising it during training)
     void setFogShare(double share) { config.fogShare = share; }
     int threads() const { return config.threads; }
+    // per side, how deep its searches have gone so far (BatchedSearch::DepthStats)
+    const std::array<BatchedSearch::DepthStats, 2> &depthStats() const { return depth; }
     // the session's threads, for encoding its pending positions
     ThreadPool &threadPool() { return *pool; }
 
@@ -175,14 +252,47 @@ class SelfPlaySession {
     std::atomic<int> started{0}, finished{0};
     std::vector<std::unique_ptr<Slot>> slots;
     std::unique_ptr<ThreadPool> pool;
+    std::array<BatchedSearch::DepthStats, 2> depth;
+    std::mutex depthMutex;
     std::mutex doneMutex;
     std::vector<GameRecord> done_;
     std::vector<EvalRequest> requests;
     std::vector<int> requestSides;
     // per slot with requests: the slot, and how many
     std::vector<std::pair<int, int>> owners;
+    // after prepare(): the pending positions encoded, their keys and slots,
+    // the ones the network still has to answer (and where they came from),
+    // and the cache's answers for the rest
+    bool prepared = false;
+    std::vector<float> encodedPlanes, encodedGlobals;
+    std::size_t planeSize = 0, globalSize = 0;
+    struct CacheKey {
+        std::uint64_t a = 0, b = 0;
+        int side = 0;
+        bool operator==(const CacheKey &) const = default;
+    };
+    struct CacheKeyHash {
+        std::size_t operator()(const CacheKey &k) const {
+            return static_cast<std::size_t>(k.a ^ (k.b * 31) ^ static_cast<std::uint64_t>(k.side));
+        }
+    };
+    struct CachedEvaluation {
+        float value = 0, scoreLead = 0, turnsLeft = 0;
+        // the logit of each move slot asked about, by slot
+        std::vector<std::pair<int, float>> logits;
+    };
+    using Cache = std::unordered_map<CacheKey, CachedEvaluation, CacheKeyHash>;
+    std::vector<CacheKey> keys;
+    std::vector<int> requestSlot, servedFrom;
+    std::vector<EvalRequest> served;
+    std::vector<int> servedSides;
+    std::vector<char> answered;
+    std::vector<Evaluation> answers;
+    CacheStats cacheStats;
 
     void startGame(Slot &slot);
+    void noteEconomy(Slot &slot);
+    void maybeCatchUp(Slot &slot, float value);
     // records the slot's game as it stands
     void finishGame(Slot &slot);
     // plays the slot's decisions until its search wants evaluations

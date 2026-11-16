@@ -197,3 +197,37 @@ TEST_CASE("the search scores a state exactly as the engine does") {
     }
     MESSAGE(commands << " commands");
 }
+
+TEST_CASE("the real tribe is never ruled out when a player had a head start or more income") {
+    // a handicap game: the stars are public, so inference adds them to that
+    // player's budget, and the extra spending they allow is no evidence
+    int checks = 0;
+    for (std::uint64_t seed = 0; seed < 24; seed++) {
+        std::vector<Tribe> lineup = {static_cast<Tribe>(seed % TRIBE_SIZE),
+                                     static_cast<Tribe>((seed * 5 + 3) % TRIBE_SIZE)};
+        auto type = static_cast<MapTypes::MapType>(seed % MapTypes::MAP_TYPE_SIZE);
+        GameSettings settings{.seed = seed};
+        settings.headStart = {seed % 2 ? 0 : 10, seed % 2 ? 10 : 0};
+        // and half the games a bigger capital income too, Hard-like
+        if (seed % 4 < 2) {
+            settings.capitalIncome = {Rules::CAPITAL_INCOME + 1, Rules::CAPITAL_INCOME + 1};
+            settings.capitalIncome[seed % 2] += 1;
+        }
+        Game game(generateMap({.size = 11, .type = type, .tribes = lineup, .seed = seed,
+                               .candidates = 1}),
+                  lineup, settings);
+        CHECK(game.players[seed % 2 ? 1 : 0].stars ==
+              tribeData[lineup[seed % 2 ? 1 : 0]].startStars + 10);
+        RandomBot bot(seed);
+        for (int turn = 0; turn < 20 && !game.gameOver(); turn++) {
+            bot.playTurn(game);
+            for (int viewer = 0; viewer < 2; viewer++) {
+                PlayerView view = makeView(game, viewer);
+                REQUIRE(view.headStart == settings.headStart);
+                REQUIRE(possibleTribes(view, 1 - viewer).test(lineup[1 - viewer]));
+                checks++;
+            }
+        }
+    }
+    CHECK(checks > 0);
+}

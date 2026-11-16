@@ -11,6 +11,7 @@ Contents:
 6. [Determinization: the full design](#6-determinization-the-full-design)
 7. [Player memory](#7-player-memory)
 8. [Smaller alternatives](#8-smaller-alternatives)
+9. [Planning turns ahead: a redesign](#9-planning-turns-ahead-a-redesign) (brainstorm)
 
 ## 1. Training plan
 
@@ -106,9 +107,21 @@ After 35,885 in the ninth run the value got overconfident (predictions averaging
 
 **Non-circular fallback:** shrink the result towards 0 for positions far from the game's end (result × 0.98^turns remaining). Softer early targets, no bootstrapping; but not a true win probability, and a fixed bias.
 
-### Augmentation: off for now
+### Varied starting positions (for later)
 
-Not cleared or convicted ([`runs.md`](runs.md)). The live runs couldn't separate it from self-play, the score weight and restarts; an offline test on a frozen buffer can ([`todo.md`](todo.md)). One hypothesis if it does hurt: without it, the memorizing value head gave the search small, nearly meaningless values (about ±0.1), so play followed the policy; with it, larger, more confident values (about ±0.23) that are only weakly right could pull the search off course. Or a network trained 10,000 steps on one orientation may lose direction-specific shortcuts before learning direction-free ones, a transition a run with augmentation from the start wouldn't have.
+Self-play always starts from turn 0, so every game pays for its own opening and the bot mostly sees the strategies it already plays. Starting a share of games elsewhere would help in several ways:
+- **Different strategies:** games forced into lines the bot rarely chooses (rider rushes on roads, defenders with catapults, naval play, early expansion) so it learns what they're worth and how to meet them, instead of only refining its current style. Ways to get there: fork from positions where a different plan was available; or a short scripted or biased opening for a few turns (a research order, a unit mix) before normal play takes over.
+- **More of the mid and late game per GPU-hour,** and less of the opening, where the value memorizes.
+- **Rare situations on purpose:** forks from moments like an enemy next to the capital, to practise defending, the weakness seen in watched games.
+- **Learning from mistakes:** a different move at the fork shows the value what the alternative leads to.
+
+What others do (from memory): AlphaZero and Leela start from the initial position with randomness in the opening; KataGo varies starts (random opening moves, board sizes, handicaps) and forks games from positions in earlier ones with a different move; Stockfish's NNUE data comes from many varied starting positions; some work uses reverse curricula, starting near the end and moving earlier.
+
+**Sketch:** a share of games (about 15%) start from a position in a recent game, with a different move there, or after a forced opening plan. The record carries the earlier moves up to the start without policy targets, so replay works, and only positions after it train. With fog the start is a real state, so nothing changes for determinization. To test: records, the buffer, the held-out split, and that forked games don't crowd out ordinary ones.
+
+### Augmentation: on (settled)
+
+It was off for a while, suspected of causing passive play, but the live runs never separated it from the score weight, self-play and restarts. It has been on by default ever since without the passive play returning, so the offline test planned for it was dropped. It matters for memorization: rotated and reflected maps make individual games harder to learn by heart.
 
 ### Self-play opponents
 
@@ -225,6 +238,28 @@ The horizon is a setting (built: the number of turn changes a line may cross). T
 
 To be measured by strength per unit of compute.
 
+**What's true now** (2026-11-13): at 64 simulations the search rarely gets past the player's own turn. At the first command of a turn the opponent's reply is about 6 commands deep, beyond the budget; only the last few commands of a turn, with End Turn among the candidates, search the reply. Counter-moves come from the threat planes and the value. Raising the horizon changes nothing without far more simulations: two turns ahead is about 20 commands deep, and per command, so it would cost something like 30× the self-play time. Fog makes deep lines worth less (one sampled hidden state, the opponent played by our own policy).
+
+**The cutoff removed** (2026-11-14): the horizon is now unlimited by default. It rarely came into play (lines mostly end long before the opponent's turn is over), and where it did, in deep forcing lines, seeing further is what's wanted. Watch for End Turn's branch, which reaches the opponent's turn soonest, being searched deeper than the rest and so judged differently.
+
+**Moves in different orders** (transpositions): 20.6% of network evaluations repeat an input already evaluated with fog, 24.7% without (first ~10 turns, the ninth run's best network, the run's settings), almost all within about one decision. Probably mostly the next decision re-evaluating what the last one saw when tree reuse couldn't continue, rather than true transpositions: the search is too shallow to try both orders of two moves often. An evaluation cache would save them. Sharing statistics between orders matters only with much bigger budgets.
+
+**If the bot gets stuck on tactics** (not overlooking the opponent's next turn, the way a player thinks "if I move here, they attack there"), in rough order of cost:
+1. Sharper threat planes from the rules: would my unit here die, could a city fall next turn, what would they lose to retaliation.
+2. A counter-attack check at the leaves where the turn ends (like quiescence search in chess): play the opponent's forcing replies (kills, captures), then score.
+3. More simulations where End Turn is a serious candidate, normal budgets elsewhere.
+4. Whole turns as moves (option 3 above).
+
+**How other long-turn games handle it** (from memory; check the papers before building on them):
+- *Online Evolutionary Planning* (Justesen et al., Hero Academy): evolves whole turns as one candidate, scored at the end of the turn; beat MCTS on multi-action turns, which drowns in orderings. *Rolling Horizon Evolutionary Algorithms* do the same over a few turns.
+- *Portfolio Greedy Search* (Churchill and Buro, RTS combat): each unit picks among a few scripted behaviours, improved one unit at a time with the rest fixed, the way a player settles one area then the next.
+- *Naive MCTS* (Ontañón, microRTS): combinatorial bandits over units' actions instead of branching on every joint action.
+- *Elastic MCTS* (Xu and Perez-Liebana): merges similar states so they share statistics; evaluated, I believe, on **Tribes** (Perez-Liebana et al.), a research framework modelled on Polytopia whose baseline agents include MCTS and rolling-horizon evolution. The closest prior work: read its papers and competition results before building any of the above.
+- AlphaStar and OpenAI Five: no search, a learned policy trained at huge scale.
+- Card games (Hearthstone): determinization, searched a turn at a time.
+
+The most transferable for this design: sample several complete turns from the policy, score each end-of-turn position after the opponent's forcing replies, play the best.
+
 ## 5. The belief model
 
 ### Reading the score
@@ -316,3 +351,30 @@ Task progress and units' kill counts are shown by the game, so they aren't memor
 - **Normalizing instead of augmenting:** transform every position so the player's own capital is in one fixed region, as chess engines do for the side to move. One orientation saves learning eight and may give an "enemy is that way" prior in the fogged opening; but it adds no data, a fixed orientation still identifies a game's map, and every search evaluation would need its input transformed and its policy transformed back. The symmetry code serves both.
 - **Count heads:** exact integers with a cap (unit count, exploration) put weight on several values at once; a mixture of negative binomials (stars) covers any size with no bins, and two peaks ("spent everything" against "saving up"). Alternatives: fixed-width buckets, a single negative binomial, exact integers for stars too. Compare by held-out log-likelihood and by how realistic determinized samples are.
 - **Running the model inside C++** (TorchScript or ONNX export) for fast play without Python; the search wouldn't change.
+
+## 9. Planning turns ahead: a redesign
+
+A brainstorm (2026-11-15/16), open to anything: a bot that plans a couple of turns ahead the way a player does would set this one apart, and the measurements say today's search can't. Section 4 has the earlier options and prior work (Tribes, a Polytopia research framework, is the closest: read it first).
+
+### Why the search can't look ahead
+
+- **Depth is in commands, and a turn is 10–30 of them.** Seeing the player's next turn means 30–60 levels of 50–150 moves each. At 64 simulations 27% of simulations reach the opponent's turn, mean depth 2.8 commands; at 512, 33% and 4.0 (`searches.py --side-simulations 64 512`, 64 games): eight times the budget buys about one command of depth, because it spreads across candidates and orderings. 512 won 60% ± 13 of decided games.
+- **Payoffs come a turn later.** A unit must start its turn on a village or ruin to take it, so the search almost never sees the capture; it's down to the value, which barely sees it (+0.02 for a captured village; notes/runs.md). In self-play, a village or ruin in reach goes untaken in 74% of turns (68% even in turns 0–10).
+- **Why a player can:** plans, not commands (the order of a turn's moves rarely matters); distant units thought of separately (additive, not multiplicative); attention only where something is happening; the opponent's reply as threats, not a full turn; reasoning back from goals.
+
+### What doesn't get there
+
+- **More simulations:** see above.
+- **Front-loading** (most of a turn's budget on its first decision, the rest reusing the tree): tree reuse already counts kept visits toward the next decision (`search.cc`), so this is only uneven phases. Its ceiling is "512 at every decision" above; an efficiency gain (maybe 2× instead of 8× for similar strength), not lookahead. Visits along the played line thin out within a few commands.
+- **Bridge-burning MCTS** (Justesen et al.: lock in the best move a level down, phase by phase) is what playing a command and reusing the tree already does. **Non-exploring MCTS** (exploration 0): our exploration comes from the prior, and Gumbel narrows the root; narrower exploration tied (55–56). Both, like OEP, planned only the current turn, scored at its end: a lesson for planning one turn well, not for lookahead.
+- **Splitting the board into regions:** on 11×11 maps, all of a player's units join into one region (units within 2 tiles, chained) in 79–85% of turns, 96–100% at 3–4 tiles; the largest holds 17–19 units late. Partitions don't exist here.
+
+### Ideas worth trying
+
+1. **Command-by-command, then turn-by-turn** (the user's ideas, first to try): the player's own turn searched command by command, for granularity; past the turn's end, whole turns as moves, sampled from the policy, for depth. A variant: command by command only up to a budget, the policy completing the rest of the turn, then turn by turn. One setting covers all of them, and full turn-by-turn: a node only gets command-by-command children once visited enough (say 8 times); until then a simulation reaching it has the policy complete the turn. So well-visited lines get precision and the rest a quick completion; very high means turn-by-turn throughout, 1 means commands until End Turn. Every line then ends at a turn boundary, so moves are compared at the same kind of point (today, End Turn's lines end in the opponent's turn and other moves' mid-turn, judged from different views). Turn nodes start with a couple of sampled turns and add more as they're visited, so the opponent's punishing reply can be found, not just its habit. A sampled turn costs 10–30 network evaluations, so budgets count evaluations; compare the setting's range with today's search, at 512–2,048 evaluations a decision, reporting win rates, turns reached, and villages taken.
+2. **Opponent replies at turn-ending leaves:** where a line ends the turn, sample a few opponent reply turns and evaluate after them. The smallest step towards 1.
+3. **Plan, then refine:** candidate whole turns from the policy, scored against a few opponent replies (the most punishing found kept in the set); then one unit at a time, try its alternatives with the rest fixed, keep improvements (Online Evolutionary Planning's mutations), searching for new punishing replies as the plan changes. Granularity at units × alternatives, not alternatives^units.
+4. **Focused local search:** not partitions but focus areas: around each point of interest (unclaimed village or ruin, a city of either side), the units of either side close enough to matter. Measured: within 2 tiles, median 2 / 3 / 5 units (turns 0–10 / 10–25 / 25+), the busiest area 2 / 5 / 8 (90th percentile 4 / 8 / 12); within 3 tiles, busiest 3 / 7 / 12. Search only those units' commands, both sides, 2–3 turns, the rest held (frozen, or the policy's moves), judged by the whole-board value with the line applied (the capture now happens inside the line); combine areas by settling stars, unit cap and shared units. Early on the whole board is about 4 units, and the branching is the economy's commands: unit-only focus search is small there.
+5. **Learned focus:** (a) *unit intents*, a head predicting where each unit will be 2–3 turns later (trained from records like the side heads): plans from intents, focus areas where intents meet; (b) attention between units (an architecture change) defining focus areas; (c) a learned turn model (MuZero-style, a turn at a time) searched in the network's own representation; (d) no search, AlphaStar-style (far more compute). Bootstrapping: learned focus learns from games that ignore villages, so rules propose candidates (every village, ruin, city, contact) and the network ranks them.
+
+How to judge any of them: strength at equal network evaluations per turn (`searches.py`-style matches), and the measures above (villages taken, depth reached).

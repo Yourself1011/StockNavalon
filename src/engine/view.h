@@ -31,6 +31,10 @@ struct PlayerView {
         int unit = -1;
         // index into cities if a city stands here, -1 if none
         int city = -1;
+        // An unexplored tile beside explored shallow water: 1 if it's land,
+        // 0 if water, as the shore drawn on the water tile's sides shows;
+        // -1 if unknown (GAME.md section 16)
+        int knownLand = -1;
     };
 
     struct UnitView {
@@ -59,6 +63,11 @@ struct PlayerView {
     // the kind of map, public from the start
     MapTypes::MapType mapType;
     int turn, currentPlayer, winner;
+    // each player's head start in stars (GameSettings::headStart), public;
+    // 0 for every player in a normal game
+    std::vector<int> headStart;
+    // each player's capital income bonus (GameSettings::capitalIncome), public
+    std::vector<int> capitalIncome;
     // the player's own
     int stars;
     int income;

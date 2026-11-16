@@ -12,7 +12,9 @@
 Game GameRecord::start() const {
     return Game(generateMap(map), map.tribes,
                 {.seed = gameSeed, .peaceTreaties = peaceTreaties,
-                 .diplomacyMeets = diplomacyMeets});
+                 .diplomacyMeets = diplomacyMeets, .adjacentPushes = adjacentPushes,
+                 .headStart = headStart, .capitalIncome = capitalIncome,
+                 .incomeBonuses = incomeBonuses});
 }
 
 bool GameRecord::replaysLegally() const {
@@ -85,7 +87,10 @@ Command readCommand(std::istream &in) {
 //        <game seed> <winner> <turns> <scores> <score>...
 //        [<values> <value>... <tiles> <owner>... <scores> <score>... <fog>
 //         <peace treaties> <cities> <city count>... <root values>
-//         <diplomacy meets>]
+//         <diplomacy meets> <n> <turn stars>... <n> <turn income>...
+//         <n> <turn values>... <adjacent pushes> <n> <head start>...
+//         <n> <capital income>... <n> (<player> <from turn> <extra>)...
+//         <catch-up> <pool opponent seat>]
 //        (final values, final territory, the score table, whether it was
 //        played with fog and peace treaties, the final city counts, whether
 //        move lines end with a root value, and whether diplomacy introduced
@@ -129,6 +134,29 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
         }
         // each move line ends with its root value
         out << " 1 " << r.diplomacyMeets;
+        for (const std::vector<int> *table : {&r.turnStars, &r.turnIncome}) {
+            out << ' ' << table->size();
+            for (int v : *table) {
+                out << ' ' << v;
+            }
+        }
+        out << ' ' << r.turnValues.size();
+        for (float v : r.turnValues) {
+            out << ' ' << v;
+        }
+        out << ' ' << r.adjacentPushes << ' ' << r.headStart.size();
+        for (int stars : r.headStart) {
+            out << ' ' << stars;
+        }
+        out << ' ' << r.capitalIncome.size();
+        for (int stars : r.capitalIncome) {
+            out << ' ' << stars;
+        }
+        out << ' ' << r.incomeBonuses.size();
+        for (const IncomeBonus &b : r.incomeBonuses) {
+            out << ' ' << b.player << ' ' << b.fromTurn << ' ' << b.extra;
+        }
+        out << ' ' << r.catchUp << ' ' << r.poolOpponentSeat;
         out << '\n' << r.moves.size() << '\n';
         for (const RecordedMove &m : r.moves) {
             out << m.player;
@@ -218,6 +246,51 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         r.diplomacyMeets = false;
         if (int meets; header >> meets) {
             r.diplomacyMeets = meets != 0;
+        }
+        for (std::vector<int> *table : {&r.turnStars, &r.turnIncome}) {
+            if (header >> count) {
+                table->resize(count);
+                for (int &v : *table) {
+                    header >> v;
+                }
+            }
+        }
+        if (header >> count) {
+            r.turnValues.resize(count);
+            for (float &v : r.turnValues) {
+                std::string word;
+                header >> word;
+                v = word == "nan" ? std::nanf("") : std::stof(word);
+            }
+        }
+        // recorded before the rule: replayed without it
+        r.adjacentPushes = false;
+        if (int adjacent; header >> adjacent) {
+            r.adjacentPushes = adjacent != 0;
+        }
+        if (header >> count) {
+            r.headStart.resize(count);
+            for (int &stars : r.headStart) {
+                header >> stars;
+            }
+        }
+        if (header >> count) {
+            r.capitalIncome.resize(count);
+            for (int &stars : r.capitalIncome) {
+                header >> stars;
+            }
+        }
+        if (header >> count) {
+            r.incomeBonuses.resize(count);
+            for (IncomeBonus &b : r.incomeBonuses) {
+                header >> b.player >> b.fromTurn >> b.extra;
+            }
+        }
+        if (int catchUp; header >> catchUp) {
+            r.catchUp = catchUp != 0;
+        }
+        if (int seat; header >> seat) {
+            r.poolOpponentSeat = seat;
         }
         if (!header && !header.eof()) {
             throw std::runtime_error("Bad record header in " + path);
@@ -325,13 +398,33 @@ void encodeExamples(const std::vector<GameRecord> &records,
             out.value[i] = static_cast<float>(
                 (1 - value.cityWeight) * result +
                 value.cityWeight * record.cityValue(player));
-            out.valueWeight[i] = record.winner >= 0 ? 1.0f
+            out.valueWeight[i] = !record.valueCounts(game.turn) ? 0.0f
+                                 : record.winner >= 0           ? 1.0f
                                                     : static_cast<float>(value.cutOffWeight);
+            if (out.turnPositions) {
+                // a player's turn is a run of their moves (two players
+                // alternate; with more, a run is still one turn)
+                int count = 0;
+                for (int k = move; k >= 0 && record.moves[k].player == player; k--) {
+                    count += !record.moves[k].visits.empty();
+                }
+                for (int k = move + 1; k < static_cast<int>(record.moves.size()) &&
+                                       record.moves[k].player == player;
+                     k++) {
+                    count += !record.moves[k].visits.empty();
+                }
+                out.turnPositions[i] = static_cast<float>(count);
+            }
             encodeTargets(game, player, config, out.targets + i * targets,
                           out.targetMasks + i * targets, !record.fog);
             if (out.sideTargets) {
                 encodeSideTargets(record, game.turn, player, config,
                                   out.sideTargets + i * side, out.sideMasks + i * side);
+                // they're about how the game went too
+                if (!record.valueCounts(game.turn)) {
+                    std::fill(out.sideMasks + i * side, out.sideMasks + (i + 1) * side,
+                              std::uint8_t{0});
+                }
             }
             if (!symmetries.empty()) {
                 applySymmetry(symmetries[i], game.size, config,
@@ -389,6 +482,44 @@ void encodeSideTargets(const GameRecord &record, int turn, int player,
         targets[SCORE_SOON] = soon < rows ? lead(&record.turnScores[soon * players])
                                           : targets[SCORE_END];
         masks[SCORE_SOON] = 1;
+    }
+    // the player's own stars and income ECONOMY_TURNS later: their latest
+    // turn by then, or their last one if the game ended first
+    if (!record.turnStars.empty() && record.turnStars.size() == record.turnIncome.size()) {
+        int rows = static_cast<int>(record.turnStars.size()) / players;
+        for (int t = std::min(turn + ECONOMY_TURNS, rows - 1); t >= 0; t--) {
+            std::size_t at = static_cast<std::size_t>(t) * players + player;
+            if (record.turnStars[at] >= 0) {
+                targets[STARS_AHEAD] = static_cast<float>(record.turnStars[at] / STARS_SCALE);
+                targets[INCOME_AHEAD] = static_cast<float>(record.turnIncome[at] / INCOME_SCALE);
+                masks[STARS_AHEAD] = masks[INCOME_AHEAD] = 1;
+                break;
+            }
+        }
+    }
+    // short-term values: lambda-returns of the player's own search values,
+    // from the game's value at the end back to this turn; a turn without one
+    // passes the return on
+    if (!record.turnValues.empty()) {
+        int rows = static_cast<int>(record.turnValues.size()) / players;
+        for (std::size_t h = 0; h < SHORT_TERM_HORIZONS.size(); h++) {
+            double lambda = 1 - 1 / SHORT_TERM_HORIZONS[h], ret = record.value(player);
+            for (int t = rows - 1; t >= turn; t--) {
+                float v = record.turnValues[static_cast<std::size_t>(t) * players + player];
+                if (!std::isnan(v)) {
+                    ret = (1 - lambda) * v + lambda * ret;
+                }
+            }
+            targets[SHORT_TERM_VALUE + h] = static_cast<float>(ret);
+            masks[SHORT_TERM_VALUE + h] = 1;
+        }
+    }
+    // turns left, only where the game really ended: a cut-off game says
+    // nothing about when its end would have come
+    if (record.winner >= 0) {
+        double left = std::min<double>(std::max(0, record.turns - turn), TURNS_LEFT_CAP);
+        targets[TURNS_LEFT] = static_cast<float>(left / TURNS_LEFT_SCALE);
+        masks[TURNS_LEFT] = 1;
     }
     const int size = record.map.size;
     if (static_cast<int>(record.finalTerritory.size()) == size * size && size <= n) {

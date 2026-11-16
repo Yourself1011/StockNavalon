@@ -25,7 +25,8 @@ import torch
 
 import polyengine as pe
 
-from .model import Network, as_input, belief_outputs
+from .model import Network
+from .selfplay import evaluate_sides
 
 
 def score_games(records: list[pe.GameRecord]) -> dict[str, Any]:
@@ -60,7 +61,11 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           stall_turns: int = 0, fog_share: float = 1.0,
           network_beliefs: bool = False, peace_treaties: bool = True,
           threads: int = 1, gumbel: tuple[bool, bool] = (False, False),
-          gumbel_candidates: int = 16, settled=None,
+          gumbel_candidates: int = 16, score_utility: float = 0.0,
+          win_sooner: float = 0.0, side_exploration: tuple[float, float] | None = None,
+          side_gumbel_candidates: tuple[int, int] | None = None,
+          side_simulations: tuple[int, int] | None = None,
+          horizon: int = pe.UNLIMITED_HORIZON, settled=None,
           gpu_lock=None, progress=None, progress_seconds: float = 30.0,
           finish_share: float = 0.9, extra_moves: int = 50,
           max_minutes: float = 10.0,
@@ -79,12 +84,15 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
             net.eval()
     games += games % 2  # whole pairs
     session = pe.SelfPlaySession(
-        parallel, games, seed=seed, simulations=simulations, samples=samples,
+        parallel, games, seed=seed, simulations=simulations, samples=samples, horizon=horizon,
         max_turns=max_turns, temperature_turns=1, root_noise=False,
         full_share=1.0, sides=sides, paired=True, stall_turns=stall_turns,
         fog_share=fog_share, network_beliefs=network_beliefs,
         peace_treaties=peace_treaties, threads=threads, gumbel=list(gumbel),
-        gumbel_candidates=gumbel_candidates)
+        gumbel_candidates=gumbel_candidates, score_utility=score_utility,
+        win_sooner=win_sooner, side_exploration=list(side_exploration or []),
+        side_gumbel_candidates=list(side_gumbel_candidates or []),
+        side_simulations=list(side_simulations or []))
 
     start = reported = time.perf_counter()
     records: list[pe.GameRecord] = []
@@ -95,41 +103,8 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
             reported = now
             progress({**score_games(records), "games": len(records),
                       "of": games, "seconds": round(now - start)})
-        planes, globals_, _ = session.pending_inputs(encoding, legal=False)
-        b = len(planes)
-        if b == 0:
+        if evaluate_sides(session, networks, encoding, device, gpu_lock) == 0:
             continue
-        rows, slots = session.pending_slots(encoding)
-        side_of = session.pending_sides()
-        values = np.zeros(b, np.float32)
-        move_logits = np.zeros(len(slots), np.float32)
-        # the positions that want their network's beliefs, in order
-        belief_rows = session.pending_belief_rows()
-        beliefs = (np.zeros((len(belief_rows), encoding.belief_output_count), np.float32)
-                   if len(belief_rows) else None)
-        for side in (0, 1):
-            idx = np.nonzero(side_of == side)[0]
-            if len(idx) == 0:
-                continue
-            # this side's positions, and its moves among all the moves
-            local = np.full(b, -1, np.int64)
-            local[idx] = np.arange(len(idx))
-            moves = np.nonzero(side_of[rows] == side)[0]
-            network = networks[side]
-            assert network is not None  # only network sides' positions are pending
-            with gpu_lock:
-                out = network(as_input(planes[idx], network, device),
-                              as_input(globals_[idx], network, device))
-                picked = out["policy"][torch.from_numpy(local[rows[moves]]).to(device),
-                                       torch.from_numpy(slots[moves]).to(device)]
-                move_logits[moves] = picked.float().cpu().numpy()
-                values[idx] = out["value"].float().cpu().numpy()
-                mine = np.nonzero(side_of[belief_rows] == side)[0]
-                if len(mine):
-                    beliefs[mine] = belief_outputs(
-                        out, torch.from_numpy(local[belief_rows[mine]]).to(device),
-                        encoding).float().cpu().numpy()
-        session.submit_move_logits(encoding, move_logits, values, beliefs)
         records.extend(session.take_finished())
         # stop once the result can't change (`settled`: the games so far,
         # and how many are still to finish)
@@ -155,23 +130,31 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         1 for r in records[cut_at:]
         if r.winner < 0 and not r.stalled and r.turns < max_turns)
     result["seconds"] = round(time.perf_counter() - start)
+    # how deep each side's searches went
+    result["depth"] = session.depth_stats()
     if keep is not None:
         keep.extend(records)
     return result
 
 
+def verdict_settled(wins: int, losses: int, remaining: int, threshold: float = 0.55,
+                    min_decided: int = 20) -> bool:
+    """Whether a gate's verdict can't change, from its decided games so far
+    and the games still going (each could still be won, lost or undecided)."""
+    if wins + losses + remaining < min_decided:
+        return True  # inconclusive whatever happens
+    best = (wins + remaining) / (wins + losses + remaining)
+    worst = wins / (wins + losses + remaining) if wins + losses + remaining else 0.0
+    # out of reach, or already certain
+    return best < threshold or (wins + losses >= min_decided and worst >= threshold)
+
+
 def gate_settled(threshold: float = 0.55, min_decided: int = 20):
-    """For a gate's match: True once its verdict can't change, whatever the
-    games still going do (each could still be won, lost or undecided)."""
+    """For a gate's match: True once its verdict can't change (verdict_settled)."""
     def settled(records: list[pe.GameRecord], remaining: int) -> bool:
         result = score_games(records)
-        wins, losses = result["captures"], result["was_captured"]
-        if wins + losses + remaining < min_decided:
-            return True  # inconclusive whatever happens
-        best = (wins + remaining) / (wins + losses + remaining)
-        worst = wins / (wins + losses + remaining) if wins + losses + remaining else 0.0
-        # out of reach, or already certain
-        return best < threshold or (wins + losses >= min_decided and worst >= threshold)
+        return verdict_settled(result["captures"], result["was_captured"], remaining,
+                               threshold, min_decided)
     return settled
 
 

@@ -6,6 +6,13 @@ PlayerView makeView(const Game &game, int player, bool everything) {
     view.size = game.size;
     view.mapType = game.mapType;
     view.turn = game.turn;
+    view.headStart.assign(game.players.size(), 0);
+    for (std::size_t i = 0; i < game.players.size(); i++) {
+        view.capitalIncome.push_back(game.capitalIncome(static_cast<int>(i)));
+    }
+    for (std::size_t i = 0; i < game.settings.headStart.size() && i < game.players.size(); i++) {
+        view.headStart[i] = game.settings.headStart[i];
+    }
     view.currentPlayer = game.currentPlayer;
     view.winner = game.winner;
     view.stars = game.players[player].stars;
@@ -59,6 +66,28 @@ PlayerView makeView(const Game &game, int player, bool everything) {
                               game.firstOccupied.begin() + (player + 1) * count);
 
     view.tiles.resize(game.tiles.size());
+    // the shore drawn on explored shallow water's four sides tells land from
+    // water on the unexplored tiles beside it
+    if (!everything) {
+        for (int y = 0; y < game.size; y++) {
+            for (int x = 0; x < game.size; x++) {
+                int tile = game.index(x, y);
+                if (game.explored(player, tile)) {
+                    continue;
+                }
+                const int dx[] = {0, 0, -1, 1}, dy[] = {-1, 1, 0, 0};
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + dx[d], ny = y + dy[d];
+                    if (game.inBounds(nx, ny) && game.explored(player, game.index(nx, ny)) &&
+                        game.tiles[game.index(nx, ny)].terrain == TerrainTypes::WATER) {
+                        view.tiles[tile].knownLand =
+                            !TerrainTypes::isWater(game.tiles[tile].terrain);
+                        break;
+                    }
+                }
+            }
+        }
+    }
     for (std::size_t i = 0; i < game.tiles.size(); i++) {
         int tile = static_cast<int>(i);
         const Tile &t = game.tiles[i];

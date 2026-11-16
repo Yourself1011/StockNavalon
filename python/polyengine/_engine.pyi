@@ -921,6 +921,45 @@ class GameRecord:
     @diplomacy_meets.setter
     def diplomacy_meets(self, arg: bool, /) -> None: ...
 
+    @property
+    def head_start(self) -> list[int]:
+        """
+        Each player's head start in stars, in a handicap game; empty for an ordinary one.
+        """
+
+    @property
+    def capital_income(self) -> list[int]:
+        """
+        Each player's capital income bonus, in a handicap game; empty for the usual.
+        """
+
+    @property
+    def income_bonuses(self) -> list[tuple[int, int, int]]:
+        """A catch-up game's boosts: (player, from turn, extra income)."""
+
+    @property
+    def catch_up(self) -> bool:
+        """
+        A catch-up game, whether or not its boost was given: its value targets count only from the boost on.
+        """
+
+    @property
+    def handicap_leader(self) -> int:
+        """In a handicap game, the player given the edge; -1 otherwise."""
+
+    @property
+    def pool_opponent_seat(self) -> int:
+        """In an opponent-pool game, the earlier network's seat (its moves have no policy targets); -1 otherwise."""
+
+    @property
+    def adjacent_pushes(self) -> bool:
+        """
+        Whether pushed units only went to a neighbouring tile (GameSettings::adjacentPushes); false for older records.
+        """
+
+    @adjacent_pushes.setter
+    def adjacent_pushes(self, arg: bool, /) -> None: ...
+
     def replays_legally(self) -> bool:
         """
         Whether every command is legal when replayed, and no player's stars go below zero.
@@ -1006,7 +1045,7 @@ class GameRecord:
     def score_value(self, player: int, scale: float = 500.0) -> float:
         """The final score lead, squashed into [-1, 1]."""
 
-def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, full_share: float = 0.25, quick_simulations: int = 25, stall_turns: int = 0, fog_share: float = 1.0, peace_treaties: bool = True) -> list[GameRecord]:
+def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1000, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, full_share: float = 0.25, quick_simulations: int = 25, stall_turns: int = 0, fog_share: float = 1.0, peace_treaties: bool = True) -> list[GameRecord]:
     """
     Self-play games with the search on both seats, scored by the score lead until there's a network. A full_share of decisions get the full search and are recorded for the policy; the rest a quick one.
     """
@@ -1022,9 +1061,14 @@ class SelfPlaySession:
         records = session.take_finished()
     """
 
-    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True, gumbel: Sequence[bool] = [False, False], gumbel_candidates: int = 16) -> None: ...
+    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1000, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True, gumbel: Sequence[bool] = [False, False], gumbel_candidates: int = 16, score_utility: float = 0.0, win_sooner: float = 0.0, side_exploration: Sequence[float] = [], side_gumbel_candidates: Sequence[int] = [], handicap_share: float = 0.0, handicap_stars: Sequence[int] = [3, 6, 10], handicap_income_share: float = 0.75, handicap_income: Sequence[int] = [1, 2], handicap_catch_up_share: float = 0.5, catch_up_from_turn: int = 10, catch_up_below: float = -0.5, trailing_search_factor: int = 2, explore_candidates: int = 2, random_seats: bool = False, train_sides: Sequence[bool] = [True, True], side_simulations: Sequence[int] = []) -> None: ...
 
     def done(self) -> bool: ...
+
+    def depth_stats(self) -> list:
+        """
+        Per side: simulations so far, their mean depth in commands below the root, and the share that reached the opponent's turn.
+        """
 
     @property
     def finished_games(self) -> int: ...
@@ -1054,9 +1098,9 @@ class SelfPlaySession:
         The pending positions that want the network's beliefs (network_beliefs): give their raw belief outputs to submit_move_logits. Call after pending_inputs.
         """
 
-    def submit_move_logits(self, encoding: Encoding, move_logits: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], values: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], beliefs: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)] | None = None) -> None:
+    def submit_move_logits(self, encoding: Encoding, move_logits: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], values: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)], beliefs: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)] | None = None, tie_breaks: Annotated[NDArray[numpy.float32], dict(order='C', device='cpu', writable=False)] | None = None) -> None:
         """
-        The logits gathered at pending_slots, the values [B], and for the pending_belief_rows their raw belief outputs [R, belief_output_count] (without them, those take priorBeliefs).
+        The logits gathered at pending_slots, the values [B], and for the pending_belief_rows their raw belief outputs [R, belief_output_count] (without them, those take priorBeliefs). tie_breaks [B, 2]: each position's predicted final score lead and turns left, for the search's tie-breaks (score_utility, win_sooner).
         """
 
     def submit_scores(self) -> None:
@@ -1130,7 +1174,7 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1, network_beliefs: bool = True, gumbel: bool = False) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1000, network_beliefs: bool = True, gumbel: bool = False, score_utility: float = 0.0, win_sooner: float = 0.0, exploration: float = 1.5, gumbel_candidates: int = 16) -> int:
     """
     The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. Returns the exit code.
     """
@@ -1140,7 +1184,7 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
     """
 
-ENCODING_VERSION: int = 6
+ENCODING_VERSION: int = 14
 
 MAP_TYPE_COUNT: int = 6
 
@@ -1162,7 +1206,23 @@ SIDE_SCORE_SOON: int = 0
 
 SIDE_SCORE_END: int = 1
 
-SIDE_TERRITORY: int = 2
+SIDE_STARS_AHEAD: int = 2
+
+SIDE_INCOME_AHEAD: int = 3
+
+SIDE_SHORT_TERM_VALUE: int = 4
+
+SHORT_TERM_HORIZONS: list = [3.0, 10.0, 30.0]
+
+UNLIMITED_HORIZON: int = 1000
+
+SIDE_TURNS_LEFT: int = 7
+
+TURNS_LEFT_SCALE: float = 50.0
+
+TURNS_LEFT_CAP: float = 100.0
+
+SIDE_TERRITORY: int = 8
 
 TERRITORY_CLASSES: int = 3
 

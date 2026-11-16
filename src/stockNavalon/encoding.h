@@ -6,6 +6,7 @@
 
 #include "command.h"
 #include "determinize.h"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -23,7 +24,7 @@ struct EncodingConfig {
     bool operator==(const EncodingConfig &) const = default;
 };
 
-constexpr int ENCODING_VERSION = 6;
+constexpr int ENCODING_VERSION = 15;
 // how many of each opponent's first score changes are encoded
 constexpr int OPENING_CHANGES = 6;
 
@@ -145,17 +146,34 @@ Beliefs decodeBeliefs(const PlayerView &view, const EncodingConfig &config,
 // ---- side targets (docs/encoding.md section 8.5) ----
 
 // Targets for side heads the search never reads, from how the game went: the
-// score lead a few turns later and at the end, squashed, and each tile's
-// owner when the game ended (mine, an opponent's, nobody's), as [3][N][N].
+// score lead a few turns later and at the end, squashed; the player's own
+// stars and income further ahead; short-term values (KataGo's): the player's
+// own search values over the coming turns, as lambda-returns ending in the
+// game's value; and each tile's owner when the game ended (mine, an
+// opponent's, nobody's), as [3][N][N].
 namespace SideTargets {
 constexpr int SCORE_SOON = 0;
 constexpr int SCORE_END = 1;
-constexpr int TERRITORY = 2;
+constexpr int STARS_AHEAD = 2;
+constexpr int INCOME_AHEAD = 3;
+constexpr int SHORT_TERM_VALUE = 4;
+// the short-term values' horizons, in turns: lambda = 1 - 1 / horizon
+constexpr std::array<double, 3> SHORT_TERM_HORIZONS = {3, 10, 30};
+// turns until the game ended, for games that ended in a capture (Leela
+// Chess Zero's moves-left head), scaled and capped: min(turns, CAP) / SCALE
+constexpr int TURNS_LEFT = SHORT_TERM_VALUE + static_cast<int>(SHORT_TERM_HORIZONS.size());
+constexpr double TURNS_LEFT_SCALE = 50, TURNS_LEFT_CAP = 100;
+constexpr int TERRITORY = TURNS_LEFT + 1;
 constexpr int TERRITORY_CLASSES = 3;
 // how far ahead the first score lead looks
 constexpr int SOON_TURNS = 5;
 // the score lead's squash: tanh(lead / SCORE_SCALE)
 constexpr double SCORE_SCALE = 500;
+// how far ahead the stars and income look: long enough for what's built now
+// to pay off
+constexpr int ECONOMY_TURNS = 10;
+// their scales, as the global vector's: stars / 50, income / 30
+constexpr double STARS_SCALE = 50, INCOME_SCALE = 30;
 } // namespace SideTargets
 int sideTargetCount(const EncodingConfig &config);
 

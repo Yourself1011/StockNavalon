@@ -146,3 +146,70 @@ TEST_CASE("a game copies as a value") {
     CHECK(game.unitAt(game.index(1, 1)));
     CHECK_FALSE(game.unitAt(game.index(2, 2)));
 }
+
+TEST_CASE("a pushed unit with no free neighbouring tile is destroyed (the houdini)") {
+    // the capital at (1,1), every neighbouring tile taken by its own units
+    auto surrounded = [](bool adjacent) {
+        Game game = makeGame(fieldMap());
+        game.settings.adjacentPushes = adjacent;
+        clearUnits(game);
+        int capital = game.players[0].capital;
+        game.cities[capital].level = 4;
+        int w = addUnit(game, 0, WARRIOR, 1, 1);
+        for (int y = 0; y <= 2; y++) {
+            for (int x = 0; x <= 2; x++) {
+                if (x != 1 || y != 1) {
+                    addUnit(game, 0, WARRIOR, x, y);
+                }
+            }
+        }
+        game.addPopulation(capital, 5);
+        game.apply({CommandTypes::CITYREWARD, game.index(1, 1), -1, CityRewards::SUPERUNIT});
+        REQUIRE(game.unitAt(game.index(1, 1)));
+        CHECK(game.unitAt(game.index(1, 1))->type == GIANT);
+        (void)w;
+        return game;
+    };
+    // a destroyed unit's slot can go to the Giant, so count warriors
+    auto warriors = [](const Game &game, int within) {
+        int n = 0;
+        for (const Unit &u : game.units) {
+            n += u.alive && u.type == WARRIOR &&
+                 game.distance(u.tile, game.index(1, 1)) <= within;
+        }
+        return n;
+    };
+    Game now = surrounded(true);
+    CHECK(warriors(now, 10) == 8);
+    // games recorded before the rule replay as they were played: further out
+    Game before = surrounded(false);
+    CHECK(warriors(before, 10) == 9);
+    CHECK(warriors(before, 1) == 8);
+}
+
+TEST_CASE("a pushed unit tries the push direction, then one step counter-clockwise, one clockwise, two each way...") {
+    // a friendly warrior at the capital (1,1) that last moved east: pushed
+    // onward east, then around the ring of neighbours (north is up)
+    const std::vector<std::pair<int, int>> order = {
+        {2, 1}, {2, 0}, {2, 2}, {1, 0}, {1, 2}, {0, 0}, {0, 2}, {0, 1}};
+    for (std::size_t blocked = 0; blocked < order.size(); blocked++) {
+        CAPTURE(blocked);
+        Game game = makeGame(fieldMap());
+        clearUnits(game);
+        int capital = game.players[0].capital;
+        game.cities[capital].level = 4;
+        int w = addUnit(game, 0, WARRIOR, 1, 1);
+        game.units[w].lastDx = 1;
+        game.units[w].lastDy = 0;
+        game.units[w].hp = 77;
+        for (std::size_t k = 0; k < blocked; k++) {
+            addUnit(game, 0, DEFENDER, order[k].first, order[k].second);
+        }
+        game.addPopulation(capital, 5);
+        game.apply({CommandTypes::CITYREWARD, game.index(1, 1), -1, CityRewards::SUPERUNIT});
+        const Unit *pushed = game.unitAt(game.index(order[blocked].first, order[blocked].second));
+        REQUIRE(pushed);
+        CHECK(pushed->type == WARRIOR);
+        CHECK(pushed->hp == 77);
+    }
+}

@@ -7,6 +7,6 @@
 int main(int argc, char **argv) {
     return runCli(argc, argv, [](std::uint64_t seed) -> BotTurn {
         auto bot = std::make_shared<RandomBot>(seed);
-        return [bot](Game &game) { return bot->playTurn(game); };
+        return [bot](Game &game) { return BotResult{.commands = bot->playTurn(game)}; };
     });
 }

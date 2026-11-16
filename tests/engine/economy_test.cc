@@ -1,5 +1,6 @@
 #include "doctest/doctest.h"
 #include "helpers.h"
+#include "view.h"
 
 using namespace TechTypes;
 using CommandTypes::BUILD;
@@ -224,4 +225,78 @@ TEST_CASE("starfish harvest") {
     game.apply(harvest);
     CHECK(game.players[0].stars == 13);
     CHECK(game.tiles[game.index(4, 4)].resource == ResourceTypes::NONE);
+}
+
+TEST_CASE("a bridge spans water between land on opposite sides") {
+    // (4,3) has land north and south, and east and west; (2,5) has land
+    // only north and east, its other sides water; (5,1) is open water
+    // between water
+    Game game = makeGame(fieldMap({"4 3 W", "2 5 W", "1 5 W", "2 6 W", "5 1 W", "4 1 W",
+                                   "6 1 W", "5 0 W", "5 2 W"}));
+    game.players[0].techs.set(ROADS);
+    game.players[0].stars = 20;
+    auto bridge = [&](int x, int y) {
+        return hasCommand(game, {BUILD, game.index(x, y), -1, ImprovementTypes::BRIDGE});
+    };
+    CHECK(bridge(4, 3));
+    CHECK_FALSE(bridge(2, 5));
+    CHECK_FALSE(bridge(5, 1));
+    // a narrow channel, land on one axis only, still takes one
+    Game channel = makeGame(fieldMap({"3 4 W", "3 3 W", "3 5 W"}));
+    channel.players[0].techs.set(ROADS);
+    channel.players[0].stars = 20;
+    CHECK(hasCommand(channel, {BUILD, channel.index(3, 4), -1, ImprovementTypes::BRIDGE}));
+}
+
+TEST_CASE("an enemy unit on a tile blocks building, harvesting and destroying there") {
+    // fruit at (2,1) and a farm at (1,2), both inside the capital's borders
+    Game game = makeGame(fieldMap({"2 1 Ff"}));
+    clearUnits(game);
+    game.players[0].techs.set(ORGANIZATION);
+    game.players[0].techs.set(CHIVALRY);
+    game.players[0].stars = 20;
+    game.tiles[game.index(1, 2)].building = ImprovementTypes::FARM;
+    auto harvest = [&] {
+        return hasCommand(game, {BUILD, game.index(2, 1), -1, ImprovementTypes::HARVESTFRUIT});
+    };
+    auto destroy = [&] {
+        return hasCommand(game, {CommandTypes::DESTROY, game.index(1, 2)});
+    };
+    REQUIRE(harvest());
+    REQUIRE(destroy());
+    addUnit(game, 1, UnitTypes::WARRIOR, 2, 1);
+    addUnit(game, 1, UnitTypes::WARRIOR, 1, 2);
+    CHECK_FALSE(harvest());
+    CHECK_FALSE(destroy());
+    // once they're gone, both are back
+    clearUnits(game);
+    CHECK(harvest());
+    CHECK(destroy());
+    // the player's own unit doesn't block
+    addUnit(game, 0, UnitTypes::WARRIOR, 2, 1);
+    CHECK(harvest());
+}
+
+TEST_CASE("the capital income bonus is per player, as the game's bot difficulties set it") {
+    Game game = makeGame(fieldMap());
+    int base = game.income(1);
+    // Crazy-like for player 1: 4 instead of the usual 1
+    game.settings.capitalIncome = {Rules::CAPITAL_INCOME, 4};
+    CHECK(game.income(1) == base + 4 - Rules::CAPITAL_INCOME);
+    CHECK(game.capitalIncome(0) == Rules::CAPITAL_INCOME);
+    // and public
+    CHECK(makeView(game, 0).capitalIncome == std::vector<int>{Rules::CAPITAL_INCOME, 4});
+}
+
+TEST_CASE("an income bonus from a turn on counts only from then") {
+    Game game = makeGame(fieldMap());
+    int base = game.income(1);
+    game.settings.incomeBonuses.push_back({.player = 1, .fromTurn = game.turn + 2, .extra = 2});
+    CHECK(game.income(1) == base);
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    CHECK(game.capitalIncome(1) == Rules::CAPITAL_INCOME + 2);
+    CHECK(game.capitalIncome(0) == Rules::CAPITAL_INCOME);
 }

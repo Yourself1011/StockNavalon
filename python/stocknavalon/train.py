@@ -35,8 +35,13 @@ class LossWeights:
     # extra weight on the rare tiles that do hold a hidden unit
     hidden_unit_positive: float = 10.0
     # side heads (docs/encoding.md section 8.5): the two score leads
-    # together, and the final territory
+    # together, the stars and income ahead together, and the final territory
     score: float = 0.25
+    economy: float = 0.25
+    # the short-term values, all horizons together
+    short_term: float = 0.25
+    # turns until the game ends, for games that ended in a capture
+    turns_left: float = 0.1
     territory: float = 0.5
 
 
@@ -171,9 +176,16 @@ def losses(model: Network, out: dict[str, torch.Tensor],
     if "side_targets" in batch:
         side, side_masks = batch["side_targets"], batch["side_masks"].float()
         for name, k in (("score_soon", pe.SIDE_SCORE_SOON),
-                        ("score_end", pe.SIDE_SCORE_END)):
+                        ("score_end", pe.SIDE_SCORE_END),
+                        ("stars_ahead", pe.SIDE_STARS_AHEAD),
+                        ("income_ahead", pe.SIDE_INCOME_AHEAD),
+                        ("turns_left", pe.SIDE_TURNS_LEFT)):
             m = side_masks[:, k]
             result[name] = ((out[name] - side[:, k]) ** 2 * m).sum() / m.sum().clamp(min=1)
+        k, h = pe.SIDE_SHORT_TERM_VALUE, len(pe.SHORT_TERM_HORIZONS)
+        m = side_masks[:, k:k + h]
+        result["short_term_value"] = (((out["short_term_value"] - side[:, k:k + h]) ** 2 * m).sum()
+                                      / m.sum().clamp(min=1))
         b, classes = side.shape[0], pe.TERRITORY_CLASSES
         t = side[:, pe.SIDE_TERRITORY:].reshape(b, classes, -1)
         tiles = side_masks[:, pe.SIDE_TERRITORY:].reshape(b, classes, -1)[:, 0]
@@ -181,6 +193,9 @@ def losses(model: Network, out: dict[str, torch.Tensor],
         result["territory"] = (ce * tiles).sum() / tiles.sum().clamp(min=1)
         result["total"] = (result["total"]
                            + weights.score * (result["score_soon"] + result["score_end"]) / 2
+                           + weights.economy * (result["stars_ahead"] + result["income_ahead"]) / 2
+                           + weights.short_term * result["short_term_value"]
+                           + weights.turns_left * result["turns_left"]
                            + weights.territory * result["territory"])
     return result
 
@@ -211,7 +226,7 @@ class Trainer:
                  weights: LossWeights = LossWeights(), per_game: int = 1,
                  gpu_lock=None, augment: bool = True, ema_decay: float = 0.999,
                  cut_off_weight: float = 1.0, value_share: float = 1.0,
-                 search_value_weight: float = 0.0):
+                 search_value_weight: float = 0.0, value_per_turn: bool = False):
         self.model, self.encoding, self.device = model, encoding, device
         # An exponential moving average of the weights (decay about 1,000
         # steps), what self-play and gating use: with a fixed learning rate
@@ -233,6 +248,12 @@ class Trainer:
         # the share of the value target from each position's own search
         # value: softer, position-specific targets than one result per game
         self.search_value_weight = search_value_weight
+        # Each player turn weighs the same in the value loss, however many
+        # moves it took: positions are sampled per move, and the side that's
+        # winning makes more moves, so under fog, where positions look
+        # alike, per-move sampling makes the player to move look better off
+        # than they are (notes/runs.md, "Why the bot passes")
+        self.value_per_turn = value_per_turn
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr,
                                            weight_decay=weight_decay)
         self.steps = 0
@@ -282,6 +303,11 @@ class Trainer:
                 keep = torch.rand(batch["value_weight"].shape,
                                   device=self.device) < self.value_share
                 batch["value_weight"] = batch["value_weight"] * keep
+            if self.value_per_turn:
+                # 1 / the turn's positions, scaled to average 1 over the
+                # batch so the value loss keeps its size
+                per_turn = 1 / batch["turn_positions"].clamp(min=1)
+                batch["value_weight"] = batch["value_weight"] * per_turn / per_turn.mean()
             self.model.train()
             out = self.model(batch["planes"], batch["globals"])
             result = losses(self.model, out, batch, self.weights)
@@ -333,7 +359,16 @@ def heldout_losses(model: Network, device: torch.device,
         was_training = model.training
         model.eval()
         batch = to_device(examples, device)
-        result = losses(model, model(batch["planes"], batch["globals"]), batch)
+        out = model(batch["planes"], batch["globals"])
+        result = losses(model, out, batch)
         values = {name: round(value.item(), 4) for name, value in result.items()}
+        # the value's mean error, each player turn weighed once: how much
+        # better off the network thinks the player to move is than they are
+        # (it was +0.13 with per-move value weights)
+        if "turn_positions" in batch:
+            w = (batch["value_weight"] > 0) / batch["turn_positions"].clamp(min=1)
+            if w.sum() > 0:
+                bias = (w * (out["value"].float() - batch["value"])).sum() / w.sum()
+                values["value_bias"] = round(bias.item(), 4)
         model.train(was_training)
     return values
