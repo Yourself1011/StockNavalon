@@ -267,7 +267,7 @@ TEST_CASE("an embassy or a peace offer reveals the sender to the other tribe") {
     }
     // replaying a game recorded before the rule: no meeting
     Game game = makeFogGame(bigMap());
-    game.settings.diplomacyMeets = false;
+    game.settings.rulesVersion = RuleVersions::DIPLOMACY_MEETS - 1;
     game.players[0].techs.set(TechTypes::DIPLOMACY);
     game.players[0].stars = 10;
     game.players[0].met |= std::uint32_t{1} << 1;

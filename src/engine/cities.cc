@@ -337,7 +337,7 @@ void Game::pushUnit(int unitIdx, int owner) {
     // the neighbouring tiles, and with none free it's gone (older records:
     // any distance)
     double primary = std::atan2(-dy, dx);
-    const int reach = settings.adjacentPushes ? 1 : size - 1;
+    const int reach = settings.follows(RuleVersions::ADJACENT_PUSHES) ? 1 : size - 1;
     for (int radius = 1; radius <= reach; radius++) {
         std::vector<std::pair<double, int>> ring;
         forEachInRadius(unit.tile, radius, [&](int t) {

@@ -90,7 +90,7 @@ ctest --preset dev            # the same with full debug checks, unoptimized (10
   .venv/bin/python -m stocknavalon.play runs/second lakes Imperius Bardur --size 11 --bot 1
   ```
 
-  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). Without `--seed` it picks a random one and prints it, so a game can be replayed. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`, or `--pov` to see what each bot sees. After each of its turns it shows its own evaluation of the position, as the search's value and a chance of winning (with fog, from what that player can see). `--explain` also lists each decision: the command played and the search's leading moves, with their priors, visits and values.
+  It plays without peace treaties, as in training, unless given `--peace-treaties`, and guesses what's hidden from the network's beliefs (`--no-network-beliefs` for the fixed priors). Without `--seed` it picks a random one and prints it, so a game can be replayed. To watch it play itself, make both seats bots: `--bot 0 --bot 1 --watch`, or `--pov` to see what each bot sees. After each of its turns it shows its own evaluation of the position, as the search's value and a chance of winning (with fog, from what that player can see). `--explain` also lists each decision: the command played and the search's leading moves, with their priors, visits and values. `--turn-search N` (or `off`) picks turn search for every bot, or one value per seat to put two searches against each other, for example `--bot 0 --bot 1 --turn-search off 0 --evaluations 200` (each bot's evaluation line says which it plays; `--evaluations` keeps their cost equal).
 
 ### CLI commands
 
@@ -137,6 +137,8 @@ uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.rating runs/NAME # Elo of each best network so far
 .venv/bin/python -m stocknavalon.searches runs/NAME  # Gumbel search against PUCT, same network
 .venv/bin/python -m stocknavalon.versus runs/NAME    # the training network's average against the best, a full match
+.venv/bin/python -m stocknavalon.diagnose runs/NAME  # the economy checks: villages, ruins, ports, bridges, idle units
+.venv/bin/python -m stocknavalon.offline --dir runs/NAME --sizes 64x6 128x10  # network sizes trained offline on the run's games, compared
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 

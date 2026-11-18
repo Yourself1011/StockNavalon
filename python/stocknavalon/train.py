@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 import polyengine as pe
 
-from .model import Network, STAR_COMPONENTS
+from .model import Network, STAR_COMPONENTS, as_input
 
 NEG = -1e4  # a masked logit: far below any real one, without infinities
 
@@ -226,7 +226,8 @@ class Trainer:
                  weights: LossWeights = LossWeights(), per_game: int = 1,
                  gpu_lock=None, augment: bool = True, ema_decay: float = 0.999,
                  cut_off_weight: float = 1.0, value_share: float = 1.0,
-                 search_value_weight: float = 0.0, value_per_turn: bool = False):
+                 search_value_weight: float = 0.0, value_per_turn: bool = False,
+                 value_lambda: float = 1.0):
         self.model, self.encoding, self.device = model, encoding, device
         # An exponential moving average of the weights (decay about 1,000
         # steps), what self-play and gating use: with a fixed learning rate
@@ -248,6 +249,9 @@ class Trainer:
         # the share of the value target from each position's own search
         # value: softer, position-specific targets than one result per game
         self.search_value_weight = search_value_weight
+        # the value target a lambda-return of the player's later search
+        # values ending in the result (ValueTarget::lambda); 1: the result
+        self.value_lambda = value_lambda
         # Each player turn weighs the same in the value loss, however many
         # moves it took: positions are sampled per move, and the side that's
         # winning makes more moves, so under fog, where positions look
@@ -277,7 +281,8 @@ class Trainer:
                                       augment=self.augment,
                                       city_weight=city_weight,
                                       cut_off_weight=self.cut_off_weight,
-                                      search_weight=self.search_value_weight)
+                                      search_weight=self.search_value_weight,
+                                      value_lambda=self.value_lambda)
 
     def set_learning_rate(self, rate: float):
         for group in self.optimizer.param_groups:
@@ -346,6 +351,37 @@ class Trainer:
 
 
 @torch.no_grad()
+@torch.no_grad()
+def reanalyse(buffer: pe.ReplayBuffer, model: Network, encoding: pe.Encoding,
+              device: torch.device, gpu_lock=None, new_only: bool = False,
+              games_per_chunk: int = 32, batch: int = 1024) -> tuple[int, int]:
+    """The network's value of the start of each player turn in the buffer's
+    games, kept with them for the lambda-return value target (value_lambda):
+    the games not reanalysed yet with `new_only`, else all of them. Safe while
+    self-play adds games. Returns the games and positions evaluated."""
+    lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
+    seeds = buffer.game_seeds(without_estimates=new_only)
+    positions = 0
+    was_training = model.training
+    model.eval()
+    for k in range(0, len(seeds), games_per_chunk):
+        planes, globals_, game_seeds, turns, players = buffer.turn_start_inputs(
+            encoding, seeds[k:k + games_per_chunk])
+        if len(planes) == 0:
+            continue
+        values = np.empty(len(planes), np.float32)
+        for i in range(0, len(planes), batch):
+            with lock:
+                out = model(as_input(planes[i:i + batch], model, device),
+                            as_input(globals_[i:i + batch], model, device))
+                values[i:i + batch] = out["value"].float().cpu().numpy()
+        buffer.set_value_estimates(game_seeds.tolist(), turns.tolist(), players.tolist(),
+                                   values.tolist())
+        positions += len(planes)
+    model.train(was_training)
+    return len(seeds), positions
+
+
 def heldout_losses(model: Network, device: torch.device,
                    examples: dict[str, np.ndarray] | None,
                    gpu_lock=None) -> dict[str, float] | None:

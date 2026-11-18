@@ -149,13 +149,15 @@ class PoolPlay:
     new one."""
 
     def __init__(self, encoding: pe.Encoding, device: torch.device,
-                 parallel: int = 64, seed: int = 0, gpu_lock=None, **session_args):
+                 config: pe.SelfPlayConfig, parallel: int = 64, seed: int = 0, gpu_lock=None):
         self.encoding, self.device = encoding, device
         self.gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
-        session_args = {**session_args, "handicap_share": 0.0,
-                        "sides": ["network", "network"]}
-        self.session = pe.SelfPlaySession(parallel, 1 << 30, seed=seed, random_seats=True,
-                                          train_sides=[True, False], **session_args)
+        config = config.copy()
+        config.handicap_share = 0.0
+        config.sides = ["network", "network"]
+        config.random_seats = True
+        config.train_sides = [True, False]
+        self.session = pe.SelfPlaySession(config, parallel, 1 << 30, seed)
         self._networks = None
 
     def play(self, model: Network, opponent: Network,
@@ -187,14 +189,14 @@ class SelfPlay:
     network is passed next."""
 
     def __init__(self, encoding: pe.Encoding, device: torch.device,
-                 parallel: int = 64, seed: int = 0, gpu_lock=None, **session_args):
+                 config: pe.SelfPlayConfig, parallel: int = 64, seed: int = 0, gpu_lock=None):
         self.encoding, self.device = encoding, device
         # shared with training when both run at once, around GPU work
         self.gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
         # effectively endless: games are taken as they finish
         endless = 1 << 30
-        self.sessions = [pe.SelfPlaySession(parallel, endless, seed=seed * 2 + i,
-                                            **session_args) for i in range(2)]
+        self.sessions = [pe.SelfPlaySession(config, parallel, endless, seed * 2 + i)
+                         for i in range(2)]
         # running totals over every call (TIMES)
         self.times = dict.fromkeys(TIMES, 0.0)
         # the evaluation cache's lookups and hits, running totals
@@ -257,10 +259,10 @@ class SelfPlay:
 
 
 def play(model: Network, encoding: pe.Encoding, device: torch.device,
-         games: int, parallel: int = 64, seed: int = 0, progress=None,
-         progress_seconds: float = 30.0,
-         **session_args) -> tuple[list[pe.GameRecord], dict[str, float]]:
-    """`games` self-play games from scratch (see SelfPlay for continuous
-    self-play). Returns the records, and stats."""
-    runner = SelfPlay(encoding, device, parallel=parallel, seed=seed, **session_args)
+         games: int, config: pe.SelfPlayConfig, parallel: int = 64, seed: int = 0,
+         progress=None,
+         progress_seconds: float = 30.0) -> tuple[list[pe.GameRecord], dict[str, float]]:
+    """`games` self-play games from scratch with these settings (see SelfPlay
+    for continuous self-play). Returns the records, and stats."""
+    runner = SelfPlay(encoding, device, config, parallel=parallel, seed=seed)
     return runner.play(model, games, progress, progress_seconds)

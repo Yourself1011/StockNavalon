@@ -17,6 +17,7 @@ like games at the turn limit. After `max_minutes` the rest end at once.
 from __future__ import annotations
 
 import contextlib
+import sys
 import time
 from typing import Any
 
@@ -57,23 +58,21 @@ def score_games(records: list[pe.GameRecord]) -> dict[str, Any]:
 @torch.no_grad()
 def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           games: int = 64, parallel: int = 32, seed: int = 0,
-          simulations: int = 50, samples: int = 2, max_turns: int = 50,
-          stall_turns: int = 0, fog_share: float = 1.0,
+          search: pe.SearchConfig | None = None,
+          side_search: list[pe.SearchConfig | None] | None = None,
+          max_turns: int = 50, stall_turns: int = 0, fog_share: float = 1.0,
           network_beliefs: bool = False, peace_treaties: bool = True,
-          threads: int = 1, gumbel: tuple[bool, bool] = (False, False),
-          gumbel_candidates: int = 16, score_utility: float = 0.0,
-          win_sooner: float = 0.0, side_exploration: tuple[float, float] | None = None,
-          side_gumbel_candidates: tuple[int, int] | None = None,
-          side_simulations: tuple[int, int] | None = None,
-          horizon: int = pe.UNLIMITED_HORIZON, settled=None,
+          threads: int = 1, settled=None,
           gpu_lock=None, progress=None, progress_seconds: float = 30.0,
           finish_share: float = 0.9, extra_moves: int = 50,
           max_minutes: float = 10.0,
           keep: list[pe.GameRecord] | None = None) -> dict[str, Any]:
     """`model` (side 0) against `opponent` (side 1): another Network, or
-    "score" or "random". Returns side 0's results. `progress`, if given, is
-    called every `progress_seconds` with the results so far. `gumbel` is per
-    side, so the same network can play one search against the other."""
+    "score" or "random". Both search with `search` (by default 50 simulations
+    in 2 determinized games), or each with its own `side_search` (None: `search`),
+    so the same network can play one search against another; matches search
+    without root noise. Returns side 0's results. `progress`, if given, is
+    called every `progress_seconds` with the results so far."""
     gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
     networks: list[Network | None] = [
         model, opponent if isinstance(opponent, Network) else None]
@@ -83,16 +82,19 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         if net is not None:
             net.eval()
     games += games % 2  # whole pairs
-    session = pe.SelfPlaySession(
-        parallel, games, seed=seed, simulations=simulations, samples=samples, horizon=horizon,
-        max_turns=max_turns, temperature_turns=1, root_noise=False,
-        full_share=1.0, sides=sides, paired=True, stall_turns=stall_turns,
-        fog_share=fog_share, network_beliefs=network_beliefs,
-        peace_treaties=peace_treaties, threads=threads, gumbel=list(gumbel),
-        gumbel_candidates=gumbel_candidates, score_utility=score_utility,
-        win_sooner=win_sooner, side_exploration=list(side_exploration or []),
-        side_gumbel_candidates=list(side_gumbel_candidates or []),
-        side_simulations=list(side_simulations or []))
+
+    def quiet(s: pe.SearchConfig) -> pe.SearchConfig:
+        s = s.copy()
+        s.root_noise = False
+        return s
+
+    config = pe.self_play_config(
+        search=quiet(search if search is not None else pe.search_config(simulations=50, samples=2)),
+        side_search=[None if s is None else quiet(s) for s in side_search or []],
+        max_turns=max_turns, temperature_turns=1, full_share=1.0, sides=sides, paired=True,
+        stall_turns=stall_turns, fog_share=fog_share, network_beliefs=network_beliefs,
+        peace_treaties=peace_treaties, threads=threads)
+    session = pe.SelfPlaySession(config, parallel, games, seed)
 
     start = reported = time.perf_counter()
     records: list[pe.GameRecord] = []
@@ -147,6 +149,33 @@ def verdict_settled(wins: int, losses: int, remaining: int, threshold: float = 0
     worst = wins / (wins + losses + remaining) if wins + losses + remaining else 0.0
     # out of reach, or already certain
     return best < threshold or (wins + losses >= min_decided and worst >= threshold)
+
+
+def progress_line(p: dict[str, Any]) -> str:
+    """A match's progress (match's `progress` callback) as a line: games
+    finished, time so far, a rough time left from the pace so far, and side
+    0's decided games. Rough: the quick games finish first, though the
+    slowest are cut short (`finish_share`, `extra_moves`)."""
+    done, of, seconds = p["games"], p["of"], p["seconds"]
+    left = f", about {seconds / done * (of - done) / 60:.0f} min left" if done else ""
+    return (f"  {done} of {of} games done, {seconds / 60:.0f} min{left}; side A "
+            f"{p['captures']}–{p['was_captured']} of the decided games")
+
+
+def show_progress(p: dict[str, Any]) -> None:
+    """progress_line, written over itself in a terminal (clear_progress
+    before printing anything else); a line each time otherwise."""
+    if sys.stdout.isatty():
+        # back to the line's start, the line, then clear what's left of it
+        print(f"\r{progress_line(p)}\033[K", end="", flush=True)
+    else:
+        print(progress_line(p), flush=True)
+
+
+def clear_progress() -> None:
+    """Clears show_progress's line, in a terminal."""
+    if sys.stdout.isatty():
+        print("\r\033[K", end="", flush=True)
 
 
 def gate_settled(threshold: float = 0.55, min_decided: int = 20):

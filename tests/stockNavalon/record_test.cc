@@ -85,8 +85,7 @@ TEST_CASE("recorded games replay exactly, and survive a save and load") {
     CHECK(std::isnan(loaded[0].finalValues[1]));
     // games recorded now keep the current rules
     for (const GameRecord &r : loaded) {
-        CHECK(r.diplomacyMeets);
-        CHECK(r.adjacentPushes);
+        CHECK(r.rulesVersion == RuleVersions::LATEST);
     }
 }
 
@@ -112,8 +111,25 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
         text = all.str();
     }
     std::size_t end = text.find('\n');
-    REQUIRE(text.compare(end - 23, 23, " 1 1 0 0 0 1 0 0 0 0 -1") == 0);
-    text.erase(end - 21, 21);
+    REQUIRE(text.compare(end - 31, 31, " 1 1 0 0 0 1 0 0 0 0 -1 rules 4") == 0);
+    // the formats before: no version (the flags it has say version 2), and
+    // the third and fourth fixes as flags
+    for (auto [tail, version] : std::vector<std::pair<std::string, int>>{
+             {"", RuleVersions::ADJACENT_PUSHES},
+             {" 0", RuleVersions::ADJACENT_PUSHES},
+             {" 1", RuleVersions::UNSEEN_ZONE_OF_CONTROL},
+             {" 1 0", RuleVersions::UNSEEN_ZONE_OF_CONTROL},
+             {" 1 1", RuleVersions::EMBARK_STOMP}}) {
+        CAPTURE(tail);
+        std::string older = text;
+        older.replace(end - 8, 8, tail);
+        {
+            std::ofstream out(path, std::ios::trunc);
+            out << older;
+        }
+        CHECK(loadRecords(path.string()).at(0).rulesVersion == version);
+    }
+    text.erase(end - 29, 29);
     {
         std::ofstream out(path, std::ios::trunc);
         out << text;
@@ -121,10 +137,9 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
     std::vector<GameRecord> loaded = loadRecords(path.string());
     std::filesystem::remove(path);
     REQUIRE(loaded.size() == 1);
-    CHECK_FALSE(loaded[0].diplomacyMeets);
-    CHECK_FALSE(loaded[0].start().settings.diplomacyMeets);
-    CHECK_FALSE(loaded[0].adjacentPushes);
-    CHECK_FALSE(loaded[0].start().settings.adjacentPushes);
+    CHECK(loaded[0].rulesVersion == 0);
+    CHECK(loaded[0].start().settings.rulesVersion == 0);
+    CHECK_FALSE(loaded[0].start().settings.follows(RuleVersions::DIPLOMACY_MEETS));
     CHECK(sameMoves(loaded[0], records[0]));
 }
 
@@ -557,6 +572,104 @@ TEST_CASE("examples count the positions in their player's turn") {
     CHECK(someLong);
 }
 
+TEST_CASE("the value target can be a lambda-return of the network's values of later turns") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.maxTurns = 4;
+    std::vector<GameRecord> records = playGames(config, 1, 14, 1);
+    GameRecord &r = records[0];
+    r.winner = 0;
+    const int players = 2;
+    REQUIRE(r.turns >= 3);
+    // known estimates: player 0's turn t is worth 0.1 x t, player 1's -0.2;
+    // a turn with none passes the return on
+    r.valueEstimates.assign(static_cast<std::size_t>(r.turns + 1) * players, 0.0f);
+    for (int t = 0; t <= r.turns; t++) {
+        r.valueEstimates[t * players] = 0.1f * t;
+        r.valueEstimates[t * players + 1] = -0.2f;
+    }
+    r.valueEstimates[2 * players] = std::nanf("");
+    Game game = r.start();
+    REQUIRE(r.moves[0].player == 0);
+    const int turn = game.turn;
+    // by hand: from the result back to the turn after the position's
+    const double lambda = 0.5;
+    double expected = 1.0;
+    for (int t = r.turns; t > turn; t--) {
+        float v = r.valueEstimates[t * players];
+        if (!std::isnan(v)) {
+            expected = (1 - lambda) * v + lambda * expected;
+        }
+    }
+    CHECK(lambdaReturn(r, 0, turn + 1, lambda, r.valueEstimates) == doctest::Approx(expected));
+    CHECK(lambdaReturn(r, 0, turn + 1, 1.0, r.valueEstimates) == doctest::Approx(1.0));
+    EncodingConfig enc;
+    const std::size_t c = planeCount(enc) * enc.mapSize * enc.mapSize, a = actionCount(enc),
+                      t = targetCount(enc);
+    std::vector<float> planes(c), globals(globalCount(enc)), policy(a), value(1), weight(1),
+        targets(t);
+    std::vector<std::uint8_t> legal(a), masks(t);
+    ExampleArrays out{planes.data(), globals.data(), legal.data(), policy.data(),
+                      value.data(),  weight.data(),  targets.data(), masks.data()};
+    encodeExamples(records, {{0, 0}}, enc, out, 1, {}, {.lambda = lambda});
+    CHECK(value[0] == doctest::Approx(expected));
+    encodeExamples(records, {{0, 0}}, enc, out);
+    CHECK(value[0] == 1);
+    // without estimates, the result: never the recorded search values,
+    // which carry the biases of the network that played
+    r.valueEstimates.clear();
+    encodeExamples(records, {{0, 0}}, enc, out, 1, {}, {.lambda = lambda});
+    CHECK(value[0] == 1);
+}
+
+TEST_CASE("reanalysis: the buffer encodes each player turn's start and keeps the network's values") {
+    SelfPlayConfig config;
+    config.search.simulations = 8;
+    config.maxTurns = 4;
+    std::vector<GameRecord> games = playGames(config, 2, 31, 1);
+    std::uint64_t seed0 = games[0].gameSeed, seed1 = games[1].gameSeed;
+    REQUIRE(seed0 != seed1);
+    const GameRecord copy = games[0];
+    ReplayBuffer buffer(1'000'000);
+    buffer.add(games);
+    CHECK(buffer.gameSeeds(true).size() == 2);
+    EncodingConfig enc;
+    std::vector<float> planes, globals;
+    // an unknown seed is skipped
+    std::vector<ReplayBuffer::TurnStart> starts =
+        buffer.encodeTurnStarts({seed0, 12345}, enc, planes, globals, 2);
+    REQUIRE(!starts.empty());
+    const std::size_t p = planeCount(enc) * enc.mapSize * enc.mapSize, g = globalCount(enc);
+    CHECK(planes.size() == starts.size() * p);
+    CHECK(globals.size() == starts.size() * g);
+    // the same as encoding each turn's first position directly
+    Game game = copy.start();
+    std::size_t k = 0;
+    for (std::size_t m = 0; m < copy.moves.size(); m++) {
+        if (m == 0 || copy.moves[m].player != copy.moves[m - 1].player) {
+            REQUIRE(k < starts.size());
+            CHECK(starts[k].gameSeed == seed0);
+            CHECK(starts[k].turn == game.turn);
+            CHECK(starts[k].player == game.currentPlayer);
+            std::vector<float> pl(p), gl(g);
+            encodeState(game, game.currentPlayer, enc, pl.data(), gl.data(), !copy.fog);
+            CHECK(std::equal(pl.begin(), pl.end(), planes.begin() + k * p));
+            CHECK(std::equal(gl.begin(), gl.end(), globals.begin() + k * g));
+            k++;
+        }
+        game.applyUnchecked(copy.moves[m].command);
+    }
+    CHECK(k == starts.size());
+    std::vector<float> values(starts.size(), 0.25f);
+    buffer.setValueEstimates(starts, values);
+    // only the other game is left to reanalyse
+    CHECK(buffer.gameSeeds(true) == std::vector<std::uint64_t>{seed1});
+    CHECK(buffer.gameSeeds().size() == 2);
+    const GameRecord &held = buffer.games()[0];
+    REQUIRE(held.gameSeed == seed0);
+    CHECK(held.valueEstimates[starts[0].turn * 2 + starts[0].player] == doctest::Approx(0.25));
+}
+
 TEST_CASE("records keep the final cities and whether peace treaties were allowed") {
     SelfPlayConfig config;
     config.search.simulations = 6;
@@ -776,7 +889,7 @@ TEST_CASE("self-play with Gumbel search records the improved policy as the targe
     config.fullShare = 0.5;
     config.maxTurns = 4;
     config.search.rootNoise = true;
-    config.gumbel = {true, true};
+    config.search.gumbel = true;
     SelfPlaySession session(config, 3, 3, 8);
     ScoreEvaluator evaluator;
     std::vector<Evaluation> results;
@@ -1341,7 +1454,6 @@ TEST_CASE("the evaluation cache with belief requests and two networks, as Python
         config.fogShare = 1;
         config.networkBeliefs = true;
         config.search.gumbel = true;
-        config.gumbel = {true, true};
         if (match) {
             config.paired = true;
         }
@@ -1396,9 +1508,12 @@ TEST_CASE("each side can search with its own number of simulations") {
     config.fullShare = 1;
     config.maxTurns = 3;
     config.treeReuse = false;
-    config.simulations = {4, 32};
     // simulations count per determinized game: one each
     config.search.samples = 1;
+    for (int side : {0, 1}) {
+        config.sideSearch[side] = config.search;
+        config.sideSearch[side]->simulations = side ? 32 : 4;
+    }
     SelfPlaySession session(config, 2, 2, 43);
     ScoreEvaluator evaluator;
     std::vector<Evaluation> results;
@@ -1475,5 +1590,7 @@ TEST_CASE("opponent-pool games: only the current network's moves train, at eithe
     std::filesystem::remove(path);
     for (std::size_t g = 0; g < records.size(); g++) {
         CHECK(loaded[g].poolOpponentSeat == records[g].poolOpponentSeat);
+        // new records play by the current zone of control rule
+        CHECK(loaded[g].rulesVersion == RuleVersions::LATEST);
     }
 }

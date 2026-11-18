@@ -174,7 +174,8 @@ def test_climate_and_possible_tribes():
 def test_self_play_records_and_examples(tmp_path):
     import numpy as np
 
-    records = pe.play_games(2, seed=3, threads=2, simulations=20, max_turns=3)
+    records = pe.play_games(pe.self_play_config(search=dict(simulations=20), max_turns=3), 2,
+                          seed=3, threads=2)
     assert len(records) == 2
     path = str(tmp_path / "games.txt")
     pe.save_records(records, path)

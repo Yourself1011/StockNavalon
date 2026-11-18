@@ -25,9 +25,10 @@ import torch
 
 import polyengine as pe
 
-from .evaluate import gate_verdict, match, verdict_settled
+from .evaluate import clear_progress, gate_verdict, match, show_progress, verdict_settled
 from .model import DTYPES, Network, load_weights, pick_device
 from .play import load
+from .settings import add_search_arguments, side_searches
 
 
 def load_side(path: str, device: torch.device, live: bool, channels: int,
@@ -91,19 +92,14 @@ def main():
     parser.add_argument("--live", action="store_true",
                         help="a checkpoint's weights rather than their average")
     parser.add_argument("--games", type=int, default=128, help="in seat-swapped pairs")
-    parser.add_argument("--simulations", type=int, default=50,
-                        help="as gates (--eval-simulations)")
-    parser.add_argument("--samples", type=int, default=1)
+    # as gates (--eval-simulations)
+    add_search_arguments(parser, simulations=50, samples=1)
     parser.add_argument("--max-turns", type=int, default=150)
     parser.add_argument("--stall-turns", type=int, default=25)
     parser.add_argument("--gate-max-turns", type=int, default=75,
                         help="for the gate replay: a gate's turn limit")
     parser.add_argument("--gate-threshold", type=float, default=0.55)
     parser.add_argument("--gate-min-decided", type=int, default=20)
-    parser.add_argument("--gumbel-candidates", type=int, default=16)
-    parser.add_argument("--score-utility", type=float, default=0.05)
-    parser.add_argument("--win-sooner", type=float, default=0.05)
-    parser.add_argument("--exploration", type=float, default=1.5)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None)
@@ -118,25 +114,24 @@ def main():
         b = a
         a = os.path.join(a, "checkpoint.pt")
     device = torch.device(args.device) if args.device else pick_device()
+    print(f"device: {device}", flush=True)
     sides = [load_side(path, device, args.live, args.channels, args.blocks) for path in (a, b)]
     models = [m.to(DTYPES[args.dtype]) if device.type != "cpu" else m for m, _ in sides]
     names = [name for _, name in sides]
     print(f"A: {names[0]}\nB: {names[1]}", flush=True)
 
-    def progress(p):
-        print(f"  {p['games']} of {p['of']} games done, {p['seconds'] / 60:.0f} min", flush=True)
-
+    # --turn-search: one value for both, or one per side (A, B)
+    sides_search = side_searches(args, len(args.turn_search or [None]))
     records: list[pe.GameRecord] = []
     result = match(models[0], models[1], pe.Encoding(), device, games=args.games,
-                   parallel=args.games, simulations=args.simulations, samples=args.samples,
+                   parallel=args.games, search=sides_search[0],
+                   side_search=sides_search if len(sides_search) > 1 else None,
                    max_turns=args.max_turns, stall_turns=args.stall_turns, fog_share=1.0,
                    network_beliefs=True, peace_treaties=False, threads=args.threads,
-                   gumbel=(True, True), gumbel_candidates=args.gumbel_candidates,
-                   score_utility=args.score_utility, win_sooner=args.win_sooner,
-                   side_exploration=(args.exploration, args.exploration),
-                   seed=args.seed, progress=progress, progress_seconds=300,
+                   seed=args.seed, progress=show_progress, progress_seconds=10,
                    finish_share=1.0, max_minutes=1e9, keep=records)
 
+    clear_progress()
     won, lost = result["captures"], result["was_captured"]
     print(f"\nfull match, {result['games']} games to turn {args.max_turns}, "
           f"{result['seconds'] / 60:.0f} min:")

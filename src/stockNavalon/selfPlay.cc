@@ -258,18 +258,11 @@ void SelfPlaySession::advance(Slot &slot) {
                 slot.commandsThisTurn++;
                 continue;
             }
-            SearchConfig search = config.search;
+            // this side's search (a match's may differ by side)
+            const SearchConfig &base =
+                config.sideSearch[slot.side] ? *config.sideSearch[slot.side] : config.search;
+            SearchConfig search = base;
             search.fullInformation = !slot.record.fog;
-            search.gumbel = config.gumbel[slot.side];
-            if (config.exploration[slot.side] > 0) {
-                search.exploration = config.exploration[slot.side];
-            }
-            if (config.gumbelCandidates[slot.side] > 0) {
-                search.gumbelCandidates = config.gumbelCandidates[slot.side];
-            }
-            if (config.simulations[slot.side] > 0) {
-                search.simulations = config.simulations[slot.side];
-            }
             // with fog, the network's beliefs, once per turn: wait for them
             bool fromNetwork = !search.fullInformation && config.networkBeliefs &&
                                config.sides[slot.side] == SideKind::NETWORK;
@@ -299,7 +292,7 @@ void SelfPlaySession::advance(Slot &slot) {
             }
             // Gumbel search picks its move by its noise: on in the opening
             // turns, for varied openings, as the temperature is otherwise
-            if (search.gumbel && config.search.rootNoise &&
+            if (search.gumbel && base.rootNoise &&
                 game.turn < config.temperatureTurns) {
                 search.rootNoise = true;
             }

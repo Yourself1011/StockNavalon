@@ -191,6 +191,13 @@ game.apply(enc.decode_command(game, index))
 | `legal.copy()` | an independent copy, for a search node |
 | `RandomBot(seed=0)` | `choose(game)` → one command; `play_turn(game, max_commands=200)` → the commands it played |
 | `play_random_games(games, tribes, type=LAKES, size=14, seed=0, max_turns=100)` | plays random games on generated maps, entirely in C++; returns `(winner, turns)` for each, with winner -1 if the turn limit came first |
+| `SearchConfig()`, `search_config(**fields)` | a search's settings, the C++ struct's fields in snake_case (`simulations`, `samples`, `horizon`, `gumbel`, `turn_search`, ...), defaults as in `search.h`; `copy()` |
+| `SelfPlayConfig()`, `self_play_config(**fields)` | self-play's or a match's settings (`selfPlay.h`): `search`, per-side `side_search`, `max_turns`, `fog_share`, `sides`, handicaps, ...; `self_play_config` takes `search` as a `SearchConfig` or a dict of its fields |
+| `configure(settings, **fields)` | sets fields on either, refusing names it doesn't have (a typo is an error, not a silently ignored setting) |
+| `search(game, encoding, evaluate, search, network_beliefs=True, seed=0)` | one search for the player to move, as the CLI's bot does; `(moves, visits, values, priors, chosen, leaves)` |
+| `play_games(config, count, seed=0, threads=1)`, `SelfPlaySession(config, parallel, games, seed=0)`, `run_cli(args, encoding, evaluate, search, ...)` | self-play with the score evaluator, self-play driven by a network, and the terminal game with the bot: each takes the settings objects above |
+
+Every entry point takes these objects rather than settings one by one, so a new setting is a field in the C++ struct and a line in the bindings. The training tools' search flags (`--simulations`, `--samples`, `--horizon`, `--exploration`, `--gumbel`, `--gumbel-candidates`, `--score-utility`, `--win-sooner`, `--turn-search`, `--evaluations`) are defined once, in `stocknavalon/settings.py`. `--turn-search` takes `off` or a number, once for every side or once per side (`versus`: A then B; `stocknavalon.play`: per seat; `searches.py` likewise for its pair).
 
 ## Speed
 

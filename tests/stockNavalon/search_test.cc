@@ -488,3 +488,138 @@ TEST_CASE("exploration candidates find a move the policy has all but ruled out")
     CHECK(without == 0);
     CHECK(found > 0);
 }
+
+namespace {
+// the score evaluator, with a policy that knows to capture: what sampled
+// turns rely on (with uniform priors a turn's capture is down to chance)
+class CapturingEvaluator : public Evaluator {
+  public:
+    void evaluate(const std::vector<EvalRequest> &requests,
+                  std::vector<Evaluation> &results) override {
+        score.evaluate(requests, results);
+        for (std::size_t i = 0; i < requests.size(); i++) {
+            if (!requests[i].moves) {
+                continue;
+            }
+            std::vector<float> &p = results[i].priors;
+            float sum = 0;
+            for (std::size_t a = 0; a < p.size(); a++) {
+                p[a] = (*requests[i].moves)[a].type == CAPTURE ? 20.0f : 1.0f;
+                sum += p[a];
+            }
+            for (float &x : p) {
+                x /= sum;
+            }
+        }
+    }
+
+  private:
+    ScoreEvaluator score;
+};
+
+SearchConfig turnSearchConfig(int commandVisits) {
+    SearchConfig config{.simulations = 300, .samples = 1, .horizon = 3,
+                        .fullInformation = true};
+    config.turnSearch = true;
+    config.commandVisits = commandVisits;
+    return config;
+}
+} // namespace
+
+TEST_CASE("turn search sees a win that only comes in the player's next turn") {
+    // the player's warrior next to the enemy's empty capital: step on now,
+    // capture next turn (a unit must start its turn there)
+    Game game = emptyGame();
+    addUnit(game, 0, UnitTypes::WARRIOR, 5, 5);
+    Command step{MOVE, game.index(5, 5), game.index(6, 6)};
+    REQUIRE(hasCommand(game, step));
+    CapturingEvaluator evaluator;
+    for (int commandVisits : {0, 4, 1000}) {
+        CAPTURE(commandVisits);
+        SearchResult r = search(game, Beliefs{}, evaluator, turnSearchConfig(commandVisits), 3);
+        CHECK(best(r) == step);
+        double stepValue = -2;
+        for (std::size_t i = 0; i < r.moves.size(); i++) {
+            if (r.moves[i] == step) {
+                stepValue = r.values[i];
+            }
+        }
+        CHECK(stepValue > 0.5);
+    }
+}
+
+TEST_CASE("turn search: lines reach further turns, within an evaluation budget") {
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    ScoreEvaluator evaluator;
+    SearchConfig base{.simulations = 400, .samples = 1, .horizon = 3, .fullInformation = true,
+                      .gumbel = true};
+    base.countEvaluations = true;
+    SearchConfig turns = base;
+    turns.turnSearch = true;
+    turns.commandVisits = 4;
+    double meanTurns[2];
+    for (int k = 0; k < 2; k++) {
+        BatchedSearch s({&game}, {Beliefs{}}, k ? turns : base, 9);
+        run(s, evaluator);
+        BatchedSearch::DepthStats d = s.takeDepthStats();
+        REQUIRE(d.simulations > 0);
+        meanTurns[k] = static_cast<double>(d.turns) / d.simulations;
+        // the budget is in evaluations: a turn being sampled may finish past it
+        CHECK(d.evaluations >= base.simulations);
+        CHECK(d.evaluations < base.simulations + base.maxTurnCommands);
+        SearchResult r = s.result(0);
+        CHECK_FALSE(r.moves.empty());
+    }
+    // on average far more turns ahead (here about 0.04 against 0.7: every
+    // node's first visit is still its own evaluation, in the player's turn)
+    CHECK(meanTurns[0] < 0.2);
+    CHECK(meanTurns[1] > 0.5);
+}
+
+TEST_CASE("turn search: tree reuse keeps the sampled turns below the played move") {
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    ScoreEvaluator evaluator;
+    SearchConfig config = turnSearchConfig(2);
+    config.simulations = 150;
+    BatchedSearch search({&game}, {Beliefs{}}, config, 4);
+    run(search, evaluator);
+    SearchResult first = search.result(0);
+    int best = -1;
+    for (std::size_t i = 0; i < first.moves.size(); i++) {
+        if (first.moves[i].type != ENDTURN &&
+            (best < 0 || first.visits[i] > first.visits[best])) {
+            best = static_cast<int>(i);
+        }
+    }
+    REQUIRE(best >= 0);
+    REQUIRE(first.visits[best] > 3);
+    REQUIRE(search.reuse(first.moves[best], config));
+    run(search, evaluator);
+    SearchResult second = search.result(0);
+    int total = 0;
+    for (int v : second.visits) {
+        total += v;
+    }
+    // the new root's first visits (fewer than commandVisits) went through
+    // sampled completions of the turn, not its moves
+    CHECK(total <= config.simulations - 1);
+    CHECK(total >= config.simulations - 1 - config.commandVisits);
+}
+
+TEST_CASE("a budget in evaluations ends even when every line ends in a known result") {
+    // a capture that wins on the spot: once found, simulations down it need
+    // no evaluation, so they must still count against the budget
+    Game game = emptyGame();
+    addUnit(game, 0, UnitTypes::WARRIOR, 6, 6);
+    ScoreEvaluator evaluator;
+    for (bool turns : {false, true}) {
+        SearchConfig config{.simulations = 300, .samples = 1, .horizon = 3,
+                            .fullInformation = true, .gumbel = true};
+        config.countEvaluations = true;
+        config.turnSearch = turns;
+        SearchResult r = search(game, Beliefs{}, evaluator, config, 2);
+        CHECK(best(r).type == CAPTURE);
+    }
+}

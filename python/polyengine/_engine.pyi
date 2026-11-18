@@ -913,15 +913,6 @@ class GameRecord:
         """The game's random seed: identifies it among the others."""
 
     @property
-    def diplomacy_meets(self) -> bool:
-        """
-        Whether an embassy or peace offer introduced the sender (GameSettings::diplomacyMeets); false for older records.
-        """
-
-    @diplomacy_meets.setter
-    def diplomacy_meets(self, arg: bool, /) -> None: ...
-
-    @property
     def head_start(self) -> list[int]:
         """
         Each player's head start in stars, in a handicap game; empty for an ordinary one.
@@ -944,21 +935,18 @@ class GameRecord:
         """
 
     @property
+    def rules_version(self) -> int:
+        """
+        The rules the game was played by (GameSettings::rulesVersion; RULES_VERSION is the latest): older records replay by theirs.
+        """
+
+    @property
     def handicap_leader(self) -> int:
         """In a handicap game, the player given the edge; -1 otherwise."""
 
     @property
     def pool_opponent_seat(self) -> int:
         """In an opponent-pool game, the earlier network's seat (its moves have no policy targets); -1 otherwise."""
-
-    @property
-    def adjacent_pushes(self) -> bool:
-        """
-        Whether pushed units only went to a neighbouring tile (GameSettings::adjacentPushes); false for older records.
-        """
-
-    @adjacent_pushes.setter
-    def adjacent_pushes(self, arg: bool, /) -> None: ...
 
     def replays_legally(self) -> bool:
         """
@@ -1045,9 +1033,76 @@ class GameRecord:
     def score_value(self, player: int, scale: float = 500.0) -> float:
         """The final score lead, squashed into [-1, 1]."""
 
-def play_games(count: int, seed: int = 0, threads: int = 1, simulations: int = 100, samples: int = 2, horizon: int = 1000, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, full_share: float = 0.25, quick_simulations: int = 25, stall_turns: int = 0, fog_share: float = 1.0, peace_treaties: bool = True) -> list[GameRecord]:
+class SearchConfig:
+    """A search's settings (search.h, SearchConfig), defaults as there. polyengine.search_config(**fields) makes one."""
+
+    def __init__(self) -> None: ...
+
+    def copy(self) -> SearchConfig: ...
+
+    simulations: int
+    samples: int
+    exploration: float
+    fpu_reduction: float
+    first_play_urgency: bool
+    horizon: int
+    root_noise: bool
+    noise_alpha: float
+    noise_weight: float
+    determinize_tries: int
+    full_information: bool
+    gumbel: bool
+    gumbel_candidates: int
+    gumbel_visit_scale: float
+    gumbel_value_scale: float
+    explore_candidates: int
+    score_utility: float
+    win_sooner: float
+    turn_search: bool
+    command_visits: int
+    turn_widening: float
+    turn_widening_power: float
+    turn_temperature: float
+    max_turn_commands: int
+    count_evaluations: bool
+
+class SelfPlayConfig:
+    """Self-play's or a match's settings (selfPlay.h, SelfPlayConfig), defaults as there. polyengine.self_play_config(**fields) makes one."""
+
+    def __init__(self) -> None: ...
+
+    def copy(self) -> SelfPlayConfig: ...
+
+    search: SearchConfig
+    side_search: list[SearchConfig | None]
+    map_size: int
+    max_turns: int
+    stall_turns: int
+    fog_share: float
+    peace_treaties: bool
+    tree_reuse: bool
+    network_beliefs: bool
+    temperature_turns: int
+    full_share: float
+    quick_simulations: int
+    threads: int
+    sides: list[str]
+    paired: bool
+    random_seats: bool
+    train_sides: list[bool]
+    handicap_share: float
+    handicap_income_share: float
+    handicap_income: list[int]
+    handicap_stars: list[int]
+    handicap_catch_up_share: float
+    catch_up_from_turn: int
+    catch_up_below: float
+    trailing_search_factor: int
+    explore_candidates: int
+
+def play_games(config: SelfPlayConfig, count: int, seed: int = 0, threads: int = 1) -> list[GameRecord]:
     """
-    Self-play games with the search on both seats, scored by the score lead until there's a network. A full_share of decisions get the full search and are recorded for the policy; the rest a quick one.
+    Self-play games with these settings, every side scored by the score lead (no network): the bootstrap before there's one.
     """
 
 class SelfPlaySession:
@@ -1061,7 +1116,7 @@ class SelfPlaySession:
         records = session.take_finished()
     """
 
-    def __init__(self, parallel: int, games: int, seed: int = 0, simulations: int = 100, samples: int = 2, horizon: int = 1000, max_turns: int = 50, temperature_turns: int = 3, map_size: int = 11, root_noise: bool = True, threads: int = 1, full_share: float = 0.25, quick_simulations: int = 25, sides: Sequence[str] = ['network', 'network'], paired: bool = False, stall_turns: int = 0, fog_share: float = 1.0, network_beliefs: bool = False, peace_treaties: bool = True, first_play_urgency: bool = True, tree_reuse: bool = True, gumbel: Sequence[bool] = [False, False], gumbel_candidates: int = 16, score_utility: float = 0.0, win_sooner: float = 0.0, side_exploration: Sequence[float] = [], side_gumbel_candidates: Sequence[int] = [], handicap_share: float = 0.0, handicap_stars: Sequence[int] = [3, 6, 10], handicap_income_share: float = 0.75, handicap_income: Sequence[int] = [1, 2], handicap_catch_up_share: float = 0.5, catch_up_from_turn: int = 10, catch_up_below: float = -0.5, trailing_search_factor: int = 2, explore_candidates: int = 2, random_seats: bool = False, train_sides: Sequence[bool] = [True, True], side_simulations: Sequence[int] = []) -> None: ...
+    def __init__(self, config: SelfPlayConfig, parallel: int, games: int, seed: int = 0) -> None: ...
 
     def done(self) -> bool: ...
 
@@ -1151,12 +1206,12 @@ class ReplayBuffer:
         Random (game, move) positions with a policy target, in groups of per_game from the same game (replayed once for the group).
         """
 
-    def encode(self, encoding: Encoding, positions: Sequence[tuple[int, int]], threads: int = 8, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0) -> dict[str, numpy.typing.NDArray[Any]]:
+    def encode(self, encoding: Encoding, positions: Sequence[tuple[int, int]], threads: int = 8, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0, value_lambda: float = 1.0) -> dict[str, numpy.typing.NDArray[Any]]:
         """
         Training examples at those positions, like Encoding.encode_examples. The positions only hold until the next add(): from another thread than the one adding, use sample_examples.
         """
 
-    def sample_examples(self, encoding: Encoding, count: int, seed: int, per_game: int = 4, threads: int = 8, augment: bool = False, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0, positions: bool = False) -> dict[str, numpy.typing.NDArray[Any]]:
+    def sample_examples(self, encoding: Encoding, count: int, seed: int, per_game: int = 4, threads: int = 8, augment: bool = False, city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0, positions: bool = False, value_lambda: float = 1.0) -> dict[str, numpy.typing.NDArray[Any]]:
         """
         Random training examples, sampled and encoded at once, so safe while another thread adds games. With augment, each is seen through a random one of the map's 8 symmetries (rotations and reflections). city_weight blends the value target with the final city lead (early in a run); cut_off_weight is the value weight of positions from games cut off by the turn limit or a stalemate. With positions, the dict also has game_seeds and moves [B]: which positions were drawn, to encode again later (Encoding.encode_examples).
         """
@@ -1174,9 +1229,14 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, simulations: int = 200, samples: int = 4, horizon: int = 1000, network_beliefs: bool = True, gumbel: bool = False, score_utility: float = 0.0, win_sooner: float = 0.0, exploration: float = 1.5, gumbel_candidates: int = 16) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = []) -> int:
     """
     The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. Returns the exit code.
+    """
+
+def search(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> tuple[list[Command], list[int], list[float], list[float], int, list[list[tuple[int, float]]]]:
+    """
+    One search for the player to move, as the CLI's bot does, `evaluate` as for run_cli, with these settings (SearchConfig). Returns (moves, visits, values, priors, chosen index, leaves).
     """
 
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:

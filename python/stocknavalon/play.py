@@ -29,6 +29,7 @@ import torch
 import polyengine as pe
 
 from .model import Network, belief_outputs, load_weights, pick_device, tie_breaks
+from .settings import add_search_arguments, side_searches
 
 
 def load(path: str, device: torch.device, channels: int, blocks: int) -> Network:
@@ -55,21 +56,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Play against a trained network; other arguments go to the CLI.")
     parser.add_argument("checkpoint", help="a run directory or a .pt file")
-    parser.add_argument("--simulations", type=int, default=200,
-                        help="per determinized game")
-    parser.add_argument("--samples", type=int, default=4,
-                        help="determinized games per command")
-    parser.add_argument("--horizon", type=int, default=pe.UNLIMITED_HORIZON,
-                        help="turn changes a search line may cross; by default no cutoff")
-    parser.add_argument("--score-utility", type=float, default=0.05,
-                        help="tie-break toward a bigger predicted score lead")
-    parser.add_argument("--win-sooner", type=float, default=0.05,
-                        help="tie-break toward a quicker win (or a slower loss)")
-    parser.add_argument("--exploration", type=float, default=1.5,
-                        help="the search's exploration constant below the root")
-    parser.add_argument("--gumbel-candidates", type=int, default=16)
-    parser.add_argument("--gumbel", action=argparse.BooleanOptionalAction, default=True,
-                        help="Gumbel search at the root")
+    add_search_arguments(parser, simulations=200, samples=4)
     parser.add_argument("--explain", action="store_true",
                         help="after each bot turn, list its decisions: the command "
                              "played and the search's leading moves, with their "
@@ -109,14 +96,11 @@ def main():
         return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
                 np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
 
-    sys.exit(pe.run_cli(rest, encoding, evaluate, simulations=args.simulations,
-                        samples=args.samples, horizon=args.horizon,
-                        network_beliefs=args.network_beliefs, gumbel=args.gumbel,
-                        score_utility=args.score_utility, win_sooner=args.win_sooner,
-                        exploration=args.exploration,
-                        gumbel_candidates=args.gumbel_candidates,
-                        explain=args.explain))
-
+    # --turn-search: one value for every bot, or one per seat (seat 0 first)
+    seats = side_searches(args, len(args.turn_search or [None]))
+    sys.exit(pe.run_cli(rest, encoding, evaluate, seats[0],
+                        network_beliefs=args.network_beliefs, explain=args.explain,
+                        seat_search=seats if len(seats) > 1 else []))
 
 if __name__ == "__main__":
     main()

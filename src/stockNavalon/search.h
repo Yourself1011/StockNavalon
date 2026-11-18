@@ -78,6 +78,30 @@ struct SearchConfig {
     // values the search reports, and trains on, stay pure chances of
     // winning. KataGo's score utility; Leela Chess Zero's moves-left head.
     double scoreUtility = 0, winSooner = 0;
+
+    // Turn search (notes/design.md section 9), experimental: past the end of
+    // the player's own turn, whole turns are the moves, each sampled from the
+    // policy a command at a time; and within the own turn, a node below the
+    // root only gets command-by-command children once `commandVisits`
+    // simulations have gone through it: until then each simulation reaching
+    // it has the policy complete the turn. So every line ends at a turn
+    // boundary (or the game's end), and the horizon is in whole turns: 3
+    // sees the opponent's reply, the player's next turn, and the opponent's
+    // position after it. commandVisits 0: command by command until End Turn.
+    bool turnSearch = false;
+    int commandVisits = 8;
+    // a node keeps sampling new turns while it has drawn fewer than
+    // turnWidening x (visits + 1)^turnWideningPower (progressive widening);
+    // a turn drawn again counts twice in its prior
+    double turnWidening = 1.0, turnWideningPower = 0.5;
+    // the temperature of the policy a turn's commands are sampled from
+    double turnTemperature = 1.0;
+    // a sampled turn is ended after this many commands
+    int maxTurnCommands = 60;
+    // The budget (`simulations`) in network evaluations instead of
+    // simulations, for comparing searches at equal cost: a sampled turn
+    // costs an evaluation per command
+    bool countEvaluations = false;
 };
 
 // A position to evaluate, for the player to move in it
@@ -127,14 +151,14 @@ class ScoreEvaluator : public Evaluator {
     double scale;
 };
 
-// The search's answer for one game: each root command, how often it was
-// visited across the determinized games, and its average value for the
-// player to move
 // Where a simulation ended, for SearchResult's leaf counts: in the searching
 // player's own turn, in an opponent's, back in the searching player's own
 // turn after one, or at the end of the game
 enum LeafKind { LEAF_OWN_TURN, LEAF_OPPONENT_TURN, LEAF_LATER_TURN, LEAF_GAME_OVER, LEAF_KINDS };
 
+// The search's answer for one game: each root command, how often it was
+// visited across the determinized games, and its average value for the
+// player to move
 struct SearchResult {
     std::vector<Command> moves;
     std::vector<int> visits;
@@ -195,14 +219,18 @@ class BatchedSearch {
 
     // How deep the simulations went, since the last call: how many ended
     // (at a position to evaluate, a finished game or the horizon), their
-    // total depth in commands below the root, and how many reached the
-    // opponent's turn
+    // total depth in moves below the root (a sampled turn is one), how many
+    // reached the opponent's turn, their turn changes in total, and the
+    // network evaluations asked for
     struct DepthStats {
-        std::int64_t simulations = 0, depth = 0, reachedOpponent = 0;
+        std::int64_t simulations = 0, depth = 0, reachedOpponent = 0, turns = 0,
+                     evaluations = 0;
         DepthStats &operator+=(const DepthStats &o) {
             simulations += o.simulations;
             depth += o.depth;
             reachedOpponent += o.reachedOpponent;
+            turns += o.turns;
+            evaluations += o.evaluations;
             return *this;
         }
     };
@@ -229,12 +257,36 @@ class BatchedSearch {
         std::vector<int> visits;
         std::vector<double> total, utilityTotal;
         std::vector<int> child;
+        // turn search: whole turns from here to the end of toMove's turn,
+        // each its commands, how often it was sampled (its prior), and its
+        // visits, totals and child as for moves
+        std::vector<std::vector<Command>> turns;
+        std::vector<int> turnCount, turnVisits, turnChild;
+        std::vector<double> turnTotal, turnUtilityTotal;
         int parentVisits = 0;
+    };
+    // turn search: a turn being sampled, a command per evaluation, from
+    // `node`, on its own copy of the game
+    struct Sampling {
+        int node;
+        Game game;
+        LegalMoves legal;
+        std::vector<Command> commands;
+        // the legal commands of `game` to sample from (no Resign or Stay)
+        std::vector<Command> moves;
     };
     struct Tree {
         int game;
         std::vector<Node> nodes;
         int simulations = 0;
+        // network evaluations asked for (SearchConfig::countEvaluations)
+        int evaluations = 0;
+        // turn search: the turn being sampled, if the waiting evaluation is
+        // for one of its commands
+        std::optional<Sampling> sampling;
+        // turn search: where the simulation in progress carries on, after a
+        // sampled turn turned out to be one drawn before (-1: a new one)
+        int resume = -1;
         // the path of the simulation in progress: node, move taken
         std::vector<std::pair<int, int>> path;
         // the node waiting for an evaluation, -1 if none
@@ -277,6 +329,26 @@ class BatchedSearch {
     // (SearchConfig::exploreCandidates)
     double choiceLogit(const Tree &tree, int a) const;
     void backup(Tree &tree, int leaf, float value, float utility);
+    // the budget: whether any is left, and how many simulations it's worth
+    // (SearchConfig::countEvaluations)
+    bool budgetLeft(const Tree &tree) const;
+    int simulationsLeft(const Tree &tree) const;
+    // the end of a simulation, for the depth stats
+    void noteLeaf(const Tree &tree, int node);
+    // turn search: whether a node's moves are whole turns
+    bool sampledTurns(const Node &node) const;
+    // Turn search: the turn a simulation at node n takes, already on its
+    // path. The node the simulation carries on at (>= 0), or it's waiting
+    // for an evaluation (TURN_WAITING), or it's over (TURN_DONE)
+    static constexpr int TURN_WAITING = -1, TURN_DONE = -2, TURN_SAMPLING = -3;
+    int turnMove(Tree &tree, int n);
+    // one more command of the turn being sampled: TURN_SAMPLING while the
+    // turn goes on, then as turnMove
+    int sampleStep(Tree &tree, const Command &command);
+    int finishTurn(Tree &tree);
+    // a command from priors over moves, at the turn temperature
+    Command sampleCommand(Tree &tree, const std::vector<Command> &moves,
+                          const std::vector<float> &priors);
     float utilityOf(float value, float scoreLead, float turnsLeft) const;
     void expand(Tree &tree, int node, const Evaluation &evaluation);
 };

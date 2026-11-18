@@ -205,7 +205,8 @@ TEST_CASE("a pushed examiner with nowhere to go next to it is destroyed (the hou
     for (bool adjacent : {true, false}) {
         CAPTURE(adjacent);
         Game game = makeGame(bigMap(ring));
-        game.settings.adjacentPushes = adjacent;
+        game.settings.rulesVersion =
+            adjacent ? RuleVersions::LATEST : RuleVersions::ADJACENT_PUSHES - 1;
         clearUnits(game);
         int unit = addUnit(game, 0, UnitTypes::WARRIOR, 5, 5);
         game.giveRuinReward(unit, Game::RUIN_UNIT);

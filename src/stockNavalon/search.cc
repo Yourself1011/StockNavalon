@@ -189,16 +189,18 @@ BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
 }
 
 bool BatchedSearch::descend(Tree &tree) {
-    while (tree.simulations < config.simulations) {
-        tree.path.clear();
+    while (budgetLeft(tree)) {
         int n = 0;
+        if (tree.resume >= 0) {
+            // carrying on below a sampled turn drawn again
+            n = std::exchange(tree.resume, -1);
+        } else {
+            tree.path.clear();
+        }
         while (true) {
             Node &node = tree.nodes[n];
             if (!node.evaluated || node.terminal || node.atHorizon || node.moves.empty()) {
-                // where this simulation ends
-                depthStats.simulations++;
-                depthStats.depth += static_cast<std::int64_t>(tree.path.size());
-                depthStats.reachedOpponent += node.crossed > 0;
+                noteLeaf(tree, n);
             }
             if (!node.evaluated) {
                 tree.waiting = n;
@@ -209,6 +211,17 @@ bool BatchedSearch::descend(Tree &tree) {
                 tree.simulations++;
                 break;
             }
+            if (n != 0 && sampledTurns(node)) {
+                int next = turnMove(tree, n);
+                if (next == TURN_WAITING) {
+                    return true;
+                }
+                if (next == TURN_DONE) {
+                    break;
+                }
+                n = next;
+                continue;
+            }
             int best = 0;
             if (n == 0 && config.gumbel) {
                 best = gumbelRootMove(tree);
@@ -217,14 +230,18 @@ bool BatchedSearch::descend(Tree &tree) {
                 double scale = config.exploration *
                                std::sqrt(std::max(1, node.parentVisits));
                 // what a move not tried yet counts as: the node's value so far
-                // (its own evaluation and everything backed up through it), less
-                // a reduction growing with the prior already explored
+                // (its own evaluation and everything backed up through it,
+                // sampled turns included), less a reduction growing with the
+                // prior already explored
                 double explored = 0, sum = node.utility;
                 for (std::size_t a = 0; a < node.moves.size(); a++) {
                     if (node.visits[a]) {
                         explored += node.prior[a];
                         sum += node.utilityTotal[a];
                     }
+                }
+                for (double t : node.turnUtilityTotal) {
+                    sum += t;
                 }
                 double untried = sum / (1 + node.parentVisits) -
                                  config.fpuReduction * std::sqrt(explored);
@@ -257,6 +274,152 @@ bool BatchedSearch::descend(Tree &tree) {
     return false;
 }
 
+bool BatchedSearch::budgetLeft(const Tree &tree) const {
+    // In evaluations, simulations count too: one ending at a result already
+    // known (a won game, a horizon already scored) costs no evaluation, so
+    // a search down such a line would otherwise never end. They rarely bind:
+    // a simulation usually costs at least one evaluation.
+    return tree.simulations < config.simulations &&
+           (!config.countEvaluations || tree.evaluations < config.simulations);
+}
+
+int BatchedSearch::simulationsLeft(const Tree &tree) const {
+    if (!config.countEvaluations) {
+        return config.simulations - tree.simulations;
+    }
+    // what a simulation has cost so far
+    double each = tree.simulations > 0
+                      ? std::max(1.0, static_cast<double>(tree.evaluations) / tree.simulations)
+                      : 1.0;
+    return std::min(config.simulations - tree.simulations,
+                    static_cast<int>((config.simulations - tree.evaluations) / each));
+}
+
+void BatchedSearch::noteLeaf(const Tree &tree, int n) {
+    const Node &node = tree.nodes[n];
+    depthStats.simulations++;
+    depthStats.depth += static_cast<std::int64_t>(tree.path.size());
+    depthStats.reachedOpponent += node.crossed > 0;
+    depthStats.turns += node.crossed;
+}
+
+bool BatchedSearch::sampledTurns(const Node &node) const {
+    return config.turnSearch && (node.crossed > 0 || node.parentVisits < config.commandVisits);
+}
+
+int BatchedSearch::turnMove(Tree &tree, int n) {
+    Node &node = tree.nodes[n];
+    int drawn = std::accumulate(node.turnCount.begin(), node.turnCount.end(), 0);
+    double allowed = config.turnWidening *
+                     std::pow(node.parentVisits + 1.0, config.turnWideningPower);
+    if (drawn == 0 || drawn < allowed) {
+        // a new turn: its first command from the node's own priors, so with
+        // no evaluation of its own
+        tree.sampling = Sampling{.node = n, .game = node.game, .legal = node.legal};
+        Command first = sampleCommand(tree, node.moves, node.prior);
+        int next = sampleStep(tree, first);
+        return next == TURN_SAMPLING ? TURN_WAITING : next;
+    }
+    // PUCT over the turns drawn, each one's prior how often it was drawn
+    double scale = config.exploration * std::sqrt(std::max(1, node.parentVisits));
+    double sum = node.utility;
+    for (double t : node.turnUtilityTotal) {
+        sum += t;
+    }
+    double mean = sum / (1 + node.parentVisits);
+    int best = 0;
+    double bestScore = -1e9;
+    for (std::size_t e = 0; e < node.turns.size(); e++) {
+        double q = node.turnVisits[e] ? node.turnUtilityTotal[e] / node.turnVisits[e] : mean;
+        double u = scale * node.turnCount[e] / drawn / (1 + node.turnVisits[e]);
+        if (q + u > bestScore) {
+            bestScore = q + u;
+            best = static_cast<int>(e);
+        }
+    }
+    tree.path.push_back({n, -(best + 1)});
+    return node.turnChild[best];
+}
+
+int BatchedSearch::sampleStep(Tree &tree, const Command &command) {
+    Sampling &s = *tree.sampling;
+    int player = tree.nodes[s.node].toMove;
+    s.legal.apply(s.game, command);
+    s.commands.push_back(command);
+    if (!s.game.gameOver() && s.game.currentPlayer == player &&
+        static_cast<int>(s.commands.size()) >= config.maxTurnCommands) {
+        // long enough
+        Command end{CommandTypes::ENDTURN};
+        s.legal.apply(s.game, end);
+        s.commands.push_back(end);
+    }
+    if (s.game.gameOver() || s.game.currentPlayer != player) {
+        return finishTurn(tree);
+    }
+    s.moves.clear();
+    for (const Command &c : s.legal.commands()) {
+        if (c.type != CommandTypes::RESIGN && c.type != CommandTypes::STAY) {
+            s.moves.push_back(c);
+        }
+    }
+    return TURN_SAMPLING;
+}
+
+int BatchedSearch::finishTurn(Tree &tree) {
+    Sampling s = std::move(*tree.sampling);
+    tree.sampling.reset();
+    const int n = s.node;
+    {
+        Node &node = tree.nodes[n];
+        for (std::size_t e = 0; e < node.turns.size(); e++) {
+            if (node.turns[e] == s.commands) {
+                // drawn before: it counts twice, and the simulation goes on
+                // below it
+                node.turnCount[e]++;
+                tree.path.push_back({n, -(static_cast<int>(e) + 1)});
+                return node.turnChild[e];
+            }
+        }
+    }
+    int crossed = tree.nodes[n].crossed + (s.game.currentPlayer != tree.nodes[n].toMove);
+    tree.nodes.push_back(makeNode(std::move(s.game), std::move(s.legal), crossed));
+    int child = static_cast<int>(tree.nodes.size()) - 1;
+    Node &node = tree.nodes[n];
+    node.turns.push_back(std::move(s.commands));
+    node.turnCount.push_back(1);
+    node.turnVisits.push_back(0);
+    node.turnTotal.push_back(0);
+    node.turnUtilityTotal.push_back(0);
+    node.turnChild.push_back(child);
+    tree.path.push_back({n, -static_cast<int>(node.turns.size())});
+    // the new position is where this simulation ends
+    noteLeaf(tree, child);
+    const Node &c = tree.nodes[child];
+    if (!c.evaluated) {
+        tree.waiting = child;
+        return TURN_WAITING;
+    }
+    backup(tree, child, c.value, c.utility);
+    tree.simulations++;
+    return TURN_DONE;
+}
+
+Command BatchedSearch::sampleCommand(Tree &tree, const std::vector<Command> &moves,
+                                     const std::vector<float> &priors) {
+    std::vector<double> weights(moves.size(), 0.0);
+    double sum = 0;
+    for (std::size_t a = 0; a < moves.size(); a++) {
+        double p = a < priors.size() ? std::max(0.0f, priors[a]) : 0.0;
+        weights[a] = config.turnTemperature == 1.0 ? p : std::pow(p, 1.0 / config.turnTemperature);
+        sum += weights[a];
+    }
+    if (!(sum > 0)) {
+        weights.assign(moves.size(), 1.0);
+    }
+    std::discrete_distribution<std::size_t> pick(weights.begin(), weights.end());
+    return moves[pick(tree.rng)];
+}
+
 float BatchedSearch::utilityOf(float value, float scoreLead, float turnsLeft) const {
     return static_cast<float>(value + config.scoreUtility * scoreLead -
                               config.winSooner * value * turnsLeft);
@@ -283,9 +446,17 @@ void BatchedSearch::backup(Tree &tree, int leaf, float value, float utility) {
         Node &node = tree.nodes[n];
         // both are for the leaf's player to move; flip them for the other
         bool same = node.toMove == mover;
-        node.visits[a]++;
-        node.total[a] += same ? value : -value;
-        node.utilityTotal[a] += same ? utility : -utility;
+        if (a >= 0) {
+            node.visits[a]++;
+            node.total[a] += same ? value : -value;
+            node.utilityTotal[a] += same ? utility : -utility;
+        } else {
+            // a sampled turn (turn search)
+            int e = -a - 1;
+            node.turnVisits[e]++;
+            node.turnTotal[e] += same ? value : -value;
+            node.turnUtilityTotal[e] += same ? utility : -utility;
+        }
         node.parentVisits++;
     }
     tree.path.clear();
@@ -335,7 +506,7 @@ void BatchedSearch::startGumbel(Tree &tree) {
     });
     // no more than the simulations left can visit (the root's own
     // evaluation, if not done yet, is one of them)
-    int left = config.simulations - tree.simulations - (root.evaluated && tree.simulations == 0);
+    int left = simulationsLeft(tree) - (root.evaluated && tree.simulations == 0);
     std::size_t k = static_cast<std::size_t>(std::max(1, std::min(config.gumbelCandidates, left)));
     k = std::min(m, k);
     // some of them picked at random from the rest instead, for exploration
@@ -404,7 +575,7 @@ int BatchedSearch::gumbelRootMove(Tree &tree) {
         }
         // the next phase: the budget left, split evenly over the candidates
         // and the phases still to come
-        int left = std::max(1, config.simulations - tree.simulations);
+        int left = std::max(1, simulationsLeft(tree));
         int phases = static_cast<int>(std::ceil(std::log2(remaining.size())));
         int each = std::max(1, left / (static_cast<int>(remaining.size()) * phases));
         int least = root.visits[remaining[0]];
@@ -470,10 +641,13 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
         std::vector<int> index(tree.nodes.size(), -1);
         index[roots[t]] = 0;
         for (std::size_t k = 0; k < order.size(); k++) {
-            for (int c : tree.nodes[order[k]].child) {
-                if (c >= 0 && index[c] < 0) {
-                    index[c] = static_cast<int>(order.size());
-                    order.push_back(c);
+            const Node &node = tree.nodes[order[k]];
+            for (const std::vector<int> *children : {&node.child, &node.turnChild}) {
+                for (int c : *children) {
+                    if (c >= 0 && index[c] < 0) {
+                        index[c] = static_cast<int>(order.size());
+                        order.push_back(c);
+                    }
                 }
             }
         }
@@ -485,11 +659,21 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
             for (int &c : node.child) {
                 c = c >= 0 ? index[c] : -1;
             }
+            for (int &c : node.turnChild) {
+                c = index[c];
+            }
             kept.push_back(std::move(node));
         }
         tree.nodes = std::move(kept);
-        // the visits kept count towards the next decision's simulations
+        // the visits kept count towards the next decision's simulations (and
+        // their evaluations, at what a simulation cost so far)
+        double each = tree.simulations > 0
+                          ? static_cast<double>(tree.evaluations) / tree.simulations
+                          : 1.0;
         tree.simulations = tree.nodes[0].parentVisits + 1;
+        tree.evaluations = static_cast<int>(tree.simulations * each);
+        tree.resume = -1;
+        tree.sampling.reset();
         tree.path.clear();
         tree.waiting = -1;
         tree.remaining.clear();
@@ -506,7 +690,7 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
 
 bool BatchedSearch::done() const {
     return std::all_of(trees.begin(), trees.end(), [&](const Tree &t) {
-        return t.waiting < 0 && t.simulations >= config.simulations;
+        return t.waiting < 0 && !t.sampling && !budgetLeft(t);
     });
 }
 
@@ -515,13 +699,20 @@ const std::vector<EvalRequest> &BatchedSearch::pending() {
     requestTree.clear();
     for (std::size_t i = 0; i < trees.size(); i++) {
         Tree &tree = trees[i];
-        if (tree.waiting < 0 && !descend(tree)) {
+        if (!tree.sampling && tree.waiting < 0 && !descend(tree)) {
             continue;
         }
-        const Node &node = tree.nodes[tree.waiting];
-        requests.push_back({&node.game, node.toMove,
-                            node.atHorizon ? nullptr : &node.moves,
-                            config.fullInformation});
+        if (tree.sampling) {
+            // the next command of a turn being sampled
+            const Sampling &s = *tree.sampling;
+            requests.push_back({&s.game, s.game.currentPlayer, &s.moves,
+                                config.fullInformation});
+        } else {
+            const Node &node = tree.nodes[tree.waiting];
+            requests.push_back({&node.game, node.toMove,
+                                node.atHorizon ? nullptr : &node.moves,
+                                config.fullInformation});
+        }
         requestTree.push_back(static_cast<int>(i));
     }
     return requests;
@@ -530,8 +721,18 @@ const std::vector<EvalRequest> &BatchedSearch::pending() {
 void BatchedSearch::submit(const std::vector<Evaluation> &results) {
     for (std::size_t i = 0; i < requestTree.size() && i < results.size(); i++) {
         Tree &tree = trees[requestTree[i]];
-        expand(tree, tree.waiting, results[i]);
-        tree.waiting = -1;
+        tree.evaluations++;
+        depthStats.evaluations++;
+        if (tree.sampling) {
+            Command next = sampleCommand(tree, tree.sampling->moves, results[i].priors);
+            int r = sampleStep(tree, next);
+            if (r >= 0) {
+                tree.resume = r;
+            }
+            continue;
+        }
+        int n = std::exchange(tree.waiting, -1);
+        expand(tree, n, results[i]);
     }
     requests.clear();
     requestTree.clear();

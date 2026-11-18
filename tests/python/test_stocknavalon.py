@@ -1,6 +1,8 @@
 import math
 import os
 
+import numpy as np
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -12,7 +14,8 @@ from stocknavalon.train import losses, to_device
 
 @pytest.fixture(scope="module")
 def buffer():
-    games = pe.play_games(4, seed=2, threads=2, simulations=20, max_turns=4)
+    games = pe.play_games(pe.self_play_config(search=dict(simulations=20), max_turns=4), 4,
+                          seed=2, threads=2)
     buf = pe.ReplayBuffer(100_000)
     buf.add(games)
     return buf
@@ -91,8 +94,9 @@ def test_trainer_and_network_self_play(buffer):
     trainer = sn.Trainer(model, enc, torch.device("cpu"))
     stats = trainer.step(buffer, 16)
     assert math.isfinite(stats["total"])
-    records, info = sn.play(model, enc, torch.device("cpu"), games=2, parallel=2,
-                            simulations=10, max_turns=2)
+    records, info = sn.play(model, enc, torch.device("cpu"), 2,
+                            pe.self_play_config(search=dict(simulations=10), max_turns=2),
+                            parallel=2)
     # games finishing in the same batch all come back
     assert len(records) >= 2 and info["evaluated"] > 0
     # games the turn limit cuts off keep each seat's last network value, the
@@ -137,8 +141,9 @@ def test_side_targets_one_territory_class_per_tile_under_symmetries(buffer):
 def test_fog_free_self_play_trains_without_belief_targets():
     enc = pe.Encoding()
     model = sn.Network(enc, channels=16, blocks=2)
-    records, _ = sn.play(model, enc, torch.device("cpu"), games=2, parallel=2,
-                         simulations=6, max_turns=3, fog_share=0.0)
+    records, _ = sn.play(model, enc, torch.device("cpu"), 2,
+                         pe.self_play_config(search=dict(simulations=6), max_turns=3,
+                                             fog_share=0.0), parallel=2)
     assert all(not r.fog for r in records)
     buf = pe.ReplayBuffer(10_000)
     buf.add(records)
@@ -187,11 +192,13 @@ def test_network_beliefs_in_fogged_self_play_and_matches():
     out = model(torch.zeros(2, enc.plane_count, 11, 11), torch.zeros(2, enc.global_count))
     raw = belief_outputs(out, torch.tensor([1]), enc)
     assert raw.shape == (1, enc.belief_output_count)
-    records, info = sn.play(model, enc, torch.device("cpu"), games=2, parallel=2,
-                            simulations=6, max_turns=3, network_beliefs=True)
+    records, info = sn.play(model, enc, torch.device("cpu"), 2,
+                            pe.self_play_config(search=dict(simulations=6), max_turns=3,
+                                                network_beliefs=True), parallel=2)
     assert len(records) >= 2 and info["evaluated"] > 0
     result = match(model, sn.Network(enc, channels=16, blocks=2), enc,
-                   torch.device("cpu"), games=2, parallel=2, simulations=4,
+                   torch.device("cpu"), games=2, parallel=2,
+                   search=pe.search_config(simulations=4, samples=2),
                    max_turns=2, network_beliefs=True)
     assert result["games"] == 2
 
@@ -233,7 +240,8 @@ def test_held_out_set_keeps_its_positions_when_the_encoding_changes(tmp_path):
     import numpy as np
     from stocknavalon.run import load_heldout
     enc = pe.Encoding()
-    records = pe.play_games(4, seed=5, threads=2, simulations=10, max_turns=4)
+    records = pe.play_games(pe.self_play_config(search=dict(simulations=10), max_turns=4), 4,
+                          seed=5, threads=2)
     held = pe.ReplayBuffer(100_000)
     held.add(records)
     drawn = held.sample_examples(enc, 8, 0, per_game=1, positions=True)
@@ -293,8 +301,10 @@ def test_opponent_pool_games_train_only_the_current_network_at_either_seat(tmp_p
     enc = pe.Encoding()
     current = sn.Network(enc, channels=16, blocks=1).eval()
     earlier = sn.Network(enc, channels=16, blocks=1).eval()
-    runner = PoolPlay(enc, torch.device("cpu"), parallel=8, seed=3, simulations=8,
-                      samples=1, max_turns=8, quick_simulations=4, full_share=1.0)
+    runner = PoolPlay(enc, torch.device("cpu"),
+                      pe.self_play_config(search=dict(simulations=8, samples=1), max_turns=8,
+                                          quick_simulations=4, full_share=1.0),
+                      parallel=8, seed=3)
     games, evaluated = runner.play(current, earlier, 6)
     assert len(games) >= 6 and evaluated > 0
     assert {g.pool_opponent_seat for g in games} == {0, 1}
@@ -326,3 +336,150 @@ def test_value_per_turn_trains_and_held_out_reports_the_bias(buffer):
     assert (examples["turn_positions"] >= 1).all()
     held = heldout_losses(model, torch.device("cpu"), examples)
     assert -2 <= held["value_bias"] <= 2
+
+
+def test_value_lambda_reanalyses_and_changes_the_targets(buffer):
+    from stocknavalon.train import reanalyse
+    enc = pe.Encoding()
+    model = sn.Network(enc, channels=16, blocks=2).eval()
+    games = pe.play_games(pe.self_play_config(search=dict(simulations=8), max_turns=5), 3,
+                          seed=5, threads=1)
+    buf = pe.ReplayBuffer(100_000)
+    buf.add(games)
+    plain = buf.sample_examples(enc, 32, 3)
+    # not reanalysed yet: the plain result
+    early = buf.sample_examples(enc, 32, 3, value_lambda=0.5)
+    assert np.array_equal(plain["value"], early["value"])
+    assert len(buf.game_seeds(without_estimates=True)) == 3
+    count, positions = reanalyse(buf, model, enc, torch.device("cpu"))
+    assert count == 3 and positions > 0
+    assert len(buf.game_seeds(without_estimates=True)) == 0
+    # new games only: none left
+    assert reanalyse(buf, model, enc, torch.device("cpu"), new_only=True) == (0, 0)
+    blended = buf.sample_examples(enc, 32, 3, value_lambda=0.5)
+    assert not np.array_equal(plain["value"], blended["value"])
+    assert (np.abs(blended["value"]) <= 1).all()
+    trainer = sn.Trainer(model, enc, torch.device("cpu"), value_lambda=0.9)
+    stats = trainer.step(buf, 16)
+    assert math.isfinite(stats["total"]) and math.isfinite(stats["value"])
+
+
+def test_a_runs_settings_bootstrap_self_play_and_gates(tmp_path):
+    # the run's flags, at their defaults, become working settings: the
+    # bootstrap plays with them (score evaluator), and gates search with them
+    from stocknavalon.run import parser, self_play_settings
+    from stocknavalon.settings import search_config
+    args = parser().parse_args(["--dir", str(tmp_path)])
+    settings = self_play_settings(args, fog_share=1.0)
+    assert settings.search.root_noise and settings.search.gumbel
+    assert settings.search.simulations == args.simulations
+    bootstrap = settings.copy()
+    bootstrap.network_beliefs = False
+    bootstrap.search.simulations = 6
+    bootstrap.max_turns = 3
+    games = pe.play_games(bootstrap, 2, seed=1, threads=1)
+    assert len(games) == 2
+    gate = search_config(args, simulations=args.eval_simulations)
+    assert gate.simulations == args.eval_simulations and not gate.turn_search
+    turns = search_config(parser().parse_args(["--dir", str(tmp_path), "--turn-search", "0",
+                                               "--evaluations", "100"]))
+    assert turns.turn_search and turns.command_visits == 0 and turns.horizon == 3
+    assert turns.count_evaluations and turns.simulations == 100
+
+
+def test_a_gate_splits_its_games_among_several_bests():
+    from stocknavalon.run import gate_split
+    assert gate_split(128, 1, 0.5) == [128]
+    assert gate_split(128, 3, 0.5) == [64, 32, 32]
+    assert gate_split(128, 4, 0.5) == [64, 22, 22, 20]
+    for opponents in (2, 3, 5):
+        parts = gate_split(128, opponents, 0.5)
+        assert sum(parts) == 128 and all(p % 2 == 0 for p in parts)
+    # too few games for everyone: the best still plays
+    assert gate_split(4, 4, 0.5)[0] >= 2 and sum(gate_split(4, 4, 0.5)) == 4
+
+
+def test_ratings_read_each_part_of_a_gate_against_several_bests(tmp_path):
+    import json
+    from stocknavalon.rating import results_from_log
+    path = tmp_path / "log.txt"
+    entries = [
+        {"event": "gate", "steps": 10, "best": 8, "captures": 30, "was_captured": 20},
+        {"event": "gate match", "steps": 12, "against": 10, "captures": 20, "was_captured": 10},
+        {"event": "gate match", "steps": 12, "against": 8, "captures": 9, "was_captured": 5},
+        {"event": "gate", "steps": 12, "best": 10, "captures": 29, "was_captured": 15,
+         "opponents": {"10": [20, 10], "8": [9, 5]}},
+    ]
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    assert sorted(results_from_log(str(path))) == [
+        ("10", "8", 30, 20), ("12", "10", 20, 10), ("12", "8", 9, 5)]
+
+
+def test_pool_draws_favour_the_opponents_the_current_network_struggles_with(tmp_path):
+    import collections
+    from types import SimpleNamespace
+    from stocknavalon.run import SelfPlayThread
+    thread = SelfPlayThread.__new__(SelfPlayThread)
+    thread.args = SimpleNamespace(pool_weighting="pfsp")
+    thread._against = {"easy": collections.deque([1.0] * 20), "hard": collections.deque([0.0] * 20)}
+    weights = thread._pool_weights(["easy", "hard", "new"])
+    assert weights[1] > weights[2] > weights[0]
+    assert abs(weights.sum() - 1) < 1e-9
+    thread.args.pool_weighting = "uniform"
+    assert list(thread._pool_weights(["easy", "hard", "new"])) == [1 / 3] * 3
+
+
+def test_a_gate_against_several_bests_plays_each_and_judges_the_total(tmp_path):
+    import json
+    import threading
+    from stocknavalon.run import EvaluationThread, parser
+    enc = pe.Encoding()
+    args = parser().parse_args([
+        "--dir", str(tmp_path), "--channels", "16", "--blocks", "1",
+        "--gate-opponents", "3", "--gate-games", "8", "--gate-max-turns", "4",
+        "--eval-simulations", "4", "--samples", "1", "--gate-min-decided", "1",
+        "--gate-threshold", "0", "--session-threads", "1", "--inference-dtype", "float32",
+        "--no-network-beliefs"])
+    torch.manual_seed(0)
+    nets = {s: sn.Network(enc, 16, 1).state_dict() for s in (6, 8, 10, 12)}
+    (tmp_path / "pool").mkdir()
+    for s in (6, 8):
+        torch.save({"model": nets[s], "steps": s}, tmp_path / "pool" / f"step_{s}.pt")
+    promoted, verdicts, trained = [], [], []
+    gate = EvaluationThread(
+        args, enc, torch.device("cpu"), threading.Lock(), {"model": nets[10], "steps": 10},
+        str(tmp_path / "best.pt"), on_new_best=lambda w, s: promoted.append(s),
+        fog_share=lambda: 1.0, on_gate=verdicts.append, on_games=trained.extend)
+    gate._run_gate(nets[12], 12)
+    entries = [json.loads(l) for l in (tmp_path / "log.txt").read_text().splitlines()]
+    parts = [e for e in entries if e["event"] == "gate match"]
+    # the best, then the bests before it, newest first, the games split 4-2-2
+    assert [p["against"] for p in parts] == [10, 8, 6]
+    assert [p["games"] for p in parts] == [4, 2, 2]
+    final = [e for e in entries if e["event"] == "gate"][-1]
+    assert final["games"] == 8 and set(final["opponents"]) == {"10", "8", "6"}
+    assert final["captures"] == sum(p["captures"] for p in parts)
+    # threshold 0: it passes, and becomes the best
+    assert verdicts == [final["verdict"]]
+    if final["verdict"] == "pass":
+        assert promoted == [12] and gate.best["steps"] == 12
+
+
+def test_offline_training_compares_sizes_on_the_same_games(tmp_path, monkeypatch):
+    import json
+    import sys
+    from stocknavalon import offline
+    cfg = pe.self_play_config(search=dict(simulations=6), max_turns=5)
+    pe.save_records(pe.play_games(cfg, 8, seed=1, threads=2), str(tmp_path / "records.txt"), False)
+    pe.save_records(pe.play_games(cfg, 4, seed=9, threads=2), str(tmp_path / "holdout.txt"), False)
+    monkeypatch.setattr(sys, "argv", [
+        "offline", "--dir", str(tmp_path), "--sizes", "16x1", "24x2", "--steps", "2",
+        "--eval-every", "1", "--batch", "8", "--device", "cpu", "--heldout-positions", "16",
+        "--value-lambda", "0.9"])
+    offline.main()
+    entries = [json.loads(l) for l in (tmp_path / "offline" / "log.jsonl").read_text().splitlines()]
+    assert [(e["steps"], e["size"]) for e in entries] == [
+        (1, "16x1"), (1, "24x2"), (2, "16x1"), (2, "24x2")]
+    assert all(math.isfinite(e["total"]) for e in entries)
+    saved = torch.load(tmp_path / "offline" / "24x2.pt")
+    assert saved["config"] == {"channels": 24, "blocks": 2} and saved["steps"] == 2

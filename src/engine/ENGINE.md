@@ -51,16 +51,21 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 - **Disband refund** is half of the passenger's cost plus the boat upgrade's cost.
 - **Resign** is legal but left out of `legalCommands()`, so random play never picks it.
 
+### Rule versions
+
+- Each fix to how the engine plays the game gets the next `RuleVersions` number (`game.h`), and the engine follows each rule from its version on (`GameSettings::follows`). Records keep the version, so old games replay as they were played; new games play `RuleVersions::LATEST`. A rule fix is a new version and its check, nothing else.
+
 ### Movement and combat
 
 - **Roads and cities in enemy territory** give no road movement bonus, the same as for connections.
+- **Zone of control from enemies in fog**: enemies on tiles the mover hasn't explored exert zone of control too, as in the game, so a move can stop short next to a unit the player doesn't know is there. Hidden units (Hide) exert none. Games recorded before this replay under `RuleVersions::UNSEEN_ZONE_OF_CONTROL - 1`, when only units the mover saw did.
 - **Boats** can always use shallow water; ocean needs Sailing. Boats can pass under and stop on bridges.
 - **Cloak and Dinghy** can only target enemy cities (Infiltrate), never units or villages.
 - **Infiltrated Daggers and Pirates** fill the city tile first, then free tiles further out in its borders. They can't act until the next turn, and they belong to no city.
 - **Capital income per player** (`GameSettings::capitalIncome`): the game's own handicap (GAME.md section 3), public in every view (`PlayerView::capitalIncome`) and in tribe inference's income; 1 for everyone by default.
 - **Income bonuses from a turn on** (`GameSettings::incomeBonuses`): more capital income for a player from a given turn, for training catch-up games; public, through `Game::capitalIncome`.
 - **Head starts** (`GameSettings::headStart`): extra starting stars per player, for training handicap games; public, so every player's view has them (`PlayerView::headStart`) and tribe inference adds them to that player's starting stars. Not part of the real game.
-- **Giant pushes**: "counter-clockwise" is as seen on screen, with y growing downward. The 8 neighbouring tiles are tried in order of their angle from the push direction; with none free the unit is destroyed. Games recorded before this replay with `GameSettings::adjacentPushes` off, which searched rings further out.
+- **Giant pushes**: "counter-clockwise" is as seen on screen, with y growing downward. The 8 neighbouring tiles are tried in order of their angle from the push direction; with none free the unit is destroyed. Games recorded before this replay under an older rules version (`RuleVersions::ADJACENT_PUSHES`), which searched rings further out.
 
 ### Cities and building
 
@@ -82,7 +87,7 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
 
 ### Score, meeting and ruins
 
-- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities, or receives its peace offer or embassy (`Game::meet`, one path for all three). Only the player who meets gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one, so meeting at a different time gives a different bonus: games recorded before diplomacy introduced the sender replay with `GameSettings::diplomacyMeets` off.
+- **Meeting a tribe** happens when a player first sees one of its units (not a hidden one) or one of its cities, or receives its peace offer or embassy (`Game::meet`, one path for all three). Only the player who meets gets the bonus; the other meets them when they see back. The bonus uses the met tribe's live score at that moment, not the published one, so meeting at a different time gives a different bonus: games recorded before diplomacy introduced the sender replay with `RuleVersions::DIPLOMACY_MEETS`.
 - **What a player knows of their own past,** for reading others' scores: `Game::firstOccupied` (the first turn each tile held one of their units or cities: others meet them by seeing those) and `Player::attackedOnTurns`, both in the view.
 - **Converted units** keep counting for the score of the player who first had them, and come off that score when they die.
 - **Examining a ruin** works like capturing: the unit must have started its turn on the ruin and not moved or attacked yet (the game confirms the first part). It ends the unit's turn. A hidden unit stays hidden.

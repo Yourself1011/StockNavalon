@@ -151,7 +151,8 @@ TEST_CASE("a pushed unit with no free neighbouring tile is destroyed (the houdin
     // the capital at (1,1), every neighbouring tile taken by its own units
     auto surrounded = [](bool adjacent) {
         Game game = makeGame(fieldMap());
-        game.settings.adjacentPushes = adjacent;
+        game.settings.rulesVersion =
+            adjacent ? RuleVersions::LATEST : RuleVersions::ADJACENT_PUSHES - 1;
         clearUnits(game);
         int capital = game.players[0].capital;
         game.cities[capital].level = 4;

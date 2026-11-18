@@ -134,6 +134,107 @@ TEST_CASE("embarking and disembarking") {
     CHECK_FALSE(game.units[w].canMove);
 }
 
+TEST_CASE("a boat stops at zone of control, and only lands from water it could move on from") {
+    // a water column at x = 3; an enemy at (2,3) next to (3,2), (3,3), (3,4)
+    std::vector<std::string> water;
+    for (int y = 0; y < 8; y++) {
+        water.push_back("3 " + std::to_string(y) + " W");
+    }
+    Game game = makeGame(fieldMap(water));
+    clearUnits(game);
+    int raft = addUnit(game, 0, WARRIOR, 3, 1);
+    game.units[raft].type = RAFT;
+    addUnit(game, 1, WARRIOR, 2, 3);
+    // the step next to the enemy ends the move: no further down the water
+    CHECK(canReach(game, raft, 3, 2));
+    CHECK_FALSE(canReach(game, raft, 3, 3));
+    // landings only next to where it could have moved on from: its start
+    std::vector<int> landings = game.disembarkTargets(raft);
+    auto lands = [&](int x, int y) {
+        return std::find(landings.begin(), landings.end(), game.index(x, y)) != landings.end();
+    };
+    CHECK(lands(2, 2));
+    CHECK(lands(4, 1));
+    CHECK_FALSE(lands(4, 3));
+    CHECK_FALSE(lands(2, 4));
+    // landing ends its turn: no move, attack or action after
+    game.apply({DISEMBARK, game.index(3, 1), game.index(2, 2)});
+    REQUIRE(game.units[raft].type == WARRIOR);
+    CHECK_FALSE(game.units[raft].canMove);
+    CHECK_FALSE(game.units[raft].canAttack);
+    CHECK_FALSE(game.units[raft].canAct);
+    for (const Command &c : game.legalCommands()) {
+        CHECK(c.from != game.index(2, 2));
+    }
+}
+
+TEST_CASE("an enemy in fog still exerts zone of control, a hidden one doesn't") {
+    // the rider's route from (1,3) to (3,3) passes (2,3), next to an enemy
+    // at (2,4); mountains close the way round (Climbing not owned)
+    Game game = makeGame(fieldMap({"1 2 M", "2 2 M", "3 2 M", "1 4 M", "3 4 M"}));
+    clearUnits(game);
+    int r = addUnit(game, 0, RIDER, 1, 3);
+    REQUIRE(canReach(game, r, 3, 3));
+    addUnit(game, 1, WARRIOR, 2, 4);
+    CHECK_FALSE(canReach(game, r, 3, 3));
+    // the same with the enemy's tile unexplored: player 0 can't see it
+    game.tiles[game.index(2, 4)].explored &= ~std::uint32_t{1};
+    REQUIRE_FALSE(game.canSee(0, *game.unitAt(game.index(2, 4))));
+    CHECK(canReach(game, r, 2, 3));
+    CHECK_FALSE(canReach(game, r, 3, 3));
+    // a hidden unit (Hide) exerts none, explored tile or not
+    game.unitAt(game.index(2, 4))->hidden = true;
+    CHECK(canReach(game, r, 3, 3));
+    game.tiles[game.index(2, 4)].explored = ~std::uint32_t{0};
+    CHECK(canReach(game, r, 3, 3));
+}
+
+TEST_CASE("a Juggernaut stomps whenever it moves: embarking, at sea, and disembarking") {
+    // water down x = 3 and at (2,2), a port at (2,2) inside player 0's
+    // borders (capital at (1,1))
+    std::vector<std::string> water{"2 2 W"};
+    for (int y = 0; y < 8; y++) {
+        water.push_back("3 " + std::to_string(y) + " W");
+    }
+    for (bool embarkStomp : {true, false}) {
+        CAPTURE(embarkStomp);
+        Game game = makeGame(fieldMap(water));
+        game.settings.rulesVersion =
+            embarkStomp ? RuleVersions::LATEST : RuleVersions::EMBARK_STOMP - 1;
+        clearUnits(game);
+        game.tiles[game.index(2, 2)].building = ImprovementTypes::PORT;
+        int giant = addUnit(game, 0, GIANT, 1, 2);
+        int next = addUnit(game, 1, WARRIOR, 1, 3);
+        int far = addUnit(game, 1, WARRIOR, 5, 5);
+        int hp = game.units[next].hp;
+        // embarking: the Giant becomes a Juggernaut on the port
+        game.apply({MOVE, game.index(1, 2), game.index(2, 2)});
+        REQUIRE(game.units[giant].type == JUGGERNAUT);
+        if (embarkStomp) {
+            CHECK(game.units[next].hp < hp);
+        } else {
+            CHECK(game.units[next].hp == hp);
+        }
+        CHECK(game.units[far].hp == game.units[far].maxHp);
+    }
+    // at sea and disembarking
+    Game game = makeGame(fieldMap(water));
+    clearUnits(game);
+    int jug = addUnit(game, 0, GIANT, 3, 3);
+    game.units[jug].type = JUGGERNAUT;
+    int beside = addUnit(game, 1, WARRIOR, 2, 4);
+    int landing = addUnit(game, 1, WARRIOR, 5, 4);
+    game.apply({MOVE, game.index(3, 3), game.index(3, 4)});
+    CHECK(game.units[beside].hp < game.units[beside].maxHp);
+    CHECK(game.units[landing].hp == game.units[landing].maxHp);
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    REQUIRE(hasCommand(game, {DISEMBARK, game.index(3, 4), game.index(4, 4)}));
+    game.apply({DISEMBARK, game.index(3, 4), game.index(4, 4)});
+    REQUIRE(game.units[jug].type == GIANT);
+    CHECK(game.units[landing].hp < game.units[landing].maxHp);
+}
+
 TEST_CASE("Raft upgrades inside your borders") {
     Game game = makeGame(fieldMap({"2 2 W"}));
     clearUnits(game);

@@ -65,7 +65,7 @@ void Game::applyDiplomacy(const Command &command) {
     case PEACETREATY:
         players[command.arg].peaceRequests |= bit(currentPlayer);
         // an offer reveals the sender
-        if (settings.diplomacyMeets) {
+        if (settings.follows(RuleVersions::DIPLOMACY_MEETS)) {
             meet(command.arg, currentPlayer);
         }
         break;
@@ -107,7 +107,7 @@ void Game::applyDiplomacy(const Command &command) {
         // the builder sees the 3x3 around the host's capital, and the host
         // meets the builder
         revealAround(currentPlayer, cities[players[host].capital].tile, 1);
-        if (settings.diplomacyMeets) {
+        if (settings.follows(RuleVersions::DIPLOMACY_MEETS)) {
             meet(host, currentPlayer);
         }
         break;

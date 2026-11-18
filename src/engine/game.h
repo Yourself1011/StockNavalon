@@ -36,6 +36,27 @@ struct IncomeBonus {
     bool operator==(const IncomeBonus &) const = default;
 };
 
+// The engine's rule fixes, in order. Each fix to how the engine plays the
+// game gets the next version, and the engine follows each rule from its
+// version on (GameSettings::follows), so a game recorded under older rules
+// replays as it was played: its record keeps the version. Otherwise a replay
+// can drift into states that never happened (a meeting at a different time,
+// different stars), and training on it goes wrong.
+namespace RuleVersions {
+// an embassy or a peace offer introduces the sender to the other tribe
+constexpr int DIPLOMACY_MEETS = 1;
+// a pushed unit (a Giant, or a ruin's unit appearing where it stands) only
+// goes to one of the 8 neighbouring tiles, and with none free it's destroyed:
+// the "houdini" (before: anywhere on the map)
+constexpr int ADJACENT_PUSHES = 2;
+// enemies in fog exert zone of control (before: only units the mover saw);
+// hidden units (Hide) never do
+constexpr int UNSEEN_ZONE_OF_CONTROL = 3;
+// a Giant embarking stomps as the Juggernaut it becomes
+constexpr int EMBARK_STOMP = 4;
+constexpr int LATEST = 4;
+} // namespace RuleVersions
+
 struct GameSettings {
     WinConditions::WinCondition winCondition = WinConditions::MIGHT;
     // seeds Game::rng
@@ -44,16 +65,10 @@ struct GameSettings {
     // 15). Off only for training a bot before it can use them; the rules are
     // otherwise the same, and embassies stay.
     bool peaceTreaties = true;
-    // An embassy or a peace offer introduces the sender to the other tribe,
-    // as in the real game. Off only to replay games recorded before the
-    // engine had this rule, which would otherwise replay into states that
-    // never happened (the meeting stars come at a different time).
-    bool diplomacyMeets = true;
-    // A pushed unit (a Giant or a ruin's unit appearing where it stands) only
-    // goes to one of the 8 neighbouring tiles, and with none free it's
-    // destroyed: the "houdini" (game). Off only to replay games recorded
-    // before, when it could land anywhere on the map.
-    bool adjacentPushes = true;
+    // The rules the game is played by (RuleVersions): the latest, or an
+    // older version to replay a game recorded under it
+    int rulesVersion = RuleVersions::LATEST;
+    bool follows(int rule) const { return rulesVersion >= rule; }
     // Extra stars each player starts with, on top of their tribe's: a
     // handicap for training, public to every player. Empty for none.
     std::vector<int> headStart;

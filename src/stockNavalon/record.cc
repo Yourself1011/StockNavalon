@@ -8,11 +8,12 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 Game GameRecord::start() const {
     return Game(generateMap(map), map.tribes,
                 {.seed = gameSeed, .peaceTreaties = peaceTreaties,
-                 .diplomacyMeets = diplomacyMeets, .adjacentPushes = adjacentPushes,
+                 .rulesVersion = rulesVersion,
                  .headStart = headStart, .capitalIncome = capitalIncome,
                  .incomeBonuses = incomeBonuses});
 }
@@ -90,7 +91,7 @@ Command readCommand(std::istream &in) {
 //         <diplomacy meets> <n> <turn stars>... <n> <turn income>...
 //         <n> <turn values>... <adjacent pushes> <n> <head start>...
 //         <n> <capital income>... <n> (<player> <from turn> <extra>)...
-//         <catch-up> <pool opponent seat>]
+//         <catch-up> <pool opponent seat> rules <rules version>]
 //        (final values, final territory, the score table, whether it was
 //        played with fog and peace treaties, the final city counts, whether
 //        move lines end with a root value, and whether diplomacy introduced
@@ -133,7 +134,9 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
             out << ' ' << cities;
         }
         // each move line ends with its root value
-        out << " 1 " << r.diplomacyMeets;
+        // the first two rule fixes, where older records kept them as flags
+        // (rulesVersion, saved at the end, supersedes them)
+        out << " 1 " << (r.rulesVersion >= RuleVersions::DIPLOMACY_MEETS);
         for (const std::vector<int> *table : {&r.turnStars, &r.turnIncome}) {
             out << ' ' << table->size();
             for (int v : *table) {
@@ -144,7 +147,8 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
         for (float v : r.turnValues) {
             out << ' ' << v;
         }
-        out << ' ' << r.adjacentPushes << ' ' << r.headStart.size();
+        out << ' ' << (r.rulesVersion >= RuleVersions::ADJACENT_PUSHES) << ' '
+            << r.headStart.size();
         for (int stars : r.headStart) {
             out << ' ' << stars;
         }
@@ -156,7 +160,7 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
         for (const IncomeBonus &b : r.incomeBonuses) {
             out << ' ' << b.player << ' ' << b.fromTurn << ' ' << b.extra;
         }
-        out << ' ' << r.catchUp << ' ' << r.poolOpponentSeat;
+        out << ' ' << r.catchUp << ' ' << r.poolOpponentSeat << " rules " << r.rulesVersion;
         out << '\n' << r.moves.size() << '\n';
         for (const RecordedMove &m : r.moves) {
             out << m.player;
@@ -242,10 +246,11 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         if (int flag; header >> flag) {
             rootValues = flag != 0;
         }
-        // recorded before the rule: replayed without it
-        r.diplomacyMeets = false;
-        if (int meets; header >> meets) {
-            r.diplomacyMeets = meets != 0;
+        // the rules version, where older records only had flags for the
+        // first fixes: recorded before one, replayed without it
+        r.rulesVersion = 0;
+        if (int meets; header >> meets && meets) {
+            r.rulesVersion = RuleVersions::DIPLOMACY_MEETS;
         }
         for (std::vector<int> *table : {&r.turnStars, &r.turnIncome}) {
             if (header >> count) {
@@ -263,10 +268,8 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
                 v = word == "nan" ? std::nanf("") : std::stof(word);
             }
         }
-        // recorded before the rule: replayed without it
-        r.adjacentPushes = false;
-        if (int adjacent; header >> adjacent) {
-            r.adjacentPushes = adjacent != 0;
+        if (int adjacent; header >> adjacent && adjacent) {
+            r.rulesVersion = RuleVersions::ADJACENT_PUSHES;
         }
         if (header >> count) {
             r.headStart.resize(count);
@@ -291,6 +294,20 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         }
         if (int seat; header >> seat) {
             r.poolOpponentSeat = seat;
+        }
+        // "rules <version>" since versions were saved; records written just
+        // before have the third and fourth fixes as flags instead
+        if (std::string word; header >> word) {
+            if (word == "rules") {
+                header >> r.rulesVersion;
+            } else {
+                if (word == "1") {
+                    r.rulesVersion = RuleVersions::UNSEEN_ZONE_OF_CONTROL;
+                }
+                if (int stomps; header >> stomps && stomps) {
+                    r.rulesVersion = RuleVersions::EMBARK_STOMP;
+                }
+            }
         }
         if (!header && !header.eof()) {
             throw std::runtime_error("Bad record header in " + path);
@@ -390,8 +407,11 @@ void encodeExamples(const std::vector<GameRecord> &records,
                     policy[a] = static_cast<float>(policy[a] / total);
                 }
             }
-            // the result, partly the position's own search value
-            double result = record.value(player);
+            // the result, or a lambda-return of the player's later turns'
+            // search values ending in it; partly the position's own search
+            // value
+            double result = lambdaReturn(record, player, game.turn + 1, value.lambda,
+                                         record.valueEstimates);
             if (value.searchWeight > 0 && !std::isnan(m.rootValue)) {
                 result = (1 - value.searchWeight) * result + value.searchWeight * m.rootValue;
             }
@@ -441,6 +461,23 @@ void encodeExamples(const std::vector<GameRecord> &records,
             }
         }
     });
+}
+
+double lambdaReturn(const GameRecord &record, int player, int from, double lambda,
+                    const std::vector<float> &values) {
+    double ret = record.value(player);
+    const int players = static_cast<int>(record.finalScores.size());
+    if (lambda >= 1 || values.empty() || players == 0) {
+        return ret;
+    }
+    int rows = static_cast<int>(values.size()) / players;
+    for (int t = rows - 1; t >= std::max(from, 0); t--) {
+        float v = values[static_cast<std::size_t>(t) * players + player];
+        if (!std::isnan(v)) {
+            ret = (1 - lambda) * v + lambda * ret;
+        }
+    }
+    return ret;
 }
 
 void thinPolicyTargets(std::vector<GameRecord> &records, double share,
@@ -501,16 +538,9 @@ void encodeSideTargets(const GameRecord &record, int turn, int player,
     // from the game's value at the end back to this turn; a turn without one
     // passes the return on
     if (!record.turnValues.empty()) {
-        int rows = static_cast<int>(record.turnValues.size()) / players;
         for (std::size_t h = 0; h < SHORT_TERM_HORIZONS.size(); h++) {
-            double lambda = 1 - 1 / SHORT_TERM_HORIZONS[h], ret = record.value(player);
-            for (int t = rows - 1; t >= turn; t--) {
-                float v = record.turnValues[static_cast<std::size_t>(t) * players + player];
-                if (!std::isnan(v)) {
-                    ret = (1 - lambda) * v + lambda * ret;
-                }
-            }
-            targets[SHORT_TERM_VALUE + h] = static_cast<float>(ret);
+            targets[SHORT_TERM_VALUE + h] = static_cast<float>(lambdaReturn(
+                record, player, turn, 1 - 1 / SHORT_TERM_HORIZONS[h], record.turnValues));
             masks[SHORT_TERM_VALUE + h] = 1;
         }
     }
@@ -627,6 +657,92 @@ void ReplayBuffer::encodeSample(int count, std::uint64_t seed, int perGame,
         }
     }
     encodeExamples(records, positions, config, out, threads, symmetries, value);
+}
+
+std::vector<std::uint64_t> ReplayBuffer::gameSeeds(bool withoutEstimates) const {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<std::uint64_t> out;
+    for (const GameRecord &r : records) {
+        if (!withoutEstimates || r.valueEstimates.empty()) {
+            out.push_back(r.gameSeed);
+        }
+    }
+    return out;
+}
+
+std::vector<ReplayBuffer::TurnStart> ReplayBuffer::encodeTurnStarts(
+    const std::vector<std::uint64_t> &seeds, const EncodingConfig &config,
+    std::vector<float> &planes, std::vector<float> &globals, int threads) const {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::unordered_map<std::uint64_t, std::size_t> index;
+    for (std::size_t i = 0; i < records.size(); i++) {
+        index[records[i].gameSeed] = i;
+    }
+    // each game's turn starts: its first move, and every move by a player
+    // other than the last move's
+    std::vector<std::size_t> games, first;
+    std::vector<TurnStart> starts;
+    for (std::uint64_t seed : seeds) {
+        auto it = index.find(seed);
+        if (it == index.end()) {
+            continue;
+        }
+        const GameRecord &r = records[it->second];
+        games.push_back(it->second);
+        first.push_back(starts.size());
+        for (std::size_t m = 0; m < r.moves.size(); m++) {
+            if (m == 0 || r.moves[m].player != r.moves[m - 1].player) {
+                starts.push_back({seed, 0, r.moves[m].player});
+            }
+        }
+    }
+    const std::size_t n = config.mapSize, p = planeCount(config) * n * n,
+                      g = globalCount(config);
+    planes.assign(starts.size() * p, 0.0f);
+    globals.assign(starts.size() * g, 0.0f);
+    parallelFor(static_cast<int>(games.size()), threads, [&](int k) {
+        const GameRecord &r = records[games[k]];
+        Game game = r.start();
+        std::size_t at = first[k];
+        for (std::size_t m = 0; m < r.moves.size(); m++) {
+            if (m == 0 || r.moves[m].player != r.moves[m - 1].player) {
+                starts[at].turn = game.turn;
+                encodeState(game, game.currentPlayer, config, planes.data() + at * p,
+                            globals.data() + at * g, !r.fog);
+                at++;
+            }
+            game.applyUnchecked(r.moves[m].command);
+        }
+    });
+    return starts;
+}
+
+void ReplayBuffer::setValueEstimates(const std::vector<TurnStart> &starts,
+                                     const std::vector<float> &values) {
+    if (values.size() != starts.size()) {
+        throw std::invalid_argument("Need one value per turn start");
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    std::unordered_map<std::uint64_t, std::size_t> index;
+    for (std::size_t i = 0; i < records.size(); i++) {
+        index[records[i].gameSeed] = i;
+    }
+    for (std::size_t i = 0; i < starts.size(); i++) {
+        auto it = index.find(starts[i].gameSeed);
+        if (it == index.end()) {
+            continue;
+        }
+        GameRecord &r = records[it->second];
+        const std::size_t players = r.finalScores.size();
+        const std::size_t rows = static_cast<std::size_t>(r.turns) + 1;
+        if (r.valueEstimates.size() != rows * players) {
+            r.valueEstimates.assign(rows * players, std::nanf(""));
+        }
+        std::size_t at = static_cast<std::size_t>(starts[i].turn) * players + starts[i].player;
+        if (at < r.valueEstimates.size()) {
+            r.valueEstimates[at] = values[i];
+        }
+    }
 }
 
 std::vector<std::pair<int, int>> ReplayBuffer::sampleUnlocked(int count,

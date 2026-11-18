@@ -12,6 +12,7 @@ Contents:
 7. [Player memory](#7-player-memory)
 8. [Smaller alternatives](#8-smaller-alternatives)
 9. [Planning turns ahead: a redesign](#9-planning-turns-ahead-a-redesign) (brainstorm)
+10. [The next run](#10-the-next-run): what the restart should get right
 
 ## 1. Training plan
 
@@ -378,3 +379,20 @@ A brainstorm (2026-11-15/16), open to anything: a bot that plans a couple of tur
 5. **Learned focus:** (a) *unit intents*, a head predicting where each unit will be 2–3 turns later (trained from records like the side heads): plans from intents, focus areas where intents meet; (b) attention between units (an architecture change) defining focus areas; (c) a learned turn model (MuZero-style, a turn at a time) searched in the network's own representation; (d) no search, AlphaStar-style (far more compute). Bootstrapping: learned focus learns from games that ignore villages, so rules propose candidates (every village, ruin, city, contact) and the network ranks them.
 
 How to judge any of them: strength at equal network evaluations per turn (`searches.py`-style matches), and the measures above (villages taken, depth reached).
+
+**Status** (2026-11-17): parked until the network is stronger, the value especially. Turn search played even with today's search at 512 evaluations a decision (52% over four matches; notes/runs.md), likely because the value barely rewards what the lookahead finds (a captured village: +0.022). Retest it, and pursue the rest of this section, once the value judges economy better (the λ-return value target is next). The localization ideas (4 and 5: focused local search, learned focus and unit intents) are the ones to explore first then: they're the closest to how a player looks ahead, and nothing here has tested them yet.
+
+**Built** (2026-11-16): idea 1 as `SearchConfig::turnSearch` (docs/stockNavalon.md, search), off by default, compared with `searches.py --turn-search A B --evaluations N`. Full turn-by-turn (the root's own candidates whole turns) isn't: a very large commandVisits comes close (only the first command searched, the policy completing the rest of each turn). A first CPU check (4 games to turn 10, 96 evaluations a decision): 98% of simulations reached the opponent's turn against 52%, 1.02 turns ahead on average against 0.64, 84 evaluations a decision against 76.
+
+## 10. The next run
+
+The ninth run is a testbed: training will restart at some point (more players, larger maps, or something else, not decided yet). Changes are judged by whether they belong in that run. What the ninth run taught (notes/runs.md has the measurements):
+
+1. **The value is the bottleneck.** A captured village is worth +0.02 to the best network, so neither today's search nor turn search can act on what it finds (turn search played even; villages left untaken in 74% of turns). Build the run around learning a good value: λ-return targets from the start (reanalysed with the training network: its raw values beat the best network's search values at predicting results, 0.572 against 0.594), a value share chosen for that, and checks such as a captured village's value tracked from early on.
+2. **Gating let self-play go stale.** Nothing was promoted for 26,000 steps; the gates were right (a full match: the training network won 31% ± 8), and its strength swung 24–57% from gate to gate. Whether to gate at all is open: KataGo plays the latest network. If gating stays, its noise has to be measured (the best network against itself on different map sets).
+3. **Self-play is CPU-bound.** The GPU sits mostly idle; more players or larger maps make each game dearer.
+4. **Search should co-evolve with the network.** A new search tested against a network trained for the old one starts at a disadvantage, so a search that's to matter (localized or turn-level, section 9) should be settled before the restart and trained with from the start.
+5. **Cheap controlled experiments.** Most questions were answered on one long run with noisy gates. Short runs from scratch, A against B, at fixed compute, would test design choices properly.
+6. **Generality:** determinization and tribe inference are two-player only, the search's backup assumes two sides, and the encoding is padded to a fixed `mapSize` (11) with commands reaching 6 tiles. New code shouldn't add to that where it can be avoided.
+
+Already general, to keep: the opponent pool; single-source rules (`moveSearch.h`); the diagnostics (`versus`, `searches.py`, `--explain`, `pe.search` leaf breakdowns, held-out `bias`, the value-source comparison).

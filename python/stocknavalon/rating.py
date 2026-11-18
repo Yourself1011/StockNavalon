@@ -37,8 +37,11 @@ def results_from_log(path: str) -> list[tuple[str, str, int, int]]:
             e = json.loads(line)
             if "captures" not in e or "was_captured" not in e:
                 continue
-            if e.get("event") == "gate" and "best" in e:
+            if e.get("event") == "gate" and "best" in e and "opponents" not in e:
                 opponent = str(e["best"])
+            elif e.get("event") == "gate match" and "against" in e:
+                # a gate against several networks: each part on its own
+                opponent = str(e["against"])
             elif e.get("event") == "evaluation" and "against" in e:
                 opponent = e["against"].removeprefix("step_")
             else:

@@ -24,11 +24,14 @@ bool Game::isRoadFor(int tile, int player) const {
 }
 
 bool Game::nextToEnemy(int tile, int player) const {
+    // units in fog exert zone of control too, hidden ones (Hide) don't
+    // (game)
     bool found = false;
     forEachNeighbour(tile, [&](int n) {
         const Unit *other = unitAt(n);
-        found |=
-            other && hostile(player, other->owner) && canSee(player, *other);
+        found |= other && hostile(player, other->owner) && !other->hidden &&
+                 (settings.follows(RuleVersions::UNSEEN_ZONE_OF_CONTROL) ||
+                  canSee(player, *other));
     });
     return found;
 }
@@ -235,6 +238,11 @@ void Game::moveUnit(int unitIdx, int to) {
     if (!unit.isNaval() && tiles[to].building == ImprovementTypes::PORT) {
         unit.type = boatFor(unit.passenger);
         unit.canAttack = false;
+        // a Giant embarking becomes a Juggernaut, which stomps as it arrives
+        // (game)
+        if (settings.follows(RuleVersions::EMBARK_STOMP) && unit.has(Abilities::STOMP)) {
+            stomp(unitIdx);
+        }
     }
 }
 

@@ -589,7 +589,130 @@ void bindView(nb::module_ &m) {
           "What the player knows about the game. everything=True ignores fog.");
 }
 
+SideKind sideKind(const std::string &kind) {
+    if (kind == "network") {
+        return SideKind::NETWORK;
+    }
+    if (kind == "score") {
+        return SideKind::SCORE;
+    }
+    if (kind == "random") {
+        return SideKind::RANDOM;
+    }
+    throw std::invalid_argument("A side is network, score or random");
+}
+
+std::string sideName(SideKind kind) {
+    return kind == SideKind::NETWORK ? "network" : kind == SideKind::SCORE ? "score" : "random";
+}
+
+// The settings objects every search and self-play entry point takes, their
+// fields and defaults the C++ structs' (one place for each setting)
+void bindConfigs(nb::module_ &m) {
+    nb::class_<SearchConfig>(m, "SearchConfig",
+                             "A search's settings (search.h, SearchConfig), defaults "
+                             "as there. polyengine.search_config(**fields) makes one.")
+        .def(nb::init<>())
+        .def("copy", [](const SearchConfig &c) { return SearchConfig(c); })
+        .def("__copy__", [](const SearchConfig &c) { return SearchConfig(c); })
+        .def_rw("simulations", &SearchConfig::simulations,
+                "per determinized game (network evaluations with count_evaluations)")
+        .def_rw("samples", &SearchConfig::samples, "determinized games per decision")
+        .def_rw("exploration", &SearchConfig::exploration)
+        .def_rw("fpu_reduction", &SearchConfig::fpuReduction)
+        .def_rw("first_play_urgency", &SearchConfig::firstPlayUrgency)
+        .def_rw("horizon", &SearchConfig::horizon,
+                "turn changes a line may cross (UNLIMITED_HORIZON: no cutoff)")
+        .def_rw("root_noise", &SearchConfig::rootNoise)
+        .def_rw("noise_alpha", &SearchConfig::noiseAlpha)
+        .def_rw("noise_weight", &SearchConfig::noiseWeight)
+        .def_rw("determinize_tries", &SearchConfig::determinizeTries)
+        .def_rw("full_information", &SearchConfig::fullInformation)
+        .def_rw("gumbel", &SearchConfig::gumbel)
+        .def_rw("gumbel_candidates", &SearchConfig::gumbelCandidates)
+        .def_rw("gumbel_visit_scale", &SearchConfig::gumbelVisitScale)
+        .def_rw("gumbel_value_scale", &SearchConfig::gumbelValueScale)
+        .def_rw("explore_candidates", &SearchConfig::exploreCandidates)
+        .def_rw("score_utility", &SearchConfig::scoreUtility)
+        .def_rw("win_sooner", &SearchConfig::winSooner)
+        .def_rw("turn_search", &SearchConfig::turnSearch)
+        .def_rw("command_visits", &SearchConfig::commandVisits)
+        .def_rw("turn_widening", &SearchConfig::turnWidening)
+        .def_rw("turn_widening_power", &SearchConfig::turnWideningPower)
+        .def_rw("turn_temperature", &SearchConfig::turnTemperature)
+        .def_rw("max_turn_commands", &SearchConfig::maxTurnCommands)
+        .def_rw("count_evaluations", &SearchConfig::countEvaluations);
+    nb::class_<SelfPlayConfig>(m, "SelfPlayConfig",
+                               "Self-play's or a match's settings (selfPlay.h, "
+                               "SelfPlayConfig), defaults as there. "
+                               "polyengine.self_play_config(**fields) makes one.")
+        .def(nb::init<>())
+        .def("copy", [](const SelfPlayConfig &c) { return SelfPlayConfig(c); })
+        .def("__copy__", [](const SelfPlayConfig &c) { return SelfPlayConfig(c); })
+        .def_rw("search", &SelfPlayConfig::search)
+        .def_prop_rw(
+            "side_search",
+            [](const SelfPlayConfig &c) {
+                return std::vector<std::optional<SearchConfig>>(c.sideSearch.begin(),
+                                                                c.sideSearch.end());
+            },
+            [](SelfPlayConfig &c, const std::vector<std::optional<SearchConfig>> &v) {
+                if (!v.empty() && v.size() != 2) {
+                    throw std::invalid_argument("side_search: one per side, or none");
+                }
+                c.sideSearch = {v.empty() ? std::nullopt : v[0],
+                                v.empty() ? std::nullopt : v[1]};
+            },
+            "per side, a whole search instead of `search` (None: `search`)")
+        .def_rw("map_size", &SelfPlayConfig::mapSize)
+        .def_rw("max_turns", &SelfPlayConfig::maxTurns)
+        .def_rw("stall_turns", &SelfPlayConfig::stallTurns)
+        .def_rw("fog_share", &SelfPlayConfig::fogShare)
+        .def_rw("peace_treaties", &SelfPlayConfig::peaceTreaties)
+        .def_rw("tree_reuse", &SelfPlayConfig::treeReuse)
+        .def_rw("network_beliefs", &SelfPlayConfig::networkBeliefs)
+        .def_rw("temperature_turns", &SelfPlayConfig::temperatureTurns)
+        .def_rw("full_share", &SelfPlayConfig::fullShare)
+        .def_rw("quick_simulations", &SelfPlayConfig::quickSimulations)
+        .def_rw("threads", &SelfPlayConfig::threads)
+        .def_prop_rw(
+            "sides",
+            [](const SelfPlayConfig &c) {
+                return std::vector<std::string>{sideName(c.sides[0]), sideName(c.sides[1])};
+            },
+            [](SelfPlayConfig &c, const std::vector<std::string> &v) {
+                if (v.size() != 2) {
+                    throw std::invalid_argument("Need two sides");
+                }
+                c.sides = {sideKind(v[0]), sideKind(v[1])};
+            },
+            "who plays each side: network, score or random")
+        .def_rw("paired", &SelfPlayConfig::paired)
+        .def_rw("random_seats", &SelfPlayConfig::randomSeats)
+        .def_prop_rw(
+            "train_sides",
+            [](const SelfPlayConfig &c) {
+                return std::vector<bool>{c.trainSides[0], c.trainSides[1]};
+            },
+            [](SelfPlayConfig &c, const std::vector<bool> &v) {
+                if (v.size() != 2) {
+                    throw std::invalid_argument("train_sides: one flag per side");
+                }
+                c.trainSides = {v[0], v[1]};
+            })
+        .def_rw("handicap_share", &SelfPlayConfig::handicapShare)
+        .def_rw("handicap_income_share", &SelfPlayConfig::handicapIncomeShare)
+        .def_rw("handicap_income", &SelfPlayConfig::handicapIncome)
+        .def_rw("handicap_stars", &SelfPlayConfig::handicapStars)
+        .def_rw("handicap_catch_up_share", &SelfPlayConfig::handicapCatchUpShare)
+        .def_rw("catch_up_from_turn", &SelfPlayConfig::catchUpFromTurn)
+        .def_rw("catch_up_below", &SelfPlayConfig::catchUpBelow)
+        .def_rw("trailing_search_factor", &SelfPlayConfig::trailingSearchFactor)
+        .def_rw("explore_candidates", &SelfPlayConfig::exploreCandidates);
+}
+
 void bindSearch(nb::module_ &m) {
+    bindConfigs(m);
     nb::class_<LegalMoves>(
         m, "LegalMoves",
         "The current player's legal commands, updated one command at a time "
@@ -623,9 +746,9 @@ void bindSearch(nb::module_ &m) {
         .def_prop_ro("tribes", [](const GameRecord &r) { return r.map.tribes; })
         .def_ro("game_seed", &GameRecord::gameSeed,
                 "The game's random seed: identifies it among the others.")
-        .def_rw("diplomacy_meets", &GameRecord::diplomacyMeets,
-                "Whether an embassy or peace offer introduced the sender "
-                "(GameSettings::diplomacyMeets); false for older records.")
+        .def_rw("rules_version", &GameRecord::rulesVersion,
+                "The rules the game was played by (GameSettings::rulesVersion; "
+                "RULES_VERSION is the latest): older records replay by theirs.")
         .def_ro("head_start", &GameRecord::headStart,
                 "Each player's head start in stars, in a handicap game; empty "
                 "for an ordinary one.")
@@ -663,9 +786,6 @@ void bindSearch(nb::module_ &m) {
                 }
                 return -1;
             }, "In a handicap game, the player given the edge; -1 otherwise.")
-        .def_rw("adjacent_pushes", &GameRecord::adjacentPushes,
-                "Whether pushed units only went to a neighbouring tile "
-                "(GameSettings::adjacentPushes); false for older records.")
         .def("replays_legally", &GameRecord::replaysLegally,
              "Whether every command is legal when replayed, and no player's "
              "stars go below zero.")
@@ -738,33 +858,13 @@ void bindSearch(nb::module_ &m) {
              "scale"_a = 500.0, "The final score lead, squashed into [-1, 1].");
     m.def(
         "play_games",
-        [](int count, std::uint64_t seed, int threads, int simulations,
-           int samples, int horizon, int maxTurns, int temperatureTurns,
-           int mapSize, double fullShare, int quickSimulations, int stallTurns,
-           double fogShare, bool peaceTreaties) {
-            SelfPlayConfig config;
-            config.stallTurns = stallTurns;
-            config.fogShare = fogShare;
-            config.peaceTreaties = peaceTreaties;
-            config.fullShare = fullShare;
-            config.quickSimulations = quickSimulations;
-            config.search.simulations = simulations;
-            config.search.samples = samples;
-            config.search.horizon = horizon;
-            config.maxTurns = maxTurns;
-            config.temperatureTurns = temperatureTurns;
-            config.mapSize = mapSize;
+        [](const SelfPlayConfig &config, int count, std::uint64_t seed, int threads) {
             nb::gil_scoped_release release;
             return playGames(config, count, seed, threads);
         },
-        "count"_a, "seed"_a = 0, "threads"_a = 1, "simulations"_a = 100,
-        "samples"_a = 2, "horizon"_a = UNLIMITED_HORIZON, "max_turns"_a = 50,
-        "temperature_turns"_a = 3, "map_size"_a = 11, "full_share"_a = 0.25,
-        "quick_simulations"_a = 25, "stall_turns"_a = 0, "fog_share"_a = 1.0,
-        "peace_treaties"_a = true,
-        "Self-play games with the search on both seats, scored by the score "
-        "lead until there's a network. A full_share of decisions get the full "
-        "search and are recorded for the policy; the rest a quick one.");
+        "config"_a, "count"_a, "seed"_a = 0, "threads"_a = 1,
+        "Self-play games with these settings, every side scored by the score "
+        "lead (no network): the bootstrap before there's one.");
     using Floats = nb::ndarray<const float, nb::c_contig, nb::device::cpu>;
     nb::class_<SelfPlaySession>(
         m, "SelfPlaySession",
@@ -775,113 +875,9 @@ void bindSearch(nb::module_ &m) {
         "        logits, values = model(planes, globals_)\n"
         "        session.submit_network(enc, logits, values)\n"
         "    records = session.take_finished()")
-        .def("__init__",
-             [](SelfPlaySession *self, int parallel, int games, std::uint64_t seed,
-                int simulations, int samples, int horizon, int maxTurns,
-                int temperatureTurns, int mapSize, bool rootNoise, int threads,
-                double fullShare, int quickSimulations,
-                const std::vector<std::string> &sides, bool paired, int stallTurns,
-                double fogShare, bool networkBeliefs, bool peaceTreaties,
-                bool firstPlayUrgency, bool treeReuse, const std::vector<bool> &gumbel,
-                int gumbelCandidates, double scoreUtility, double winSooner,
-                 const std::vector<double> &sideExploration,
-                 const std::vector<int> &sideGumbelCandidates, double handicapShare,
-                 const std::vector<int> &handicapStars, double handicapIncomeShare,
-                 const std::vector<int> &handicapIncome, double handicapCatchUpShare,
-                 int catchUpFromTurn, double catchUpBelow, int trailingSearchFactor,
-                 int exploreCandidates, bool randomSeats,
-                 const std::vector<bool> &trainSides,
-                 const std::vector<int> &sideSimulations) {
-                 SelfPlayConfig config;
-                 config.randomSeats = randomSeats;
-                 if (trainSides.size() != 2) {
-                     throw std::invalid_argument("train_sides: one flag per side");
-                 }
-                 config.trainSides = {trainSides[0], trainSides[1]};
-                 config.exploreCandidates = exploreCandidates;
-                 config.handicapCatchUpShare = handicapCatchUpShare;
-                 config.catchUpFromTurn = catchUpFromTurn;
-                 config.catchUpBelow = catchUpBelow;
-                 config.trailingSearchFactor = trailingSearchFactor;
-                 config.handicapShare = handicapShare;
-                 config.handicapStars = handicapStars;
-                 config.handicapIncomeShare = handicapIncomeShare;
-                 config.handicapIncome = handicapIncome;
-                 if (!sideExploration.empty()) {
-                     if (sideExploration.size() != 2) {
-                         throw std::invalid_argument("side_exploration: one per side");
-                     }
-                     config.exploration = {sideExploration[0], sideExploration[1]};
-                 }
-                 if (!sideGumbelCandidates.empty()) {
-                     if (sideGumbelCandidates.size() != 2) {
-                         throw std::invalid_argument("side_gumbel_candidates: one per side");
-                     }
-                     config.gumbelCandidates = {sideGumbelCandidates[0], sideGumbelCandidates[1]};
-                 }
-                 if (!sideSimulations.empty()) {
-                     if (sideSimulations.size() != 2) {
-                         throw std::invalid_argument("side_simulations: one per side");
-                     }
-                     config.simulations = {sideSimulations[0], sideSimulations[1]};
-                 }
-                 config.search.scoreUtility = scoreUtility;
-                 config.search.winSooner = winSooner;
-                 if (gumbel.size() != 2) {
-                     throw std::invalid_argument("gumbel: one flag per side");
-                 }
-                 config.gumbel = {gumbel[0], gumbel[1]};
-                 config.search.gumbelCandidates = gumbelCandidates;
-                 config.treeReuse = treeReuse;
-                 config.peaceTreaties = peaceTreaties;
-                 config.search.firstPlayUrgency = firstPlayUrgency;
-                 config.stallTurns = stallTurns;
-                 config.fogShare = fogShare;
-                 config.networkBeliefs = networkBeliefs;
-                 config.search.simulations = simulations;
-                 config.search.samples = samples;
-                 config.search.horizon = horizon;
-                 config.search.rootNoise = rootNoise;
-                 config.maxTurns = maxTurns;
-                 config.temperatureTurns = temperatureTurns;
-                 config.mapSize = mapSize;
-                 config.threads = threads;
-                 config.fullShare = fullShare;
-                 config.quickSimulations = quickSimulations;
-                 if (sides.size() != 2) {
-                     throw std::invalid_argument("Need two sides");
-                 }
-                 for (int i = 0; i < 2; i++) {
-                     const std::string &kind = sides[i];
-                     config.sides[i] = kind == "network" ? SideKind::NETWORK
-                                       : kind == "score" ? SideKind::SCORE
-                                       : kind == "random"
-                                           ? SideKind::RANDOM
-                                           : throw std::invalid_argument(
-                                                 "A side is network, score or random");
-                 }
-                 config.paired = paired;
-                 new (self) SelfPlaySession(config, parallel, games, seed);
-             },
-             "parallel"_a, "games"_a, "seed"_a = 0, "simulations"_a = 100,
-             "samples"_a = 2, "horizon"_a = UNLIMITED_HORIZON, "max_turns"_a = 50,
-             "temperature_turns"_a = 3, "map_size"_a = 11, "root_noise"_a = true,
-             "threads"_a = 1, "full_share"_a = 0.25, "quick_simulations"_a = 25,
-             "sides"_a = std::vector<std::string>{"network", "network"},
-             "paired"_a = false, "stall_turns"_a = 0, "fog_share"_a = 1.0,
-             "network_beliefs"_a = false, "peace_treaties"_a = true,
-             "first_play_urgency"_a = true, "tree_reuse"_a = true,
-             "gumbel"_a = std::vector<bool>{false, false}, "gumbel_candidates"_a = 16,
-             "score_utility"_a = 0.0, "win_sooner"_a = 0.0,
-             "side_exploration"_a = std::vector<double>{},
-             "side_gumbel_candidates"_a = std::vector<int>{},
-             "handicap_share"_a = 0.0, "handicap_stars"_a = std::vector<int>{3, 6, 10},
-             "handicap_income_share"_a = 0.75, "handicap_income"_a = std::vector<int>{1, 2},
-             "handicap_catch_up_share"_a = 0.5, "catch_up_from_turn"_a = 10,
-             "catch_up_below"_a = -0.5, "trailing_search_factor"_a = 2,
-             "explore_candidates"_a = 2, "random_seats"_a = false,
-             "train_sides"_a = std::vector<bool>{true, true},
-             "side_simulations"_a = std::vector<int>{})
+        .def(nb::init<const SelfPlayConfig &, int, int, std::uint64_t>(), "config"_a,
+             "parallel"_a, "games"_a, "seed"_a = 0,
+             "`games` games with these settings, `parallel` at a time.")
         .def("done", &SelfPlaySession::done)
         .def("clear_cache", &SelfPlaySession::clearCache,
              "Forget the cached evaluations: after the network changes.")
@@ -902,12 +898,16 @@ void bindSearch(nb::module_ &m) {
                     side["mean_depth"] = d.simulations ? static_cast<double>(d.depth) / d.simulations : 0.0;
                     side["reached_opponent"] =
                         d.simulations ? static_cast<double>(d.reachedOpponent) / d.simulations : 0.0;
+                    side["mean_turns"] = d.simulations ? static_cast<double>(d.turns) / d.simulations : 0.0;
+                    side["evaluations"] = d.evaluations;
                     out.append(side);
                 }
                 return out;
             },
-            "Per side: simulations so far, their mean depth in commands below "
-            "the root, and the share that reached the opponent's turn.")
+            "Per side: simulations so far, their mean depth in moves below "
+            "the root (a sampled turn is one), the share that reached the "
+            "opponent's turn, their mean turn changes (turn search reaches "
+            "further), and the network evaluations asked for.")
         .def_prop_ro("finished_games", &SelfPlaySession::finishedGames)
         .def(
             "pending_inputs",
@@ -1085,17 +1085,20 @@ void bindSearch(nb::module_ &m) {
             "encode",
             [](const ReplayBuffer &buffer, const EncodingConfig &c,
                const std::vector<std::pair<int, int>> &positions,
-               int threads, double cityWeight, double cutOffWeight, double searchWeight) {
+               int threads, double cityWeight, double cutOffWeight, double searchWeight,
+               double valueLambda) {
                 return exampleDict(c, positions.size(), [&](const ExampleArrays &out) {
                     buffer.encode(positions, c, out, threads,
-                                  {.cityWeight = cityWeight, .searchWeight = searchWeight, .cutOffWeight = cutOffWeight});
+                                  {.lambda = valueLambda, .cityWeight = cityWeight,
+                                   .searchWeight = searchWeight, .cutOffWeight = cutOffWeight});
                 });
             },
             "encoding"_a, "positions"_a, "threads"_a = 8, "city_weight"_a = 0.0,
-            "cut_off_weight"_a = 1.0, "search_weight"_a = 0.0,
+            "cut_off_weight"_a = 1.0, "search_weight"_a = 0.0, "value_lambda"_a = 1.0,
             nb::sig("def encode(self, encoding: Encoding, positions: "
                     "collections.abc.Sequence[tuple[int, int]], threads: int = 8, "
-                    "city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0) "
+                    "city_weight: float = 0.0, cut_off_weight: float = 1.0, search_weight: float = 0.0, "
+                    "value_lambda: float = 1.0) "
                     "-> dict[str, numpy.typing.NDArray[typing.Any]]"),
             "Training examples at those positions, like Encoding.encode_examples. "
             "The positions only hold until the next add(): from another "
@@ -1105,12 +1108,13 @@ void bindSearch(nb::module_ &m) {
             [](const ReplayBuffer &buffer, const EncodingConfig &c, int count,
                std::uint64_t seed, int perGame, int threads, bool augment,
                double cityWeight, double cutOffWeight, double searchWeight,
-               bool positions) {
+               bool positions, double valueLambda) {
                 std::vector<std::pair<std::uint64_t, int>> drawn;
                 ExampleDict d = exampleDict(c, static_cast<std::size_t>(count),
                                             [&](const ExampleArrays &out) {
                     buffer.encodeSample(count, seed, perGame, c, out, threads, augment,
-                                        {.cityWeight = cityWeight,
+                                        {.lambda = valueLambda,
+                                         .cityWeight = cityWeight,
                                          .searchWeight = searchWeight,
                                          .cutOffWeight = cutOffWeight},
                                         positions ? &drawn : nullptr);
@@ -1129,12 +1133,12 @@ void bindSearch(nb::module_ &m) {
             },
             "encoding"_a, "count"_a, "seed"_a, "per_game"_a = 4, "threads"_a = 8,
             "augment"_a = false, "city_weight"_a = 0.0, "cut_off_weight"_a = 1.0, "search_weight"_a = 0.0,
-            "positions"_a = false,
+            "positions"_a = false, "value_lambda"_a = 1.0,
             nb::sig("def sample_examples(self, encoding: Encoding, count: int, "
                     "seed: int, per_game: int = 4, threads: int = 8, "
                     "augment: bool = False, city_weight: float = 0.0, "
                     "cut_off_weight: float = 1.0, search_weight: float = 0.0, "
-                    "positions: bool = False) "
+                    "positions: bool = False, value_lambda: float = 1.0) "
                     "-> dict[str, numpy.typing.NDArray[typing.Any]]"),
             "Random training examples, sampled and encoded at once, so safe "
             "while another thread adds games. With augment, each is seen "
@@ -1145,6 +1149,57 @@ void bindSearch(nb::module_ &m) {
             "a stalemate. With positions, the dict also has game_seeds and "
             "moves [B]: which positions were drawn, to encode again later "
             "(Encoding.encode_examples).")
+        .def("game_seeds", &ReplayBuffer::gameSeeds, "without_estimates"_a = false,
+             "The seeds of the games held: all, or with without_estimates only "
+             "those not reanalysed yet (set_value_estimates).")
+        .def(
+            "turn_start_inputs",
+            [](const ReplayBuffer &b, const EncodingConfig &c,
+               const std::vector<std::uint64_t> &seeds, int threads) {
+                std::vector<float> planes, globals;
+                std::vector<ReplayBuffer::TurnStart> starts;
+                {
+                    nb::gil_scoped_release release;
+                    starts = b.encodeTurnStarts(seeds, c, planes, globals, threads);
+                }
+                const std::size_t count = starts.size(), n = c.mapSize;
+                auto p = newArray<float>({count, static_cast<std::size_t>(planeCount(c)), n, n});
+                auto g = newArray<float>({count, static_cast<std::size_t>(globalCount(c))});
+                std::copy(planes.begin(), planes.end(), p.data());
+                std::copy(globals.begin(), globals.end(), g.data());
+                auto s = newArray<std::uint64_t>({count});
+                auto t = newArray<std::int32_t>({count});
+                auto q = newArray<std::int32_t>({count});
+                for (std::size_t i = 0; i < count; i++) {
+                    s.data()[i] = starts[i].gameSeed;
+                    t.data()[i] = starts[i].turn;
+                    q.data()[i] = starts[i].player;
+                }
+                return std::make_tuple(p, g, s, t, q);
+            },
+            "encoding"_a, "seeds"_a, "threads"_a = 8,
+            "Reanalysis: the start of each player turn of those games still "
+            "held, encoded for the player to move: (planes [B, C, N, N], "
+            "globals [B, G], game seeds, turns, players [B]). Safe while "
+            "another thread adds games.")
+        .def(
+            "set_value_estimates",
+            [](ReplayBuffer &b, const std::vector<std::uint64_t> &seeds,
+               const std::vector<int> &turns, const std::vector<int> &players,
+               const std::vector<float> &values) {
+                if (turns.size() != seeds.size() || players.size() != seeds.size()) {
+                    throw std::invalid_argument("Need a turn and player per seed");
+                }
+                std::vector<ReplayBuffer::TurnStart> starts;
+                for (std::size_t i = 0; i < seeds.size(); i++) {
+                    starts.push_back({seeds[i], turns[i], players[i]});
+                }
+                b.setValueEstimates(starts, values);
+            },
+            "seeds"_a, "turns"_a, "players"_a, "values"_a,
+            "Reanalysis: the network's values of those turn starts "
+            "(turn_start_inputs), for the lambda-return value target "
+            "(value_lambda). Games no longer held are skipped.")
         .def("save", [](const ReplayBuffer &b, const std::string &path) {
             nb::gil_scoped_release release;
             b.save(path);
@@ -1166,36 +1221,46 @@ void bindSearch(nb::module_ &m) {
     m.def(
         "run_cli",
         [](std::vector<std::string> args, const EncodingConfig &encoding,
-           nb::callable evaluate, int simulations, int samples, int horizon,
-           bool networkBeliefs, bool gumbel, double scoreUtility, double winSooner,
-           double exploration, int gumbelCandidates, bool explain) {
+           nb::callable evaluate, const SearchConfig &config, bool networkBeliefs,
+           bool explain, const std::vector<std::optional<SearchConfig>> &seatSearch) {
             args.insert(args.begin(), "stocknavalon.play");
             std::vector<char *> argv;
             for (std::string &a : args) {
                 argv.push_back(a.data());
             }
             auto evaluator = std::make_shared<PythonEvaluator>(encoding, evaluate);
-            SearchConfig config{.simulations = simulations, .samples = samples,
-                                .exploration = exploration, .horizon = horizon,
-                                .gumbel = gumbel, .gumbelCandidates = gumbelCandidates,
-                                .scoreUtility = scoreUtility, .winSooner = winSooner};
             return runCli(static_cast<int>(argv.size()), argv.data(),
-                          [config, evaluator, networkBeliefs, explain](std::uint64_t seed) -> BotTurn {
+                          [config, seatSearch, evaluator, networkBeliefs,
+                           explain](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
-                return [config, evaluator, rng, networkBeliefs, explain](Game &game) {
+                return [config, seatSearch, evaluator, rng, networkBeliefs, explain](Game &game) {
                     int player = game.currentPlayer;
+                    // this seat's own search, if it has one
+                    const SearchConfig &search =
+                        player < static_cast<int>(seatSearch.size()) && seatSearch[player]
+                            ? *seatSearch[player]
+                            : config;
                     float value;
                     std::string decisions;
-                    BotResult result{.commands = playTurn(game, *evaluator, config, *rng,
+                    BotResult result{.commands = playTurn(game, *evaluator, search, *rng,
                                                           networkBeliefs, &value,
                                                           explain ? &decisions : nullptr)};
                     if (!std::isnan(value)) {
                         // as the search sees it before ending the turn: the
                         // value, and as a chance of winning
-                        char note[96];
+                        char note[128], which[40] = "";
+                        // which search, when seats differ
+                        if (!seatSearch.empty()) {
+                            if (search.turnSearch) {
+                                std::snprintf(which, sizeof which, " (turn search %d)",
+                                              search.commandVisits);
+                            } else {
+                                std::snprintf(which, sizeof which, " (today's search)");
+                            }
+                        }
                         std::snprintf(note, sizeof note,
-                                      "player %d's evaluation: %+.2f (%.0f%% to win)", player,
-                                      value, 50.0 * (value + 1));
+                                      "player %d%s's evaluation: %+.2f (%.0f%% to win)", player,
+                                      which, value, 50.0 * (value + 1));
                         result.note = note;
                     }
                     if (explain) {
@@ -1212,24 +1277,23 @@ void bindSearch(nb::module_ &m) {
                 };
             });
         },
-        "args"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
-        "horizon"_a = UNLIMITED_HORIZON, "network_beliefs"_a = true, "gumbel"_a = false,
-        "score_utility"_a = 0.0, "win_sooner"_a = 0.0, "exploration"_a = 1.5,
-        "gumbel_candidates"_a = 16, "explain"_a = false,
+        "args"_a, "encoding"_a, "evaluate"_a, "search"_a, "network_beliefs"_a = true,
+        "explain"_a = false,
+        "seat_search"_a = std::vector<std::optional<SearchConfig>>{},
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
         "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "
         "values, raw belief outputs of belief_rows or None), as with "
         "SelfPlaySession.submit_move_logits. With network_beliefs, each bot "
         "turn samples the hidden state from the network's beliefs (asked once "
-        "per turn), else from the fixed priors. With explain, each bot turn "
+        "per turn), else from the fixed priors. seat_search gives seats their "
+        "own search (None, or seats past it: `search`). With explain, each bot turn "
         "also lists its decisions: the command played and the search's "
         "leading moves, with priors, visits and values. Returns the exit code.");
     m.def(
         "search",
         [](const Game &game, const EncodingConfig &encoding, nb::callable evaluate,
-           int simulations, int samples, int horizon, bool gumbel, bool networkBeliefs,
-           double exploration, int gumbelCandidates, std::uint64_t seed) {
+           const SearchConfig &config, bool networkBeliefs, std::uint64_t seed) {
             PythonEvaluator evaluator(encoding, evaluate);
             int me = game.currentPlayer;
             std::optional<Beliefs> beliefs;
@@ -1243,9 +1307,6 @@ void bindSearch(nb::module_ &m) {
             if (!beliefs) {
                 beliefs = priorBeliefs(makeView(game, me));
             }
-            SearchConfig config{.simulations = simulations, .samples = samples,
-                                .exploration = exploration, .horizon = horizon,
-                                .gumbel = gumbel, .gumbelCandidates = gumbelCandidates};
             SearchResult r = search(game, *beliefs, evaluator, config, seed);
             // per move, per leaf kind: (count, mean value for the searcher)
             std::vector<std::vector<std::pair<int, double>>> leaves;
@@ -1258,11 +1319,10 @@ void bindSearch(nb::module_ &m) {
             }
             return std::make_tuple(r.moves, r.visits, r.values, r.priors, r.chosen, leaves);
         },
-        "game"_a, "encoding"_a, "evaluate"_a, "simulations"_a = 200, "samples"_a = 4,
-        "horizon"_a = UNLIMITED_HORIZON, "gumbel"_a = true, "network_beliefs"_a = true,
-        "exploration"_a = 1.5, "gumbel_candidates"_a = 16, "seed"_a = 0,
+        "game"_a, "encoding"_a, "evaluate"_a, "search"_a, "network_beliefs"_a = true,
+        "seed"_a = 0,
         "One search for the player to move, as the CLI's bot does, `evaluate` as "
-        "for run_cli. Returns (moves, visits, values, priors, chosen index, "
+        "for run_cli, with these settings (SearchConfig). Returns (moves, visits, values, priors, chosen index, "
         "leaves): leaves per move are (count, mean value for the searcher) of "
         "where its simulations ended: in the searcher's own turn, an "
         "opponent's, the searcher's later turns, the game's end.");
@@ -1296,6 +1356,7 @@ void bindSearch(nb::module_ &m) {
 
 void bindEncoding(nb::module_ &m) {
     m.attr("ENCODING_VERSION") = ENCODING_VERSION;
+    m.attr("RULES_VERSION") = RuleVersions::LATEST;
     m.attr("MAP_TYPE_COUNT") = static_cast<int>(MapTypes::MAP_TYPE_SIZE);
     m.attr("OPENING_CHANGES") = OPENING_CHANGES;
     // command slots per tile; the global slots come after them

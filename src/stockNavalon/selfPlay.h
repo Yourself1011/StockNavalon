@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <unordered_map>
 #include <vector>
@@ -71,9 +72,6 @@ struct SelfPlayConfig {
     // Games in pairs: the same map and tribes twice, the sides swapping
     // seats, so neither the map nor moving first favours a side
     bool paired = false;
-    // Gumbel search at the root for each side (SearchConfig::gumbel), so a
-    // match can put the two searches against each other
-    std::array<bool, 2> gumbel{false, false};
     // Opponent-pool games: side 1 is an earlier network, at a random seat;
     // only the sides with trainSides true record policy targets (training
     // only samples moves with targets, so the other side's never train), and
@@ -104,12 +102,11 @@ struct SelfPlayConfig {
     // on full searches only, this many of the root's Gumbel candidates are
     // random legal moves (SearchConfig::exploreCandidates)
     int exploreCandidates = 2;
-    // per side, overriding search.exploration, search.gumbelCandidates and
-    // search.simulations (full searches) where positive: for comparing search
-    // settings in a match
-    std::array<double, 2> exploration{-1, -1};
-    std::array<int, 2> gumbelCandidates{-1, -1};
-    std::array<int, 2> simulations{-1, -1};
+    // per side, a whole search instead of `search`, for a match between two
+    // searches; self-play's own adjustments (quick searches, root noise,
+    // exploration candidates, a trailing side's budget) apply on top as for
+    // `search`
+    std::array<std::optional<SearchConfig>, 2> sideSearch;
 };
 
 // One game. The evaluator scores positions for the search.

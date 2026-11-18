@@ -65,12 +65,16 @@ struct GameRecord {
     // network in each turn, turns x players, NaN where there were none; for
     // the short-term value targets. Empty in older records.
     std::vector<float> turnValues;
+    // Reanalysis (ValueTarget::lambda): the training network's value of the
+    // start of each player's turn, turns x players, NaN where none; filled in
+    // the buffer (ReplayBuffer::setValueEstimates), never saved
+    std::vector<float> valueEstimates;
     // whether peace treaties were allowed (GameSettings::peaceTreaties), so
     // a replay has the same legal commands
     bool peaceTreaties = true;
-    // whether diplomacy introduced the sender (GameSettings::diplomacyMeets):
-    // false for games recorded before the engine had the rule
-    bool diplomacyMeets = true;
+    // the rules the game was played by (GameSettings::rulesVersion): older
+    // records replay by theirs
+    int rulesVersion = RuleVersions::LATEST;
     // each player's head start in stars (GameSettings::headStart): a
     // handicap game's; empty for an ordinary game
     std::vector<int> headStart;
@@ -86,9 +90,6 @@ struct GameRecord {
     // in an opponent-pool game, the seat the earlier network played; -1 in an
     // ordinary game
     int poolOpponentSeat = -1;
-    // whether pushed units only went to a neighbouring tile
-    // (GameSettings::adjacentPushes): false for games recorded before
-    bool adjacentPushes = true;
     // each player's cities when the game ended, for the early city term of
     // the value target; empty in older records
     std::vector<int> finalCities;
@@ -147,6 +148,17 @@ std::vector<GameRecord> loadRecords(const std::string &path);
 // `cutOffWeight`, a decided game's 1: cut-off targets carry little
 // information but far outnumber real results.
 struct ValueTarget {
+    // The result part of the target, a lambda-return (Sutton and Barto):
+    // from the game's value at the end back to the position, each of the
+    // player's later turns blending in the training network's value of it
+    // (GameRecord::valueEstimates, reanalysed), ret = (1 - lambda) x v +
+    // lambda x ret. Over roughly the next 1 / (1 - lambda) turns, so a
+    // capture that makes the next turns look better is credited at once, not
+    // only through the result. 1: the result alone, as is a game not yet
+    // reanalysed (the search values recorded come from the network that
+    // played, whose biases the targets would learn). The position's own turn
+    // is left out.
+    double lambda = 1;
     double cityWeight = 0;
     // the share of the target from the position's own search value
     // (RecordedMove::rootValue), where there is one: (1 - searchWeight) x
@@ -154,6 +166,14 @@ struct ValueTarget {
     double searchWeight = 0;
     double cutOffWeight = 1;
 };
+
+// The lambda-return for `player` from turn `from` on: the game's value
+// (GameRecord::value), blended back through `values` (turns x players: the
+// record's turnValues or valueEstimates) of the player's turns from..the end;
+// a turn without one passes the return on. The game's value alone without
+// values or with lambda 1.
+double lambdaReturn(const GameRecord &record, int player, int from, double lambda,
+                    const std::vector<float> &values);
 
 // Training examples: positions picked as (record, move) pairs, each the
 // position just before that move, for the player to move there. Arrays as
@@ -236,6 +256,25 @@ class ReplayBuffer {
                       int threads = 1, bool augment = false,
                       const ValueTarget &value = {},
                       std::vector<std::pair<std::uint64_t, int>> *drawn = nullptr) const;
+
+    // Reanalysis (ValueTarget::lambda), safe while games are added. The
+    // seeds of the games held: all, or those without value estimates yet.
+    std::vector<std::uint64_t> gameSeeds(bool withoutEstimates = false) const;
+    // The position at the start of each player turn (its first decision) of
+    // those games still held, encoded for the player to move as in training
+    // (planes and globals, one after another), and which each is.
+    struct TurnStart {
+        std::uint64_t gameSeed;
+        int turn, player;
+    };
+    std::vector<TurnStart> encodeTurnStarts(const std::vector<std::uint64_t> &seeds,
+                                            const EncodingConfig &config,
+                                            std::vector<float> &planes,
+                                            std::vector<float> &globals,
+                                            int threads = 1) const;
+    // the network's value of each (games no longer held are skipped)
+    void setValueEstimates(const std::vector<TurnStart> &starts,
+                           const std::vector<float> &values);
 
   private:
     std::vector<std::pair<int, int>> sampleUnlocked(int count, std::uint64_t seed,
