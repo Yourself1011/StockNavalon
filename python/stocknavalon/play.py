@@ -56,7 +56,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Play against a trained network; other arguments go to the CLI.")
     parser.add_argument("checkpoint", help="a run directory or a .pt file")
-    add_search_arguments(parser, simulations=200, samples=4)
+    # the run's search (run.py's defaults): turn search 0, the most likely
+    # replies first
+    add_search_arguments(parser, simulations=200, samples=4, turn_search=["0"],
+                         replies=["likely"])
     parser.add_argument("--explain", action="store_true",
                         help="after each bot turn, list its decisions: the command "
                              "played and the search's leading moves, with their "
@@ -96,7 +99,8 @@ def main():
         return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
                 np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
 
-    # the per-side flags (--turn-search, --replies, --backup): one value for every bot, or one per seat (seat 0 first)
+    # the per-side flags (--turn-search, --replies, --backup): one value for
+    # every bot, or one per seat (seat 0 first)
     seats = side_searches(args, side_count(args))
     sys.exit(pe.run_cli(rest, encoding, evaluate, seats[0],
                         network_beliefs=args.network_beliefs, explain=args.explain,

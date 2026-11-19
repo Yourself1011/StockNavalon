@@ -197,7 +197,7 @@ game.apply(enc.decode_command(game, index))
 | `search(game, encoding, evaluate, search, network_beliefs=True, seed=0)` | one search for the player to move, as the CLI's bot does; `(moves, visits, values, priors, chosen, leaves)` |
 | `play_games(config, count, seed=0, threads=1)`, `SelfPlaySession(config, parallel, games, seed=0)`, `run_cli(args, encoding, evaluate, search, ...)` | self-play with the score evaluator, self-play driven by a network, and the terminal game with the bot: each takes the settings objects above |
 
-Every entry point takes these objects rather than settings one by one, so a new setting is a field in the C++ struct and a line in the bindings. The training tools' search flags (`--simulations`, `--samples`, `--horizon`, `--exploration`, `--gumbel`, `--gumbel-candidates`, `--score-utility`, `--win-sooner`, `--turn-search`, `--evaluations`) are defined once, in `stocknavalon/settings.py`. `--turn-search` takes `off` or a number, once for every side or once per side (`versus`: A then B; `stocknavalon.play`: per seat; `searches.py` likewise for its pair).
+Every entry point takes these objects rather than settings one by one, so a new setting is a field in the C++ struct and a line in the bindings. The training tools' search flags (`--simulations`, `--samples`, `--horizon`, `--exploration`, `--gumbel`, `--gumbel-candidates`, `--score-utility`, `--win-sooner`, `--turn-search`, `--replies`, `--backup`, `--evaluations`) are defined once, in `stocknavalon/settings.py`. `--turn-search` takes `off` or a number, once for every side or once per side (`versus`: A then B; `stocknavalon.play`: per seat; `searches.py` likewise for its pair).
 
 ## Speed
 

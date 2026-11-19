@@ -305,7 +305,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--session-threads", type=int, default=4,
                    help="threads for each self-play session's and match's own "
                         "work (advancing games, encoding positions)")
-    p.add_argument("--reuse", type=float, default=4.0,
+    p.add_argument("--reuse", type=float, default=1.0,
                    help="training samples per position self-play adds")
     p.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True,
                    help="train on each position through a random one of the "
@@ -325,12 +325,12 @@ def parser() -> argparse.ArgumentParser:
                         "first batches aren't drawn from a handful of games")
     p.add_argument("--ema-decay", type=float, default=0.999,
                    help="the weights' moving average, which gating plays")
-    p.add_argument("--gate-steps", type=int, default=2000,
+    p.add_argument("--gate-steps", type=int, default=4000,
                    help="training steps between gates: the average against the "
                         "best network, replacing it if it wins")
     p.add_argument("--gate-games", type=int, default=128,
                    help="all played at once")
-    p.add_argument("--gate-opponents", type=int, default=1,
+    p.add_argument("--gate-opponents", type=int, default=3,
                    help="networks a gate plays: the best, and the bests before it "
                         "(from the snapshots), the same games split among them, so "
                         "a candidate has to beat more than its predecessor; the "
@@ -347,7 +347,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--gate-max-minutes", type=float, default=30.0,
                    help="a gate's time limit, like --eval-max-minutes; games "
                         "still going then count for neither side")
-    p.add_argument("--gate-threshold", type=float, default=0.55,
+    p.add_argument("--gate-threshold", type=float, default=0.5,
                    help="share of the decided games the average must win")
     p.add_argument("--gate-min-decided", type=int, default=20,
                    help="decided games a gate needs, else it's inconclusive")
@@ -359,7 +359,7 @@ def parser() -> argparse.ArgumentParser:
                         "--lr-warmup-steps while the optimizer is fresh, then "
                         "cosine down to --lr-floor over --lr-decay-steps of the "
                         "run, then held")
-    p.add_argument("--lr-floor", type=float, default=5e-5)
+    p.add_argument("--lr-floor", type=float, default=2.5e-5)
     p.add_argument("--lr-decay-steps", type=int, default=100_000)
     p.add_argument("--lr-warmup-steps", type=int, default=1000)
     p.add_argument("--city-weight", type=float, default=0.3,
@@ -383,7 +383,7 @@ def parser() -> argparse.ArgumentParser:
                         "search value; the rest is the result. Off: the value "
                         "is the result alone, and the search's values train "
                         "the short-term value heads instead")
-    p.add_argument("--value-lambda", type=float, default=1.0,
+    p.add_argument("--value-lambda", type=float, default=0.95,
                    help="the value target as a lambda-return: each later turn of "
                         "the player's blends in its search value, ending in the "
                         "result, over roughly 1 / (1 - lambda) turns (0.9: ten), so "
@@ -402,13 +402,13 @@ def parser() -> argparse.ArgumentParser:
                         "each move, against the network rating the player to move "
                         "too well (the held-out bias); off: the bias fell to about "
                         "0 without it")
-    p.add_argument("--value-share", type=float, default=0.1,
+    p.add_argument("--value-share", type=float, default=0.2,
                    help="the share of samples the value trains on, so each "
                         "game's result is repeated less")
-    p.add_argument("--parallel", type=int, default=128,
+    p.add_argument("--parallel", type=int, default=256,
                    help="self-play games at once, in each of two sessions")
     # self-play's full searches; gates and anchors the same, at --eval-simulations
-    add_search_arguments(p, simulations=64, samples=1)
+    add_search_arguments(p, simulations=64, samples=1, turn_search=["0"], replies=["likely"])
     p.add_argument("--handicap-share", type=float, default=0.2,
                    help="share of self-play games where one side, at random, "
                         "gets an edge, so the bot learns to fight from behind; "
@@ -449,7 +449,7 @@ def parser() -> argparse.ArgumentParser:
                    help="of the Gumbel candidates in self-play's full searches, "
                         "how many are random legal moves, so moves the policy "
                         "has all but ruled out still get tried")
-    p.add_argument("--full-share", type=float, default=0.5,
+    p.add_argument("--full-share", type=float, default=0.25,
                    help="share of decisions with the full search, recorded for "
                         "the policy; the rest get a quick search")
     p.add_argument("--quick-simulations", type=int, default=16)
@@ -476,7 +476,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--stall-turns", type=int, default=25,
                    help="once anyone has attacked or captured, a game stops after "
                         "this many turns without either (0 for never)")
-    p.add_argument("--eval-steps", type=int, default=5000,
+    p.add_argument("--eval-steps", type=int, default=10000,
                    help="training steps between the best network's matches "
                         "against the random bot and the score search (0 for "
                         "none); counted from the last, so restarts keep the "

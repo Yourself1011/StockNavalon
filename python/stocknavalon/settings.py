@@ -18,7 +18,8 @@ BACKUPS = {"mean": pe.Backup.MEAN, "pbar": pe.Backup.PBAR,
 
 def add_search_arguments(parser: argparse.ArgumentParser, *, simulations: int,
                          samples: int, gumbel: bool = True, score_utility: float = 0.05,
-                         win_sooner: float = 0.05) -> None:
+                         win_sooner: float = 0.05, turn_search: list[str] | None = None,
+                         replies: list[str] | None = None) -> None:
     """The search flags, with these defaults (the rest are SearchConfig's)."""
     defaults = pe.SearchConfig()
     g = parser.add_argument_group("search")
@@ -41,13 +42,13 @@ def add_search_arguments(parser: argparse.ArgumentParser, *, simulations: int,
     g.add_argument("--win-sooner", type=float, default=win_sooner,
                    help="tie-break toward a quicker win (or a slower loss) by the "
                         "predicted turns left")
-    g.add_argument("--turn-search", nargs="+", default=None, metavar="off|N",
+    g.add_argument("--turn-search", nargs="+", default=turn_search, metavar="off|N",
                    help="turn search (notes/design.md section 9): past End Turn, whole "
                         "turns sampled from the policy; a node below the root searches "
                         "command by command once N simulations went through it (0: until "
                         "End Turn), off for today's search. One value for every side, or "
                         "one per side (or seat) where the tool has several")
-    g.add_argument("--replies", nargs="+", default=None, choices=list(REPLIES),
+    g.add_argument("--replies", nargs="+", default=replies, choices=list(REPLIES),
                    help="turn search: how the opponent's replies are drawn: sampled from "
                         "the policy, the likely one first then sampled, or the likely one "
                         "then discrepancy turns (search.h, SearchConfig::replies). One per "

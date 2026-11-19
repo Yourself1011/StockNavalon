@@ -212,7 +212,7 @@ def test_a_match_splits_its_games_over_two_sessions():
     keep: list = []
     result = match(model, sn.Network(enc, channels=16, blocks=1), enc, torch.device("cpu"),
                    games=8, parallel=8, search=pe.search_config(simulations=4, samples=1),
-                   max_turns=2, keep=keep)
+                   max_turns=2, sessions=2, keep=keep)
     assert result["games"] == 8
     # every game once: four maps, each played from both seats
     assert len({(r.game_seed, r.seat_zero_side) for r in keep}) == 8
@@ -421,12 +421,14 @@ def test_a_runs_settings_bootstrap_self_play_and_gates(tmp_path):
     games = pe.play_games(bootstrap, 2, seed=1, threads=1)
     assert len(games) == 2
     gate = search_config(args, simulations=args.eval_simulations)
-    assert gate.simulations == args.eval_simulations and not gate.turn_search
+    # the run's search: turn search 0, the most likely replies first
+    assert gate.simulations == args.eval_simulations and gate.turn_search
+    assert gate.command_visits == 0 and gate.replies == pe.Replies.LIKELY_FIRST
     turns = search_config(parser().parse_args(["--dir", str(tmp_path), "--turn-search", "0",
                                                "--evaluations", "100"]))
     assert turns.turn_search and turns.command_visits == 0 and turns.horizon == 3
     assert turns.count_evaluations and turns.simulations == 100
-    assert turns.replies == pe.Replies.SAMPLED and turns.backup == pe.Backup.MEAN
+    assert turns.replies == pe.Replies.LIKELY_FIRST and turns.backup == pe.Backup.MEAN
 
 
 def test_per_side_search_flags_take_one_value_or_one_each():
@@ -555,11 +557,11 @@ def test_offline_training_compares_sizes_on_the_same_games(tmp_path, monkeypatch
 
 def test_a_run_logs_its_settings_at_the_start(tmp_path):
     from stocknavalon.run import parser, pretty, start_entry
-    args = parser().parse_args(["--dir", str(tmp_path), "--gate-threshold", "0.5",
-                                "--turn-search", "0"])
+    args = parser().parse_args(["--dir", str(tmp_path), "--gate-threshold", "0.55",
+                                "--turn-search", "off"])
     entry = start_entry(args)
-    assert entry["settings"]["gate_threshold"] == 0.5 and entry["settings"]["batch"] == 256
-    assert entry["changed"] == {"gate_threshold": 0.5, "turn_search": ["0"]}
+    assert entry["settings"]["gate_threshold"] == 0.55 and entry["settings"]["batch"] == 256
+    assert entry["changed"] == {"gate_threshold": 0.55, "turn_search": ["off"]}
     assert entry["rules_version"] == pe.RULES_VERSION
     line = pretty({"time": "00:00:00", **entry})
-    assert "--gate-threshold 0.5" in line and "--batch" not in line
+    assert "--gate-threshold 0.55" in line and "--batch" not in line

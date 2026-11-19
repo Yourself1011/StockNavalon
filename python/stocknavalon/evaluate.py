@@ -65,7 +65,7 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           threads: int = 1, train_sides: tuple[bool, bool] = (True, True), settled=None,
           gpu_lock=None, progress=None, progress_seconds: float = 30.0,
           finish_share: float = 0.9, extra_moves: int = 50,
-          max_minutes: float = 10.0,
+          max_minutes: float = 10.0, sessions: int = 1,
           keep: list[pe.GameRecord] | None = None) -> dict[str, Any]:
     """`model` (side 0) against `opponent` (side 1): another Network, or
     "score" or "random". Both search with `search` (by default 50 simulations
@@ -75,7 +75,12 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
     targets (a gate's games train the candidate only; the records mark the
     other side's seat, as opponent-pool games do). Returns side 0's results.
     `progress`, if given, is
-    called every `progress_seconds` with the results so far."""
+    called every `progress_seconds` with the results so far. With `sessions`
+    2, the games are split between two sessions taking turns, so the CPU and
+    the GPU overlap as in self-play (the same games for a seed); one by
+    default: with a network per side that's four small batches a round
+    instead of two, and gates during a run (the GPU shared) slowed down
+    enough to run out of time."""
     gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
     networks: list[Network | None] = [
         model, opponent if isinstance(opponent, Network) else None]
@@ -97,9 +102,9 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         max_turns=max_turns, temperature_turns=1, full_share=1.0, sides=sides, paired=True,
         stall_turns=stall_turns, fog_share=fog_share, network_beliefs=network_beliefs,
         peace_treaties=peace_treaties, threads=threads, train_sides=list(train_sides))
-    # two sessions taking turns, so the CPU and the GPU overlap (as in
-    # self-play), splitting the games so they're the same as one session's
-    first = games // 4 * 2  # whole pairs in each
+    # with two sessions, the games split so they're the same as one
+    # session's
+    first = games // 4 * 2 if sessions == 2 else games  # whole pairs in each
     shares = [(n, start) for n, start in ((first, 0), (games - first, first)) if n > 0]
     sessions = [pe.SelfPlaySession(config, max(1, min(parallel, n)), n, seed, first=start)
                 for n, start in shares]

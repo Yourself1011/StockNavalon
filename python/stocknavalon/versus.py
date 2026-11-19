@@ -120,7 +120,8 @@ def main():
     names = [name for _, name in sides]
     print(f"A: {names[0]}\nB: {names[1]}", flush=True)
 
-    # the per-side flags (--turn-search, --replies, --backup): one value for both, or one per side (A, B)
+    # the per-side flags (--turn-search, --replies, --backup): one value for
+    # both, or one per side (A, B)
     sides_search = side_searches(args, side_count(args))
     records: list[pe.GameRecord] = []
     result = match(models[0], models[1], pe.Encoding(), device, games=args.games,
