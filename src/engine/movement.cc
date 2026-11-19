@@ -6,13 +6,22 @@ int sign(int v) { return (v > 0) - (v < 0); }
 } // namespace
 
 bool Game::canEnterTerrain(const Unit &unit, int tile) const {
+    return canEnterTerrain(unit.owner, unit.isNaval(), tile);
+}
+
+bool Game::canEnterTerrain(int player, bool naval, int tile) const {
     const Tile &t = tiles[tile];
-    const Player &player = players[unit.owner];
+    const Player &p = players[player];
     // naval units may use shallow water without Fishing: owning a boat
     // already means they got onto the water
-    return terrainEnterable(unit.isNaval(), t.terrain, t.road,
-                            player.hasTech(TechTypes::SAILING),
-                            player.hasTech(TechTypes::CLIMBING));
+    return terrainEnterable(naval, t.terrain, t.road, p.hasTech(TechTypes::SAILING),
+                            p.hasTech(TechTypes::CLIMBING));
+}
+
+bool Game::embarksAt(int player, int tile) const {
+    int owner = tileOwner(tile);
+    return tiles[tile].building == ImprovementTypes::PORT && owner >= 0 &&
+           !hostile(owner, player);
 }
 
 bool Game::isRoadFor(int tile, int player) const {
@@ -105,8 +114,7 @@ void Game::reachable(int unitIdx, std::vector<int> *moves,
             f.land = looksFree && canEnterTerrain(passenger, to);
             return f;
         }
-        f.embark = !naval && t.building == ImprovementTypes::PORT && tileOwner(to) >= 0 &&
-                   !hostile(tileOwner(to), unit.owner);
+        f.embark = !naval && embarksAt(unit.owner, to);
         // friendly units can be passed through; enemies only by Hide units
         f.enter = (f.embark || canEnterTerrain(unit, to)) && !(seenEnemy && !hide);
         if (!f.enter) {

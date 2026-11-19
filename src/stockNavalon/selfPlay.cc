@@ -17,7 +17,11 @@ GameRecord newRecord(const SelfPlayConfig &config, std::mt19937_64 &rng) {
     std::uniform_int_distribution<int> tribe(0, TribeTypes::TRIBE_SIZE - 1);
     std::uniform_int_distribution<int> type(0, MapTypes::MAP_TYPE_SIZE - 1);
     record.map.size = config.mapSize;
-    record.map.type = static_cast<MapTypes::MapType>(type(rng));
+    record.map.type =
+        config.mapTypes.empty()
+            ? static_cast<MapTypes::MapType>(type(rng))
+            : config.mapTypes[std::uniform_int_distribution<std::size_t>(
+                  0, config.mapTypes.size() - 1)(rng)];
     record.map.seed = rng();
     record.map.tribes = {static_cast<TribeTypes::Tribe>(tribe(rng)),
                          static_cast<TribeTypes::Tribe>(tribe(rng))};
@@ -54,8 +58,8 @@ struct SelfPlaySession::Slot {
     int commandsThisTurn = 0, turn = -1, mover = -1;
     bool active = false;
     // whether the decision being searched is a full one, recorded for the
-    // policy
-    bool full = true;
+    // policy, and whether it's in a forced opening (SelfPlayConfig::sidePlans)
+    bool full = true, forced = false;
     // the game's number, and the side to move at the search's root
     int number = 0, side = 0;
     // the move count at which the game is cut short, -1 for none
@@ -299,13 +303,40 @@ void SelfPlaySession::advance(Slot &slot) {
                 game.turn < config.temperatureTurns) {
                 search.rootNoise = true;
             }
+            // a forced opening: only the plan's commands, played at once
+            // when there's one
+            std::vector<Command> allowed;
+            slot.forced =
+                config.sidePlans[slot.side] != Plan::NONE && game.turn < config.planTurns;
+            bool restricted = false;
+            if (slot.forced) {
+                std::vector<Command> legal;
+                for (const Command &c : game.legalCommands()) {
+                    if (c.type != CommandTypes::RESIGN && c.type != CommandTypes::STAY) {
+                        legal.push_back(c);
+                    }
+                }
+                allowed = planAllowed(config.sidePlans[slot.side], game, legal);
+                restricted = allowed.size() < legal.size();
+                if (allowed.size() == 1) {
+                    noteCombat(slot, allowed[0]);
+                    slot.lastTurn = -1;
+                    game.apply(allowed[0]);
+                    slot.record.moves.push_back({.player = slot.mover, .command = allowed[0]});
+                    slot.commandsThisTurn++;
+                    slot.previous.reset();
+                    continue;
+                }
+            }
             // reuse the last decision's tree when it's still this player's
             // turn and the tree's position looks exactly like the real one
+            // (not under a plan: its root had other moves)
             bool reused;
             {
                 profiling::Timer reuseTimer(profiling::REUSE);
                 profiling::Laps laps;
-                reused = config.treeReuse && slot.previous && slot.lastTurn == game.turn &&
+                reused = config.treeReuse && !slot.forced && slot.previous &&
+                         slot.lastTurn == game.turn &&
                          slot.lastPlayer == game.currentPlayer &&
                          slot.previous->reuse(slot.lastPlayed, search);
                 laps.mark(profiling::REUSE_TREE);
@@ -319,6 +350,9 @@ void SelfPlaySession::advance(Slot &slot) {
                 slot.search = std::make_unique<BatchedSearch>(
                     std::vector<const Game *>{&game}, std::vector<Beliefs>{beliefs},
                     search, slot.rng());
+                if (restricted) {
+                    slot.search->restrictRoot(allowed);
+                }
             }
             slot.previous.reset();
         }
@@ -363,7 +397,8 @@ void SelfPlaySession::advance(Slot &slot) {
                           .command = result.choose(temperature, slot.rng),
                           .rootValue = rootValue};
         // only a full search's visits are worth training the policy on
-        for (std::size_t i = 0; slot.full && config.trainSides[slot.side] &&
+        // and none of a forced opening's: the plan chose, not the search
+        for (std::size_t i = 0; slot.full && !slot.forced && config.trainSides[slot.side] &&
                                 i < result.moves.size();
              i++) {
             int weight = result.chosen >= 0

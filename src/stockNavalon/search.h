@@ -10,6 +10,7 @@
 #include "determinize.h"
 #include "game.h"
 #include "legalMoves.h"
+#include "plans.h"
 #include <cstdint>
 #include <optional>
 #include <random>
@@ -245,6 +246,9 @@ class BatchedSearch {
 
     SearchResult result(int game) const;
 
+    // Only these root moves are searched (a forced opening's, plans.h), in
+    // every tree that has any of them; before the first pending()
+    void restrictRoot(const std::vector<Command> &allowed);
     // Tree reuse, for a search of one game: after `played` was played, each
     // tree's root moves down to that move's child, keeping the subtree and
     // its visits, and the next decision is searched with `next` (its
@@ -450,7 +454,10 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
 // of the turn, for the player whose turn it was (NaN if it never searched).
 // With `explain`, a few lines per decision appended to it: the command
 // played and the root's leading moves, with their priors, visits and values.
+// With a `plan`, before turn `planTurns` the player only chooses among the
+// commands it allows, as in self-play (SelfPlayConfig::sidePlans).
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                               const SearchConfig &config, std::mt19937_64 &rng,
                               bool networkBeliefs = false, float *lastValue = nullptr,
-                              std::string *explain = nullptr);
+                              std::string *explain = nullptr, Plan plan = Plan::NONE,
+                              int planTurns = 0);

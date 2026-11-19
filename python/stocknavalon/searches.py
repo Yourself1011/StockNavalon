@@ -11,6 +11,7 @@ training.
     python -m stocknavalon.searches runs/ninth --turn-search off 8 --evaluations 1024
     python -m stocknavalon.searches runs/ninth --turn-search 8 --replies sampled discrepancy \
         --backup pbar --evaluations 200
+    python -m stocknavalon.searches runs/ninth --plan bridge none --map-types continents
 
 Turn search (notes/design.md section 9): "off" is today's search, a number
 is turn search with that many commandVisits (0: command by command until End
@@ -20,7 +21,9 @@ the comparison is at equal cost. --replies (how the opponent's replies are
 drawn) and --backup (how values are backed up) as in the other tools'
 search flags (stocknavalon/settings.py). The per-side flags take one value
 for both sides or one each, and combine: the sides differ in each that has
-two values.
+two values. --plan forces a side's opening (plans.h; notes/design.md,
+"Forced openings"): `--plan bridge none` is a bridge rush by side A against
+the free network, before --plan-turns; --map-types limits the maps.
 
 Side A is the first value given, side B the second. Each match also reports
 how deep each side's searches went: mean depth in commands below the root,
@@ -89,6 +92,28 @@ def villages_left(records: list[pe.GameRecord]) -> list[float]:
     return [left[k] / turns[k] if turns[k] else float("nan") for k in (0, 1)]
 
 
+def aggression(records: list[pe.GameRecord]) -> list[tuple[float, float, float]]:
+    """Per side: bridges and ports built a game, and the mean turn of its
+    first attack (the game's length when it never attacked)."""
+    bridges, ports, first = [0, 0], [0, 0], [0.0, 0.0]
+    for r in records:
+        game = r.start()
+        attacked = [None, None]
+        for c in r.commands:
+            side = side_of_seat(r, game.current_player)
+            if c.type == pe.CommandType.BUILD and int(c.arg) == int(pe.ImprovementType.BRIDGE):
+                bridges[side] += 1
+            if c.type == pe.CommandType.BUILD and int(c.arg) == int(pe.ImprovementType.PORT):
+                ports[side] += 1
+            if c.type == pe.CommandType.ATTACK and attacked[side] is None:
+                attacked[side] = game.turn
+            game.apply(c)
+        for side in (0, 1):
+            first[side] += attacked[side] if attacked[side] is not None else r.turns
+    n = max(1, len(records))
+    return [(bridges[k] / n, ports[k] / n, first[k] / n) for k in (0, 1)]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Two search settings, one network.")
     parser.add_argument("checkpoint", help="a run directory (its best network) or a .pt file")
@@ -106,6 +131,13 @@ def main():
                              "both sides or one each")
     parser.add_argument("--backup", nargs="+", choices=list(BACKUPS),
                         help="how values are backed up; one for both sides or one each")
+    parser.add_argument("--plan", nargs=2, metavar=("A", "B"), default=["none", "none"],
+                        help="each side's forced opening: none, bridge or naval")
+    parser.add_argument("--plan-turns", type=int, default=20,
+                        help="forced openings apply before this turn")
+    parser.add_argument("--map-types", nargs="+", type=str.upper,
+                        choices=list(pe.MapType.__members__),
+                        help="only these map types (by default all)")
     parser.add_argument("--turn-horizon", type=int, default=3,
                         help="turn changes a turn search looks across")
     parser.add_argument("--samples", type=int, default=1,
@@ -171,6 +203,11 @@ def main():
             if args.exploration:
                 changes[k]["exploration"] = args.exploration[k]
                 parts[k].append(f"exploration {args.exploration[k]}")
+        for k in (0, 1):
+            if args.plan[k] != "none":
+                parts[k].append(f"{args.plan[k]} plan")
+            elif args.plan[1 - k] != "none":
+                parts[k].append("free")
         if parts[0] or parts[1]:
             names = [", ".join(p) for p in parts]
             if names[0] == names[1]:
@@ -194,6 +231,8 @@ def main():
                        fog_share=args.fog_share, network_beliefs=args.fog_share > 0,
                        peace_treaties=False, threads=args.threads,
                        max_minutes=1e9, seed=simulations if args.seed is None else args.seed,
+                       plans=tuple(args.plan), plan_turns=args.plan_turns,
+                       map_types=[pe.MapType.__members__[m] for m in args.map_types or []],
                        keep=records, progress=show_progress, progress_seconds=10)
         clear_progress()
         won, lost = result["captures"], result["was_captured"]
@@ -209,12 +248,15 @@ def main():
               f"{result['games']} games, {result['seconds'] / 60:.1f} min", flush=True)
         decisions = searched_decisions(records)
         untaken = villages_left(records)
+        attacks = aggression(records)
         for side, (name, d) in enumerate(zip(names, result["depth"])):
             print(f"  {name}: mean depth {d['mean_depth']:.2f} moves, "
                   f"{100 * d['reached_opponent']:.0f}% of simulations reached the "
                   f"opponent's turn, {d['mean_turns']:.2f} turns ahead on average; "
                   f"{d['evaluations'] / max(1, decisions[side]):.0f} evaluations a decision; "
-                  f"a village or ruin in reach left in {100 * untaken[side]:.0f}% of turns",
+                  f"a village or ruin in reach left in {100 * untaken[side]:.0f}% of turns; "
+                  f"{attacks[side][0]:.1f} bridges and {attacks[side][1]:.1f} ports a game, "
+                  f"first attack turn {attacks[side][2]:.1f}",
                   flush=True)
 
 

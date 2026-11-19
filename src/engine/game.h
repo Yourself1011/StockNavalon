@@ -208,6 +208,11 @@ class Game {
     // land tiles a boat can Disembark onto
     std::vector<int> disembarkTargets(int unit) const;
     bool canEnterTerrain(const Unit &unit, int tile) const;
+    // the same for any land or naval unit of `player`
+    bool canEnterTerrain(int player, bool naval, int tile) const;
+    // whether a land unit of `player` stepping onto the tile embarks: a
+    // port in borders not hostile to it
+    bool embarksAt(int player, int tile) const;
     // counts as a road for the unit's owner: a road, bridge or city, outside
     // enemy borders
     bool isRoadFor(int tile, int player) const;
@@ -318,6 +323,9 @@ class Game {
     bool canBuild(int player, int tile, ImprovementTypes::ImprovementType type,
                   bool checkStars = true) const;
     bool canDestroy(int player, int tile) const;
+    // whether a bridge on the tile would span water between land on
+    // opposite sides (its shape only: not who may build it)
+    bool bridgeSpans(int tile) const;
 
   private:
     // game.cc

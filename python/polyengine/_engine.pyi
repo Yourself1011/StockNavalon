@@ -1164,6 +1164,27 @@ class SelfPlayConfig:
     def sides(self, arg: Sequence[str], /) -> None: ...
 
     @property
+    def side_plans(self) -> list[str]:
+        """each side's forced opening (plans.h): none, bridge or naval"""
+
+    @side_plans.setter
+    def side_plans(self, arg: Sequence[str], /) -> None: ...
+
+    @property
+    def plan_turns(self) -> int:
+        """forced openings apply before this turn"""
+
+    @plan_turns.setter
+    def plan_turns(self, arg: int, /) -> None: ...
+
+    @property
+    def map_types(self) -> list[MapType]:
+        """the map types games are drawn from, evenly; empty for every type"""
+
+    @map_types.setter
+    def map_types(self, arg: Sequence[MapType], /) -> None: ...
+
+    @property
     def paired(self) -> bool: ...
 
     @paired.setter
@@ -1567,9 +1588,9 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = []) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = [], seat_plans: Sequence[str] = [], plan_turns: int = 20) -> int:
     """
-    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`). With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. Returns the exit code.
+    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`); seat_plans their forced openings before plan_turns (plans.h: none, bridge or naval). With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. Returns the exit code.
     """
 
 def search(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> tuple[list[Command], list[int], list[float], list[float], int, list[list[tuple[int, float]]]]:

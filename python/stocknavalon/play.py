@@ -65,6 +65,11 @@ def main():
                              "played and the search's leading moves, with their "
                              "priors, visits and values (gives away the bot's "
                              "thinking, so for watching bots)")
+    parser.add_argument("--plan", nargs="+", choices=["none", "bridge", "naval"],
+                        help="a forced opening (notes/design.md, \"Forced openings\"): "
+                             "one for every bot, or one per seat (seat 0 first)")
+    parser.add_argument("--plan-turns", type=int, default=20,
+                        help="forced openings apply before this turn")
     parser.add_argument("--device", default=None)
     parser.add_argument("--network-beliefs", action=argparse.BooleanOptionalAction,
                         default=True,
@@ -104,7 +109,10 @@ def main():
     seats = side_searches(args, side_count(args))
     sys.exit(pe.run_cli(rest, encoding, evaluate, seats[0],
                         network_beliefs=args.network_beliefs, explain=args.explain,
-                        seat_search=seats if len(seats) > 1 else []))
+                        seat_search=seats if len(seats) > 1 else [],
+                        seat_plans=args.plan * 2 if args.plan and len(args.plan) == 1
+                        else args.plan or [],
+                        plan_turns=args.plan_turns))
 
 if __name__ == "__main__":
     main()

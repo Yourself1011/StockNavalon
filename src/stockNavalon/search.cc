@@ -874,6 +874,35 @@ void BatchedSearch::addRootNoise(Tree &tree) {
     }
 }
 
+void BatchedSearch::restrictRoot(const std::vector<Command> &allowed) {
+    for (Tree &tree : trees) {
+        Node &root = tree.nodes[0];
+        std::vector<std::size_t> keep;
+        for (std::size_t a = 0; a < root.moves.size(); a++) {
+            if (std::find(allowed.begin(), allowed.end(), root.moves[a]) != allowed.end()) {
+                keep.push_back(a);
+            }
+        }
+        if (keep.empty() || keep.size() == root.moves.size()) {
+            continue;
+        }
+        auto pick = [&](auto &v) {
+            std::remove_reference_t<decltype(v)> out;
+            for (std::size_t a : keep) {
+                out.push_back(v[a]);
+            }
+            v = std::move(out);
+        };
+        pick(root.moves);
+        // no evaluation yet: even priors, as makeNode gives
+        root.prior.assign(keep.size(), 1.0f / static_cast<float>(keep.size()));
+        root.visits.assign(keep.size(), 0);
+        root.total.assign(keep.size(), 0);
+        root.utilityTotal.assign(keep.size(), 0);
+        root.child.assign(keep.size(), -1);
+    }
+}
+
 bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
     // no trees (no determinized game matched what the player knows): nothing
     // to continue
@@ -1196,7 +1225,7 @@ void explainDecision(const Game &game, const SearchResult &result, const Command
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                               const SearchConfig &config, std::mt19937_64 &rng,
                               bool networkBeliefs, float *lastValue,
-                              std::string *explain) {
+                              std::string *explain, Plan plan, int planTurns) {
     if (lastValue) {
         *lastValue = std::nanf("");
     }
@@ -1218,7 +1247,37 @@ std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
     }
     // a turn always ends, but cap it in case
     while (!game.gameOver() && game.currentPlayer == me && played.size() < 200) {
-        SearchResult result = search(game, *beliefs, evaluator, config, rng());
+        // a forced opening: only the plan's commands, played at once when
+        // there's one
+        std::vector<Command> allowed;
+        bool restricted = false;
+        if (plan != Plan::NONE && game.turn < planTurns) {
+            std::vector<Command> legal;
+            for (const Command &c : game.legalCommands()) {
+                if (c.type != CommandTypes::RESIGN && c.type != CommandTypes::STAY) {
+                    legal.push_back(c);
+                }
+            }
+            allowed = planAllowed(plan, game, legal);
+            if (allowed.size() == 1) {
+                if (explain) {
+                    *explain += toString(game, allowed[0]) + "  (the plan's only choice)\n";
+                }
+                game.apply(allowed[0]);
+                played.push_back(allowed[0]);
+                continue;
+            }
+            restricted = allowed.size() < legal.size();
+        }
+        SearchResult result;
+        if (restricted) {
+            BatchedSearch batched({&game}, {*beliefs}, config, rng());
+            batched.restrictRoot(allowed);
+            run(batched, evaluator);
+            result = batched.result(0);
+        } else {
+            result = search(game, *beliefs, evaluator, config, rng());
+        }
         // the root's value: its moves' values, weighted by visits
         double total = 0, visits = 0;
         for (std::size_t i = 0; i < result.moves.size(); i++) {

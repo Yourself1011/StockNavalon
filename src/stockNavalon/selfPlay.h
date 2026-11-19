@@ -5,6 +5,7 @@
 
 #include "parallel.h"
 #include "record.h"
+#include "plans.h"
 #include "search.h"
 #include <array>
 #include <atomic>
@@ -102,6 +103,14 @@ struct SelfPlayConfig {
     // on full searches only, this many of the root's Gumbel candidates are
     // random legal moves (SearchConfig::exploreCandidates)
     int exploreCandidates = 2;
+    // per side, a forced opening (plans.h) for its turns before planTurns:
+    // it chooses only among the commands the plan allows, played at once
+    // when there's one, and none of its decisions then record policy
+    // targets
+    std::array<Plan, 2> sidePlans{Plan::NONE, Plan::NONE};
+    int planTurns = 20;
+    // the map types games are drawn from, evenly; empty for every type
+    std::vector<MapTypes::MapType> mapTypes;
     // per side, a whole search instead of `search`, for a match between two
     // searches; self-play's own adjustments (quick searches, root noise,
     // exploration candidates, a trailing side's budget) apply on top as for

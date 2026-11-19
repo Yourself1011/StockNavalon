@@ -9,6 +9,17 @@ bool isMapFeature(ImprovementType type) {
 }
 } // namespace
 
+bool Game::bridgeSpans(int tile) const {
+    // a bridge spans water between land on opposite sides, north and south or
+    // east and west: it can't lead out into the water. The player sees this
+    // from the shore drawn on the water tile's sides.
+    int x = tile % size, y = tile / size;
+    auto land = [&](int nx, int ny) {
+        return inBounds(nx, ny) && !TerrainTypes::isWater(tiles[index(nx, ny)].terrain);
+    };
+    return (land(x, y - 1) && land(x, y + 1)) || (land(x - 1, y) && land(x + 1, y));
+}
+
 bool Game::canBuild(int player, int tile, ImprovementType type, bool checkStars) const {
     if (type < FARM || type >= IMPROVEMENT_TYPE_SIZE) {
         return false;
@@ -49,17 +60,8 @@ bool Game::canBuild(int player, int tile, ImprovementType type, bool checkStars)
         return false;
     }
 
-    // a bridge spans water between land on opposite sides, north and south or
-    // east and west: it can't lead out into the water. The player sees this
-    // from the shore drawn on the water tile's sides.
-    if (type == BRIDGE) {
-        int x = tile % size, y = tile / size;
-        auto land = [&](int nx, int ny) {
-            return inBounds(nx, ny) && !TerrainTypes::isWater(tiles[index(nx, ny)].terrain);
-        };
-        if (!(land(x, y - 1) && land(x, y + 1)) && !(land(x - 1, y) && land(x + 1, y))) {
-            return false;
-        }
+    if (type == BRIDGE && !bridgeSpans(tile)) {
+        return false;
     }
 
     if (data.adjacency.any()) {
