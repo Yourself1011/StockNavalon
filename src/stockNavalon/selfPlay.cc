@@ -1,4 +1,5 @@
 #include "selfPlay.h"
+#include "profile.h"
 #include <cstring>
 #include "bots/randomBot.h"
 #include "parallel.h"
@@ -88,8 +89,8 @@ struct SelfPlaySession::Slot {
 };
 
 SelfPlaySession::SelfPlaySession(const SelfPlayConfig &config, int parallel,
-                                 int games, std::uint64_t seed)
-    : config(config), total(games), seed(seed),
+                                 int games, std::uint64_t seed, int first)
+    : config(config), total(games), seed(seed), first(first),
       pool(std::make_unique<ThreadPool>(std::max(1, config.threads))) {
     for (int i = 0; i < std::max(1, parallel); i++) {
         slots.push_back(std::make_unique<Slot>());
@@ -102,12 +103,13 @@ SelfPlaySession::~SelfPlaySession() = default;
 void SelfPlaySession::startGame(Slot &slot) {
     slot.search.reset();
     slot.previous.reset();
-    int number = started++;
-    slot.active = number < total;
+    int index = started++;
+    slot.active = index < total;
     if (!slot.active) {
         slot.game.reset();
         return;
     }
+    int number = first + index;
     slot.number = number;
     // a pair's two games share their setup
     int setup = config.paired ? number / 2 : number;
@@ -210,6 +212,7 @@ void SelfPlaySession::noteCombat(Slot &slot, const Command &command) {
 }
 
 void SelfPlaySession::advance(Slot &slot) {
+    profiling::Timer timer(profiling::ADVANCE);
     while (slot.active) {
         Game &game = *slot.game;
         if (!slot.search) {
@@ -298,14 +301,21 @@ void SelfPlaySession::advance(Slot &slot) {
             }
             // reuse the last decision's tree when it's still this player's
             // turn and the tree's position looks exactly like the real one
-            bool reused = config.treeReuse && slot.previous &&
-                          slot.lastTurn == game.turn &&
-                          slot.lastPlayer == game.currentPlayer &&
-                          slot.previous->reuse(slot.lastPlayed, search) &&
-                          sameView(*slot.previous, game, search.fullInformation);
+            bool reused;
+            {
+                profiling::Timer reuseTimer(profiling::REUSE);
+                profiling::Laps laps;
+                reused = config.treeReuse && slot.previous && slot.lastTurn == game.turn &&
+                         slot.lastPlayer == game.currentPlayer &&
+                         slot.previous->reuse(slot.lastPlayed, search);
+                laps.mark(profiling::REUSE_TREE);
+                reused = reused && sameView(*slot.previous, game, search.fullInformation);
+                laps.mark(profiling::REUSE_CHECK);
+            }
             if (reused) {
                 slot.search = std::move(slot.previous);
             } else {
+                profiling::Timer startTimer(profiling::START_SEARCH);
                 slot.search = std::make_unique<BatchedSearch>(
                     std::vector<const Game *>{&game}, std::vector<Beliefs>{beliefs},
                     search, slot.rng());
@@ -537,6 +547,7 @@ void SelfPlaySession::submit(const std::vector<Evaluation> &results) {
             s.wantsBeliefs = false;
             return;
         }
+        profiling::Timer timer(profiling::EXPAND);
         s.search->submit(part);
     });
     requests.clear();
@@ -545,24 +556,42 @@ void SelfPlaySession::submit(const std::vector<Evaluation> &results) {
 }
 
 namespace {
-// A 128-bit fingerprint of a block of floats: two independent 64-bit mixes
+// A 128-bit fingerprint of a block of floats: two 64-bit mixes, each over
+// four interleaved lanes so the multiplications don't wait on each other
+// (one chain of them took a sixth of self-play's CPU time), the lanes folded
+// together at the end
 void fingerprint(const float *data, std::size_t count, std::uint64_t &a, std::uint64_t &b) {
-    a = 0x243f6a8885a308d3ULL;
-    b = 0x13198a2e03707344ULL;
+    std::uint64_t la[4] = {0x243f6a8885a308d3ULL, 0x13198a2e03707344ULL,
+                           0xa4093822299f31d0ULL, 0x082efa98ec4e6c89ULL};
+    std::uint64_t lb[4] = {0x452821e638d01377ULL, 0xbe5466cf34e90c6cULL,
+                           0xc0ac29b7c97c50ddULL, 0x3f84d5b5b5470917ULL};
     const auto *bytes = reinterpret_cast<const unsigned char *>(data);
     std::size_t n = count * sizeof(float), i = 0;
-    for (; i + 8 <= n; i += 8) {
-        std::uint64_t w;
-        std::memcpy(&w, bytes + i, 8);
-        a = (a ^ w) * 0x9e3779b97f4a7c15ULL;
+    for (; i + 32 <= n; i += 32) {
+        for (int k = 0; k < 4; k++) {
+            std::uint64_t w;
+            std::memcpy(&w, bytes + i + 8 * k, 8);
+            la[k] = (la[k] ^ w) * 0x9e3779b97f4a7c15ULL;
+            la[k] ^= la[k] >> 29;
+            lb[k] = (lb[k] + w) * 0xbf58476d1ce4e5b9ULL;
+            lb[k] ^= lb[k] >> 31;
+        }
+    }
+    a = la[0];
+    b = lb[0];
+    for (int k = 1; k < 4; k++) {
+        a = (a ^ la[k]) * 0x9e3779b97f4a7c15ULL;
         a ^= a >> 29;
-        b = (b + w) * 0xbf58476d1ce4e5b9ULL;
+        b = (b + lb[k]) * 0xbf58476d1ce4e5b9ULL;
         b ^= b >> 31;
     }
     for (; i < n; i++) {
         a = (a ^ bytes[i]) * 0x9e3779b97f4a7c15ULL;
         b = (b + bytes[i]) * 0xbf58476d1ce4e5b9ULL;
     }
+    // the length too, so blocks of zeros of different lengths differ
+    a ^= n * 0x94d049bb133111ebULL;
+    b ^= n;
 }
 } // namespace
 
@@ -582,7 +611,11 @@ std::size_t SelfPlaySession::prepare(const EncodingConfig &config) {
         const EvalRequest &r = requests[i];
         float *planes = encodedPlanes.data() + i * planeSize;
         float *globals = encodedGlobals.data() + i * globalSize;
-        encodeState(*r.game, r.player, config, planes, globals, r.fullInformation);
+        {
+            profiling::Timer timer(profiling::ENCODE);
+            encodeState(*r.game, r.player, config, planes, globals, r.fullInformation);
+        }
+        profiling::Timer timer(profiling::FINGERPRINT);
         std::uint64_t pa, pb, ga, gb;
         fingerprint(planes, planeSize, pa, pb);
         fingerprint(globals, globalSize, ga, gb);
@@ -590,6 +623,7 @@ std::size_t SelfPlaySession::prepare(const EncodingConfig &config) {
                    .side = requestSides[i]};
     });
     // answer what the cache can: every move asked about must be there
+    profiling::Timer cacheTimer(profiling::CACHE);
     answered.assign(n, 0);
     answers.assign(n, Evaluation{});
     served.clear();
@@ -692,6 +726,7 @@ void SelfPlaySession::submitMoveLogits(const EncodingConfig &config, const float
     }
     if (prepared) {
         // keep each answer for the rest of the turn
+        profiling::Timer cacheTimer(profiling::CACHE);
         std::size_t k = 0;
         for (std::size_t j = 0; j < served.size(); j++) {
             const EvalRequest &r = served[j];
@@ -796,6 +831,7 @@ void encodeRequests(const std::vector<EvalRequest> &requests,
 void requestSlots(const std::vector<EvalRequest> &requests,
                   const EncodingConfig &config, std::vector<int> &rows,
                   std::vector<int> &slots) {
+    profiling::Timer timer(profiling::MOVE_SLOTS);
     rows.clear();
     slots.clear();
     for (std::size_t i = 0; i < requests.size(); i++) {
@@ -829,6 +865,7 @@ void evaluationsFromMoveLogits(const std::vector<EvalRequest> &requests,
                                const std::vector<int> &slots,
                                const float *moveLogits, const float *values,
                                std::vector<Evaluation> &results, const float *tieBreaks) {
+    profiling::Timer timer(profiling::PRIORS);
     results.resize(requests.size());
     std::size_t k = 0;
     for (std::size_t i = 0; i < requests.size(); i++) {

@@ -1,3 +1,4 @@
+import contextlib
 import math
 import os
 
@@ -203,6 +204,22 @@ def test_network_beliefs_in_fogged_self_play_and_matches():
     assert result["games"] == 2
 
 
+def test_a_match_splits_its_games_over_two_sessions():
+    from stocknavalon.evaluate import match
+    enc = pe.Encoding()
+    model = sn.Network(enc, channels=16, blocks=1)
+    keep: list = []
+    result = match(model, sn.Network(enc, channels=16, blocks=1), enc, torch.device("cpu"),
+                   games=8, parallel=8, search=pe.search_config(simulations=4, samples=1),
+                   max_turns=2, keep=keep)
+    assert result["games"] == 8
+    # every game once: four maps, each played from both seats
+    assert len({(r.game_seed, r.seat_zero_side) for r in keep}) == 8
+    assert len({r.game_seed for r in keep}) == 4
+    # both sessions' searches count
+    assert all(d["simulations"] > 0 and d["mean_depth"] > 0 for d in result["depth"])
+
+
 def test_learning_rate_warms_up_when_fresh_then_cosines_to_a_floor():
     from stocknavalon.train import learning_rate as lr
     peak, floor = 2e-4, 5e-5
@@ -293,6 +310,29 @@ def test_a_step_with_a_loss_that_is_not_finite_is_skipped(buffer, monkeypatch):
     monkeypatch.setattr(train, "losses", real)
     assert trainer.step(buffer, 8)
     assert all(torch.isfinite(v).all() for v in model.state_dict().values() if v.is_floating_point())
+
+
+def test_per_side_networks_give_the_same_batch_as_one_network():
+    import copy
+    from stocknavalon.selfplay import TIMES, _Clock, _launch
+    enc = pe.Encoding()
+    net = sn.Network(enc, channels=16, blocks=1).eval()
+    twin = copy.deepcopy(net)
+    session = pe.SelfPlaySession(
+        pe.self_play_config(search=dict(simulations=8, samples=1), max_turns=8,
+                            network_beliefs=True, paired=True), 4, 4, 5)
+    clock = _Clock(dict.fromkeys(TIMES, 0.0))
+    cpu = torch.device("cpu")
+    one = _launch([net], session, enc, cpu, contextlib.nullcontext(), clock)
+    each = _launch([net, twin], session, enc, cpu, contextlib.nullcontext(), clock)
+    # paired games: both sides have positions waiting
+    assert set(session.pending_sides()) == {0, 1}
+    assert one is not None and one.size == each.size
+    for a, b in ((one.moves, each.moves), (one.values, each.values),
+                 (one.tie_breaks, each.tie_breaks), (one.beliefs, each.beliefs)):
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert torch.allclose(a.float(), b.float(), atol=1e-5)
 
 
 def test_opponent_pool_games_train_only_the_current_network_at_either_seat(tmp_path):
@@ -459,6 +499,16 @@ def test_a_gate_against_several_bests_plays_each_and_judges_the_total(tmp_path):
     final = [e for e in entries if e["event"] == "gate"][-1]
     assert final["games"] == 8 and set(final["opponents"]) == {"10", "8", "6"}
     assert final["captures"] == sum(p["captures"] for p in parts)
+    # every gate game trains, the candidate's moves only
+    assert len(trained) == 8
+    for r in trained:
+        candidate = 0 if r.seat_zero_side == 0 else 1
+        assert r.pool_opponent_seat == 1 - candidate
+        searched, game = set(r.searched), r.start()
+        for i, c in enumerate(r.commands):
+            if i in searched:
+                assert game.current_player == candidate
+            game.apply(c)
     # threshold 0: it passes, and becomes the best
     assert verdicts == [final["verdict"]]
     if final["verdict"] == "pass":
@@ -483,3 +533,15 @@ def test_offline_training_compares_sizes_on_the_same_games(tmp_path, monkeypatch
     assert all(math.isfinite(e["total"]) for e in entries)
     saved = torch.load(tmp_path / "offline" / "24x2.pt")
     assert saved["config"] == {"channels": 24, "blocks": 2} and saved["steps"] == 2
+
+
+def test_a_run_logs_its_settings_at_the_start(tmp_path):
+    from stocknavalon.run import parser, pretty, start_entry
+    args = parser().parse_args(["--dir", str(tmp_path), "--gate-threshold", "0.5",
+                                "--turn-search", "0"])
+    entry = start_entry(args)
+    assert entry["settings"]["gate_threshold"] == 0.5 and entry["settings"]["batch"] == 256
+    assert entry["changed"] == {"gate_threshold": 0.5, "turn_search": ["0"]}
+    assert entry["rules_version"] == pe.RULES_VERSION
+    line = pretty({"time": "00:00:00", **entry})
+    assert "--gate-threshold 0.5" in line and "--batch" not in line

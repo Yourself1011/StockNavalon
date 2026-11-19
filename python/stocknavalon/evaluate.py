@@ -27,7 +27,7 @@ import torch
 import polyengine as pe
 
 from .model import Network
-from .selfplay import evaluate_sides
+from .selfplay import alternate
 
 
 def score_games(records: list[pe.GameRecord]) -> dict[str, Any]:
@@ -62,7 +62,7 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           side_search: list[pe.SearchConfig | None] | None = None,
           max_turns: int = 50, stall_turns: int = 0, fog_share: float = 1.0,
           network_beliefs: bool = False, peace_treaties: bool = True,
-          threads: int = 1, settled=None,
+          threads: int = 1, train_sides: tuple[bool, bool] = (True, True), settled=None,
           gpu_lock=None, progress=None, progress_seconds: float = 30.0,
           finish_share: float = 0.9, extra_moves: int = 50,
           max_minutes: float = 10.0,
@@ -71,7 +71,10 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
     "score" or "random". Both search with `search` (by default 50 simulations
     in 2 determinized games), or each with its own `side_search` (None: `search`),
     so the same network can play one search against another; matches search
-    without root noise. Returns side 0's results. `progress`, if given, is
+    without root noise. With `train_sides`, only those sides' moves get policy
+    targets (a gate's games train the candidate only; the records mark the
+    other side's seat, as opponent-pool games do). Returns side 0's results.
+    `progress`, if given, is
     called every `progress_seconds` with the results so far."""
     gpu_lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
     networks: list[Network | None] = [
@@ -93,50 +96,77 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         side_search=[None if s is None else quiet(s) for s in side_search or []],
         max_turns=max_turns, temperature_turns=1, full_share=1.0, sides=sides, paired=True,
         stall_turns=stall_turns, fog_share=fog_share, network_beliefs=network_beliefs,
-        peace_treaties=peace_treaties, threads=threads)
-    session = pe.SelfPlaySession(config, parallel, games, seed)
+        peace_treaties=peace_treaties, threads=threads, train_sides=list(train_sides))
+    # two sessions taking turns, so the CPU and the GPU overlap (as in
+    # self-play), splitting the games so they're the same as one session's
+    first = games // 4 * 2  # whole pairs in each
+    shares = [(n, start) for n, start in ((first, 0), (games - first, first)) if n > 0]
+    sessions = [pe.SelfPlaySession(config, max(1, min(parallel, n)), n, seed, first=start)
+                for n, start in shares]
+
+    def take_finished():
+        for session in sessions:
+            records.extend(session.take_finished())
+
+    def finish_now():
+        for session in sessions:
+            session.finish_now()
+        take_finished()
 
     start = reported = time.perf_counter()
     records: list[pe.GameRecord] = []
     cut_at: int | None = None
-    while not session.done():
+    for session, _ in alternate(sessions, networks, encoding, device, gpu_lock,
+                                lambda: not all(s.done() for s in sessions)):
         now = time.perf_counter()
         if progress is not None and now - reported >= progress_seconds:
             reported = now
             progress({**score_games(records), "games": len(records),
                       "of": games, "seconds": round(now - start)})
-        if evaluate_sides(session, networks, encoding, device, gpu_lock) == 0:
-            continue
         records.extend(session.take_finished())
         # stop once the result can't change (`settled`: the games so far,
         # and how many are still to finish)
         if settled is not None and settled(records, games - len(records)):
-            session.finish_now()
-            records.extend(session.take_finished())
+            finish_now()
             break
         # the stragglers: a few more moves once most games are done, and
         # ended at once past the time limit
         if cut_at is None and len(records) >= finish_share * games:
             cut_at = len(records)
-            session.finish_after(extra_moves)
+            for s in sessions:
+                s.finish_after(extra_moves)
         if time.perf_counter() - start >= max_minutes * 60:
             cut_at = len(records) if cut_at is None else cut_at
-            session.finish_now()
-            records.extend(session.take_finished())
+            finish_now()
             break
 
-    records.extend(session.take_finished())
+    take_finished()
     result = score_games(records)
     # games that hadn't finished when the cut came (not stalemates)
     result["cut_short"] = 0 if cut_at is None else sum(
         1 for r in records[cut_at:]
         if r.winner < 0 and not r.stalled and r.turns < max_turns)
     result["seconds"] = round(time.perf_counter() - start)
-    # how deep each side's searches went
-    result["depth"] = session.depth_stats()
+    # how deep each side's searches went, over both sessions
+    result["depth"] = combined_depth([s.depth_stats() for s in sessions])
     if keep is not None:
         keep.extend(records)
     return result
+
+
+def combined_depth(stats: list[list[dict[str, float]]]) -> list[dict[str, float]]:
+    """Sessions' depth_stats as one: per side, the counts summed and the
+    means weighted by simulations."""
+    out = []
+    for sides in zip(*stats):
+        simulations = sum(d["simulations"] for d in sides)
+        side = {"simulations": simulations,
+                "evaluations": sum(d["evaluations"] for d in sides)}
+        for key in ("mean_depth", "reached_opponent", "mean_turns"):
+            side[key] = (sum(d[key] * d["simulations"] for d in sides) / simulations
+                         if simulations else 0.0)
+        out.append(side)
+    return out
 
 
 def verdict_settled(wins: int, losses: int, remaining: int, threshold: float = 0.55,

@@ -314,15 +314,20 @@ class Game {
     void giveRuinReward(int unit, RuinReward reward);
 
     // ---- building (build.cc) ----
-    bool canBuild(int player, int tile,
-                  ImprovementTypes::ImprovementType type) const;
+    // checkStars false: everything but whether the player can afford it
+    bool canBuild(int player, int tile, ImprovementTypes::ImprovementType type,
+                  bool checkStars = true) const;
     bool canDestroy(int player, int tile) const;
 
   private:
     // game.cc
-    void addUnitCommands(int unit, std::vector<Command> &out) const;
+    // checkStars false: also the commands the player can't afford yet
+    // (LegalMoves keeps those, and filters them by stars itself)
+    void addUnitCommands(int unit, std::vector<Command> &out,
+                         bool checkStars = true) const;
     void addCityCommands(int city, std::vector<Command> &out) const;
-    void addTileCommands(int tile, std::vector<Command> &out) const;
+    void addTileCommands(int tile, std::vector<Command> &out,
+                         bool checkStars = true) const;
     void addResearchCommands(std::vector<Command> &out) const;
     // the current player's first city with a reward to choose, -1 if none
     int pendingRewardCity() const;

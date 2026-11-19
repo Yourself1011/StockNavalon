@@ -73,19 +73,17 @@ void LegalMoves::generate(const Game &game, const std::vector<char> &unitTiles,
     if (game.gameOver() || (!any(tiles) && !any(unitTiles))) {
         return;
     }
-    // the same generators, on a copy where everything is affordable
-    Game rich = game;
-    rich.players[rich.currentPlayer].stars = 1 << 30;
+    // the same generators, with what's unaffordable kept too
     for (std::size_t t = 0; t < tiles.size(); t++) {
         int unit = game.tiles[t].unit;
         if (unitTiles[t] && unit >= 0 &&
             game.units[unit].owner == game.currentPlayer) {
-            rich.addUnitCommands(unit, structural);
+            game.addUnitCommands(unit, structural, false);
         }
     }
     for (std::size_t t = 0; t < tiles.size(); t++) {
         if (tiles[t]) {
-            rich.addTileCommands(static_cast<int>(t), structural);
+            game.addTileCommands(static_cast<int>(t), structural, false);
         }
     }
 }

@@ -2,6 +2,7 @@
 #include "game.h"
 #include "mapgen.h"
 #include "moveSearch.h"
+#include "profile.h"
 #include "tribeInference.h"
 #include "view.h"
 #include <algorithm>
@@ -290,7 +291,9 @@ int explainedScore(const PlayerView &view, int player) {
 void encodeState(const Game &game, int player, const EncodingConfig &config,
                  float *planes, float *globals, bool fullInformation) {
     checkFits(game, config);
+    profiling::Laps laps;
     const PlayerView view = makeView(game, player, fullInformation);
+    laps.mark(profiling::ENCODE_VIEW);
     const int N = config.mapSize, P = config.players, size = view.size;
     const Layout layout{P};
     std::fill(planes, planes + layout.count() * N * N, 0.0f);
@@ -372,6 +375,7 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         }
     }
 
+    laps.mark(profiling::ENCODE_TILES);
     // ---- threats and reach ----
     std::vector<int> enemyAttackers(size * size, 0), ownAttackers(size * size, 0),
         enemyMovers(size * size, 0), ownMovers(size * size, 0);
@@ -439,6 +443,7 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         at(layout.lethal(), t) = lethal[t];
     }
 
+    laps.mark(profiling::ENCODE_THREATS);
     // ---- the global vector ----
     const int players = static_cast<int>(view.tribes.size());
     auto seat = [&](int k) { return (player + k) % P; };
@@ -642,6 +647,7 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
                    ? (view.capitalIncome[seat(k)] - Rules::CAPITAL_INCOME) / 30.0f
                    : 0.0f;
     }
+    laps.mark(profiling::ENCODE_GLOBALS);
     if (g != globals + globalCount(config)) {
         throw std::logic_error("Global vector layout doesn't match its size");
     }

@@ -13,6 +13,7 @@
 #include "mapgen.h"
 #include "record.h"
 #include "selfPlay.h"
+#include "profile.h"
 #include "tribeInference.h"
 #include "view.h"
 #include <nanobind/nanobind.h>
@@ -875,9 +876,12 @@ void bindSearch(nb::module_ &m) {
         "        logits, values = model(planes, globals_)\n"
         "        session.submit_network(enc, logits, values)\n"
         "    records = session.take_finished()")
-        .def(nb::init<const SelfPlayConfig &, int, int, std::uint64_t>(), "config"_a,
-             "parallel"_a, "games"_a, "seed"_a = 0,
-             "`games` games with these settings, `parallel` at a time.")
+        .def(nb::init<const SelfPlayConfig &, int, int, std::uint64_t, int>(), "config"_a,
+             "parallel"_a, "games"_a, "seed"_a = 0, "first"_a = 0,
+             "`games` games with these settings, `parallel` at a time, numbered "
+             "from `first`: with the same seed, sessions of games [0, n) and "
+             "[n, m) play the same games as one of [0, m) (n even for paired "
+             "games).")
         .def("done", &SelfPlaySession::done)
         .def("clear_cache", &SelfPlaySession::clearCache,
              "Forget the cached evaluations: after the network changes.")
@@ -1326,6 +1330,28 @@ void bindSearch(nb::module_ &m) {
         "leaves): leaves per move are (count, mean value for the searcher) of "
         "where its simulations ended: in the searcher's own turn, an "
         "opponent's, the searcher's later turns, the game's end.");
+    m.def(
+        "profile_start",
+        [] {
+            profiling::reset();
+            profiling::enabled = true;
+        },
+        "Starts timing self-play's phases (profile.h), from zero.");
+    m.def(
+        "profile_stop",
+        [] {
+            profiling::enabled = false;
+            nb::dict out;
+            for (int p = 0; p < profiling::PHASES; p++) {
+                nb::dict phase;
+                phase["seconds"] = profiling::nanoseconds[p].load() / 1e9;
+                phase["count"] = profiling::counts[p].load();
+                out[profiling::NAMES[p]] = phase;
+            }
+            return out;
+        },
+        "Stops timing; per phase, the thread time spent (summed over threads) "
+        "and how many times it ran.");
     m.def(
         "play_random_games",
         [](int games, std::vector<TribeTypes::Tribe> tribes,

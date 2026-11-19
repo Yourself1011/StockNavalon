@@ -882,6 +882,46 @@ TEST_CASE("a session's games don't depend on its thread count") {
     }
 }
 
+TEST_CASE("a session numbered from a later game plays that share of a larger session's games") {
+    // the games [first, first + games) of seed 31, sorted
+    auto play = [](int games, int first) {
+        SelfPlayConfig config;
+        config.search.simulations = 16;
+        config.quickSimulations = 4;
+        config.fullShare = 0.5;
+        config.maxTurns = 5;
+        config.fogShare = 0.5;
+        config.paired = true;
+        SelfPlaySession session(config, 4, games, 31, first);
+        ScoreEvaluator evaluator;
+        std::vector<Evaluation> results;
+        while (!session.done()) {
+            const std::vector<EvalRequest> &requests = session.pending();
+            if (requests.empty()) {
+                break;
+            }
+            evaluator.evaluate(requests, results);
+            session.submit(results);
+        }
+        return session.takeFinished();
+    };
+    std::vector<GameRecord> whole = play(8, 0), split = play(4, 0), rest = play(4, 4);
+    split.insert(split.end(), rest.begin(), rest.end());
+    auto order = [](const GameRecord &a, const GameRecord &b) {
+        return std::pair(a.gameSeed, a.seatZeroSide) < std::pair(b.gameSeed, b.seatZeroSide);
+    };
+    std::sort(whole.begin(), whole.end(), order);
+    std::sort(split.begin(), split.end(), order);
+    REQUIRE(whole.size() == 8);
+    REQUIRE(split.size() == whole.size());
+    for (std::size_t i = 0; i < whole.size(); i++) {
+        CHECK(whole[i].gameSeed == split[i].gameSeed);
+        CHECK(whole[i].seatZeroSide == split[i].seatZeroSide);
+        CHECK(sameMoves(whole[i], split[i]));
+        CHECK(whole[i].fog == split[i].fog);
+    }
+}
+
 TEST_CASE("self-play with Gumbel search records the improved policy as the target") {
     SelfPlayConfig config;
     config.search.simulations = 16;

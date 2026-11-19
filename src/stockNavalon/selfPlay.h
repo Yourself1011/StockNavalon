@@ -169,8 +169,11 @@ void evaluationsFromNetwork(const std::vector<EvalRequest> &requests,
 // Moves, records and new games are handled here.
 class SelfPlaySession {
   public:
+    // games numbered from `first`: with the same seed, sessions of games
+    // [0, n) and [n, m) play the same games as one session of [0, m) (n even
+    // for paired games)
     SelfPlaySession(const SelfPlayConfig &config, int parallel, int games,
-                    std::uint64_t seed);
+                    std::uint64_t seed, int first = 0);
     ~SelfPlaySession();
     SelfPlaySession(const SelfPlaySession &) = delete;
     SelfPlaySession &operator=(const SelfPlaySession &) = delete;
@@ -244,6 +247,7 @@ class SelfPlaySession {
     SelfPlayConfig config;
     int total;
     std::uint64_t seed;
+    int first;
     // games are numbered as they start, and each one's seed comes from its
     // number, so the games don't depend on which thread starts them
     std::atomic<int> started{0}, finished{0};

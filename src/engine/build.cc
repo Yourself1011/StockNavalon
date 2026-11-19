@@ -9,7 +9,7 @@ bool isMapFeature(ImprovementType type) {
 }
 } // namespace
 
-bool Game::canBuild(int player, int tile, ImprovementType type) const {
+bool Game::canBuild(int player, int tile, ImprovementType type, bool checkStars) const {
     if (type < FARM || type >= IMPROVEMENT_TYPE_SIZE) {
         return false;
     }
@@ -18,7 +18,7 @@ bool Game::canBuild(int player, int tile, ImprovementType type) const {
     const Player &p = players[player];
 
     if (!explored(player, tile) || !p.hasTech(data.tech) ||
-        p.stars < data.cost || !data.terrain.test(t.terrain)) {
+        (checkStars && p.stars < data.cost) || !data.terrain.test(t.terrain)) {
         return false;
     }
     int owner = tileOwner(tile);

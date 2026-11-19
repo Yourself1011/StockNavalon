@@ -256,7 +256,7 @@ int Game::pendingRewardCity() const {
     return -1;
 }
 
-void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
+void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkStars) const {
     const Unit &unit = units[unitIdx];
     const Player &player = players[unit.owner];
     const Tile &tile = tiles[unit.tile];
@@ -302,7 +302,7 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out) const {
              {UnitTypes::SCOUT, UnitTypes::RAMMER, UnitTypes::BOMBER}) {
             int price = std::max(0, unitInfo(boat).cost - unit.data().cost);
             if (boat != unit.type && player.hasTech(unitInfo(boat).tech) &&
-                player.stars >= price) {
+                (!checkStars || player.stars >= price)) {
                 out.push_back({UPGRADE, from, -1, boat});
             }
         }
@@ -366,7 +366,7 @@ buildableOn(TerrainTypes::TerrainType terrain) {
 }
 } // namespace
 
-void Game::addTileCommands(int tile, std::vector<Command> &out) const {
+void Game::addTileCommands(int tile, std::vector<Command> &out, bool checkStars) const {
     // nothing is ever built on unexplored tiles or inside other players'
     // borders, so most tiles stop here
     int owner = tileOwner(tile);
@@ -380,10 +380,10 @@ void Game::addTileCommands(int tile, std::vector<Command> &out) const {
         const ImprovementData &data = improvementInfo(type);
         // cheap checks first; canBuild has the final say
         if ((owner < 0 && !data.freelance) || !player.hasTech(data.tech) ||
-            player.stars < data.cost) {
+            (checkStars && player.stars < data.cost)) {
             continue;
         }
-        if (canBuild(currentPlayer, tile, type)) {
+        if (canBuild(currentPlayer, tile, type, checkStars)) {
             out.push_back({BUILD, tile, -1, type});
         }
     }

@@ -29,6 +29,7 @@ import collections
 import dataclasses
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -268,6 +269,13 @@ def pretty(e: dict[str, Any]) -> str:
                 f"{e['games']}/{e['of']} games, "
                 f"{_num(None if rate is None else 100 * rate)}% won so far  "
                 f"({_num(e['seconds'] / 60, 1)} min)")
+    if kind == "run start":
+        changed = " ".join(
+            f"--{k.replace('_', '-')} " + (" ".join(map(str, v)) if isinstance(v, list) else str(v))
+            for k, v in e["changed"].items() if k != "dir")
+        return (f"{when}  {_style('run start', '1')}  {changed or 'all settings default'}"
+                f"  (code {e.get('code') or '?'}, encoding {e['encoding_version']}, "
+                f"rules {e['rules_version']})")
     if kind == "bootstrap":
         return (f"{when}  {_style('bootstrap', '1')}  {_num(e['games'])} games, "
                 f"{_num(e['positions'])} positions, decided "
@@ -330,11 +338,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--gate-best-share", type=float, default=0.5,
                    help="with several gate opponents, the share of the games "
                         "against the current best; the rest go evenly to the others")
-    p.add_argument("--gate-games-trained", type=float, default=0.25,
-                   help="the share of a gate's games added to training, each "
-                        "thinned to self-play's --full-share of training "
-                        "positions: every move had a full search, with no "
-                        "noise, and unthinned they swamped self-play")
+    p.add_argument("--gate-games-trained", type=float, default=1.0,
+                   help="the share of a gate's games added to training: only the "
+                        "candidate's moves (the opponents' are older networks'), "
+                        "thinned to self-play's --full-share, since every move had "
+                        "a full search without noise. A gate is a few percent of "
+                        "self-play's games between gates")
     p.add_argument("--gate-max-minutes", type=float, default=30.0,
                    help="a gate's time limit, like --eval-max-minutes; games "
                         "still going then count for neither side")
@@ -538,10 +547,36 @@ def self_play_settings(args: argparse.Namespace, fog_share: float) -> pe.SelfPla
     )
 
 
+def code_version() -> str | None:
+    """The git commit the code is at, with "+changes" if the working tree
+    differs from it; None outside a git checkout."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=here,
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        changed = subprocess.run(["git", "status", "--porcelain"], cwd=here,
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (commit + ("+changes" if changed else "")) if commit else None
+
+
+def start_entry(args: argparse.Namespace) -> dict[str, Any]:
+    """The run start's log entry: every setting, those differing from the
+    defaults apart, and what the code was."""
+    settings = vars(args)
+    defaults = vars(parser().parse_args(["--dir", args.dir]))
+    return {"event": "run start", "settings": settings,
+            "changed": {k: v for k, v in settings.items() if v != defaults.get(k)},
+            "code": code_version(), "encoding_version": pe.ENCODING_VERSION,
+            "rules_version": pe.RULES_VERSION}
+
+
 def main():
     args = parser().parse_args()
 
     os.makedirs(args.dir, exist_ok=True)
+    log(args.dir, start_entry(args))
     records_path = os.path.join(args.dir, "records.txt")
     checkpoint_path = os.path.join(args.dir, "checkpoint.pt")
     device = torch.device(args.device) if args.device else pick_device()
@@ -1149,10 +1184,10 @@ class SelfPlayThread(threading.Thread):
                     # answers from the old network no longer hold
                     runner.clear_caches()
                     if pool is not None:
-                        pool.clear_cache()
+                        pool.clear_caches()
                 runner.set_fog_share(self.fog_share)
                 if pool is not None:
-                    pool.session.set_fog_share(self.fog_share)
+                    pool.set_fog_share(self.fog_share)
                     if self._play_pool(pool):
                         continue
                 # a few games at a time, so new weights come in often; the
@@ -1277,6 +1312,8 @@ class EvaluationThread(threading.Thread):
                      network_beliefs=self.args.network_beliefs and self.fog_share() > 0,
                      peace_treaties=self.args.peace_treaties,
                      threads=self.args.session_threads,
+                     # a gate's games train the candidate's moves only
+                     train_sides=(True, False) if gate else (True, True),
                      # a gate's part (several opponents) stops on its own
                      # share of the decided games and the time
                      settled=(gate_settled(self.args.gate_threshold,
@@ -1331,7 +1368,8 @@ class EvaluationThread(threading.Thread):
                 for key in ("games", "captures", "was_captured", "seconds"):
                     result[key] += part[key]
                 result["opponents"][str(against)] = [part["captures"], part["was_captured"]]
-        # a share of them, at self-play's density of training positions
+        # a share of them (by default all), the candidate's moves only, at
+        # self-play's density of training positions
         rng = np.random.default_rng(steps)
         kept = [games[i] for i in sorted(rng.choice(
             len(games), size=round(self.args.gate_games_trained * len(games)),

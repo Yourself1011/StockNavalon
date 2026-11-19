@@ -1,4 +1,5 @@
 #include "search.h"
+#include "profile.h"
 #include "view.h"
 #include <algorithm>
 #include <cmath>
@@ -189,6 +190,7 @@ BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
 }
 
 bool BatchedSearch::descend(Tree &tree) {
+    profiling::Timer timer(profiling::DESCEND);
     while (budgetLeft(tree)) {
         int n = 0;
         if (tree.resume >= 0) {
@@ -258,12 +260,20 @@ bool BatchedSearch::descend(Tree &tree) {
                 }
             }
             if (node.child[best] < 0) {
+                profiling::Timer nodeTimer(profiling::NEW_NODE);
+                profiling::Laps laps;
                 Game game = node.game;
                 LegalMoves legal = node.legal;
-                legal.apply(game, node.moves[best]);
+                laps.mark(profiling::NODE_COPY);
+                // the parent's game is the "before": no copy of its own
+                // (LegalMoves::apply would make one)
+                game.applyUnchecked(node.moves[best]);
+                legal.update(node.game, game);
+                laps.mark(profiling::NODE_APPLY);
                 bool newTurn = game.currentPlayer != node.toMove;
                 int crossed = node.crossed + newTurn;
                 tree.nodes.push_back(makeNode(std::move(game), std::move(legal), crossed));
+                laps.mark(profiling::NODE_MAKE);
                 // push_back may not move nodes (reserved), but re-fetch anyway
                 tree.nodes[n].child[best] = static_cast<int>(tree.nodes.size()) - 1;
             }
