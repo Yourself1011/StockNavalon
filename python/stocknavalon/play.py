@@ -29,7 +29,7 @@ import torch
 import polyengine as pe
 
 from .model import Network, belief_outputs, load_weights, pick_device, tie_breaks
-from .settings import add_search_arguments, side_searches
+from .settings import add_search_arguments, side_count, side_searches
 
 
 def load(path: str, device: torch.device, channels: int, blocks: int) -> Network:
@@ -96,8 +96,8 @@ def main():
         return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
                 np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
 
-    # --turn-search: one value for every bot, or one per seat (seat 0 first)
-    seats = side_searches(args, len(args.turn_search or [None]))
+    # the per-side flags (--turn-search, --replies, --backup): one value for every bot, or one per seat (seat 0 first)
+    seats = side_searches(args, side_count(args))
     sys.exit(pe.run_cli(rest, encoding, evaluate, seats[0],
                         network_beliefs=args.network_beliefs, explain=args.explain,
                         seat_search=seats if len(seats) > 1 else []))

@@ -9,12 +9,18 @@ training.
     python -m stocknavalon.searches runs/ninth --candidates 16 8 --exploration 1.5 0.75
     python -m stocknavalon.searches runs/ninth --side-simulations 64 512 --games 64
     python -m stocknavalon.searches runs/ninth --turn-search off 8 --evaluations 1024
+    python -m stocknavalon.searches runs/ninth --turn-search 8 --replies sampled discrepancy \
+        --backup pbar --evaluations 200
 
 Turn search (notes/design.md section 9): "off" is today's search, a number
 is turn search with that many commandVisits (0: command by command until End
 Turn, large: the policy completes nearly every turn), to --turn-horizon turns.
 --evaluations sets both sides' budget in network evaluations a decision, so
-the comparison is at equal cost.
+the comparison is at equal cost. --replies (how the opponent's replies are
+drawn) and --backup (how values are backed up) as in the other tools'
+search flags (stocknavalon/settings.py). The per-side flags take one value
+for both sides or one each, and combine: the sides differ in each that has
+two values.
 
 Side A is the first value given, side B the second. Each match also reports
 how deep each side's searches went: mean depth in commands below the root,
@@ -33,7 +39,7 @@ import polyengine as pe
 from .evaluate import clear_progress, match, show_progress
 from .model import DTYPES, pick_device
 from .play import load
-from .settings import modified, turn_search_values
+from .settings import BACKUPS, REPLIES, modified, per_side, turn_search_values
 
 
 def side_of_seat(r: pe.GameRecord, seat: int) -> int:
@@ -92,8 +98,14 @@ def main():
                         help="Gumbel's root candidates for each side")
     parser.add_argument("--exploration", type=float, nargs=2, metavar=("A", "B"),
                         help="the exploration constant below the root for each side")
-    parser.add_argument("--turn-search", nargs=2, metavar=("A", "B"),
-                        help="each side's turn search: off, or its commandVisits")
+    parser.add_argument("--turn-search", nargs="+", metavar="off|N",
+                        help="turn search: off, or its commandVisits; one for both "
+                             "sides or one each")
+    parser.add_argument("--replies", nargs="+", choices=list(REPLIES),
+                        help="turn search: how the opponent's replies are drawn; one for "
+                             "both sides or one each")
+    parser.add_argument("--backup", nargs="+", choices=list(BACKUPS),
+                        help="how values are backed up; one for both sides or one each")
     parser.add_argument("--turn-horizon", type=int, default=3,
                         help="turn changes a turn search looks across")
     parser.add_argument("--samples", type=int, default=1,
@@ -126,23 +138,32 @@ def main():
     encoding = pe.Encoding()
     # what each side changes from the shared search
     changes: list[dict] = [{}, {}]
-    if args.turn_search:
-        visits = turn_search_values(args.turn_search)
-        names = ["today's search" if v is None else f"turn search ({v})" for v in visits]
-        if names[0] == names[1]:
-            names = [f"A: {names[0]}", f"B: {names[1]}"]
-        for k, v in enumerate(visits):
-            if v is not None:
-                changes[k] = dict(turn_search=True, command_visits=v, horizon=args.turn_horizon)
-    elif args.side_simulations:
+    if args.side_simulations:
         names = [f"{n} simulations" for n in args.side_simulations]
         for k in (0, 1):
             changes[k] = dict(simulations=args.side_simulations[k])
         # one match; --simulations doesn't apply
         args.simulations = [max(args.side_simulations)]
-    elif args.candidates or args.exploration:
-        # either or both, side by side
-        parts = [[], []]
+    else:
+        # each side's changes, and how it's described
+        parts: list[list[str]] = [[], []]
+        if args.replies and not args.turn_search:
+            raise SystemExit("--replies: only with --turn-search")
+        if args.turn_search:
+            for k, v in enumerate(per_side(turn_search_values(args.turn_search), 2,
+                                           "--turn-search")):
+                parts[k].append("today's search" if v is None else f"turn search ({v})")
+                if v is not None:
+                    changes[k].update(turn_search=True, command_visits=v,
+                                      horizon=args.turn_horizon)
+        for k, r in enumerate(per_side(args.replies, 2, "--replies")):
+            if r is not None:
+                changes[k]["replies"] = REPLIES[r]
+                parts[k].append(f"{r} replies")
+        for k, b in enumerate(per_side(args.backup, 2, "--backup")):
+            if b is not None:
+                changes[k]["backup"] = BACKUPS[b]
+                parts[k].append(f"{b} backup")
         for k in (0, 1):
             if args.candidates:
                 changes[k]["gumbel_candidates"] = args.candidates[k]
@@ -150,10 +171,13 @@ def main():
             if args.exploration:
                 changes[k]["exploration"] = args.exploration[k]
                 parts[k].append(f"exploration {args.exploration[k]}")
-        names = [", ".join(p) for p in parts]
-    else:
-        names = ["Gumbel", "PUCT"]
-        changes[1] = dict(gumbel=False)
+        if parts[0] or parts[1]:
+            names = [", ".join(p) for p in parts]
+            if names[0] == names[1]:
+                names = [f"A: {names[0]}", f"B: {names[1]}"]
+        else:
+            names = ["Gumbel", "PUCT"]
+            changes[1] = dict(gumbel=False)
     if args.evaluations:
         args.simulations = [args.evaluations]
     for simulations in args.simulations:

@@ -610,6 +610,18 @@ std::string sideName(SideKind kind) {
 // The settings objects every search and self-play entry point takes, their
 // fields and defaults the C++ structs' (one place for each setting)
 void bindConfigs(nb::module_ &m) {
+    nb::enum_<SearchConfig::Replies>(m, "Replies",
+                                     "Turn search: how the opponent's replies are drawn "
+                                     "(search.h, SearchConfig::replies).")
+        .value("SAMPLED", SearchConfig::Replies::SAMPLED)
+        .value("LIKELY_FIRST", SearchConfig::Replies::LIKELY_FIRST)
+        .value("DISCREPANCY", SearchConfig::Replies::DISCREPANCY);
+    nb::enum_<SearchConfig::Backup>(m, "Backup",
+                                    "How a node's value comes from its children's "
+                                    "(search.h, SearchConfig::backup).")
+        .value("MEAN", SearchConfig::Backup::MEAN)
+        .value("PBAR", SearchConfig::Backup::PBAR)
+        .value("PBAR_OPPONENT", SearchConfig::Backup::PBAR_OPPONENT);
     nb::class_<SearchConfig>(m, "SearchConfig",
                              "A search's settings (search.h, SearchConfig), defaults "
                              "as there. polyengine.search_config(**fields) makes one.")
@@ -642,7 +654,13 @@ void bindConfigs(nb::module_ &m) {
         .def_rw("turn_widening_power", &SearchConfig::turnWideningPower)
         .def_rw("turn_temperature", &SearchConfig::turnTemperature)
         .def_rw("max_turn_commands", &SearchConfig::maxTurnCommands)
-        .def_rw("count_evaluations", &SearchConfig::countEvaluations);
+        .def_rw("count_evaluations", &SearchConfig::countEvaluations)
+        .def_rw("replies", &SearchConfig::replies,
+                "turn search: how the opponent's replies are drawn (Replies)")
+        .def_rw("backup", &SearchConfig::backup,
+                "how a node's value comes from its children's (Backup)");
+    m.def("regularized_policy", &regularizedPolicy, "prior"_a, "q"_a, "lambda_"_a,
+          "The policy PUCT heads toward (search.h, regularizedPolicy).");
     nb::class_<SelfPlayConfig>(m, "SelfPlayConfig",
                                "Self-play's or a match's settings (selfPlay.h, "
                                "SelfPlayConfig), defaults as there. "

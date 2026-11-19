@@ -28,7 +28,7 @@ import polyengine as pe
 from .evaluate import clear_progress, gate_verdict, match, show_progress, verdict_settled
 from .model import DTYPES, Network, load_weights, pick_device
 from .play import load
-from .settings import add_search_arguments, side_searches
+from .settings import add_search_arguments, side_count, side_searches
 
 
 def load_side(path: str, device: torch.device, live: bool, channels: int,
@@ -120,8 +120,8 @@ def main():
     names = [name for _, name in sides]
     print(f"A: {names[0]}\nB: {names[1]}", flush=True)
 
-    # --turn-search: one value for both, or one per side (A, B)
-    sides_search = side_searches(args, len(args.turn_search or [None]))
+    # the per-side flags (--turn-search, --replies, --backup): one value for both, or one per side (A, B)
+    sides_search = side_searches(args, side_count(args))
     records: list[pe.GameRecord] = []
     result = match(models[0], models[1], pe.Encoding(), device, games=args.games,
                    parallel=args.games, search=sides_search[0],

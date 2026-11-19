@@ -102,7 +102,41 @@ struct SearchConfig {
     // simulations, for comparing searches at equal cost: a sampled turn
     // costs an evaluation per command
     bool countEvaluations = false;
+
+    // Turn search: how the opponent's replies are drawn, the whole turns at
+    // nodes where the root player's opponent is to move (notes/design.md
+    // section 9). SAMPLED: from the policy at the turn temperature, each
+    // turn's prior how often it was drawn. LIKELY_FIRST: the policy's most
+    // likely turn first (its top command at each step), then sampled.
+    // DISCREPANCY: the most likely turn first, then turns that leave an
+    // earlier one at a single step for that step's runner-up and take the
+    // most likely commands after it (limited discrepancy search), the ones
+    // giving up the least probability first, so competing obvious replies
+    // are each tried and none twice; each turn's prior its probability
+    // against the most likely one; sampled once none are left.
+    enum class Replies { SAMPLED, LIKELY_FIRST, DISCREPANCY };
+    Replies replies = Replies::SAMPLED;
+    // How a node's value comes from its children. MEAN: the average of the
+    // simulations through it, MCTS's usual. PBAR: its own evaluation blended
+    // with its children's values weighted by the policy the search is
+    // heading toward (regularizedPolicy), so it leans toward the best move
+    // found as fast as the evidence separates them, with no constant of its
+    // own. PBAR_OPPONENT: that only where the root player's opponent is to
+    // move, the visit-weighted mean of the children's values elsewhere. The
+    // moves are chosen by these values; the values reported
+    // (SearchResult::values) stay means.
+    enum class Backup { MEAN, PBAR, PBAR_OPPONENT };
+    Backup backup = Backup::MEAN;
 };
+
+// The policy PUCT approximately heads toward (Grill et al. 2020, "Monte-Carlo
+// Tree Search as Regularized Policy Optimization"): argmax over policies y of
+// q.y - lambda KL(prior, y), which is lambda prior(a) / (alpha - q(a)) with
+// alpha making it sum to 1. With lambda = exploration x sqrt(N) / (moves + N)
+// it's the target of PUCT's visit counts. A large lambda keeps it near the
+// prior; a small one puts it on the best q.
+std::vector<double> regularizedPolicy(const std::vector<double> &prior,
+                                      const std::vector<double> &q, double lambda);
 
 // A position to evaluate, for the player to move in it
 struct EvalRequest {
@@ -163,6 +197,10 @@ struct SearchResult {
     std::vector<Command> moves;
     std::vector<int> visits;
     std::vector<double> values;
+    // each move's value as the search chooses by it: with a backup other
+    // than MEAN, its child's backed-up value (weighted by visits across the
+    // trees), else the same as `values`
+    std::vector<double> backed;
     // the policy target over the moves, summing to 1: the visit shares, or
     // with Gumbel search the improved policy
     std::vector<double> policy;
@@ -216,6 +254,10 @@ class BatchedSearch {
     // checks the new roots against the real game (rootGame).
     bool reuse(const Command &played, const SearchConfig &next);
     int treeCount() const { return static_cast<int>(trees.size()); }
+    // Turn search: the whole turns drawn at the root move's child, in the
+    // order drawn (after End Turn, the opponent's replies); empty if the
+    // child has none
+    std::vector<std::vector<Command>> replies(int tree, const Command &move) const;
 
     // How deep the simulations went, since the last call: how many ended
     // (at a position to evaluate, a finished game or the horizon), their
@@ -238,6 +280,14 @@ class BatchedSearch {
     const Game &rootGame(int tree) const { return trees.at(tree).nodes[0].game; }
 
   private:
+    // Turn search, the opponent's replies (SearchConfig::DISCREPANCY): an
+    // earlier turn followed to `step`, where `command` is taken instead, and
+    // the probability given up against the most likely turn (-log)
+    struct Deviation {
+        int turn, step;
+        Command command;
+        double cost;
+    };
     struct Node {
         Game game;
         LegalMoves legal;
@@ -264,6 +314,13 @@ class BatchedSearch {
         std::vector<int> turnCount, turnVisits, turnChild;
         std::vector<double> turnTotal, turnUtilityTotal;
         int parentVisits = 0;
+        // each turn's weight in the turns' prior (SearchConfig::replies), and
+        // the deviations from them not taken yet
+        std::vector<double> turnWeight;
+        std::vector<Deviation> deviations;
+        // with a backup other than MEAN, the value and utility backed up to
+        // it, for toMove
+        float backedValue = 0, backedUtility = 0;
     };
     // turn search: a turn being sampled, a command per evaluation, from
     // `node`, on its own copy of the game
@@ -274,6 +331,14 @@ class BatchedSearch {
         std::vector<Command> commands;
         // the legal commands of `game` to sample from (no Resign or Stay)
         std::vector<Command> moves;
+        // the most likely commands instead of sampled ones
+        // (SearchConfig::replies): the probability given up so far against
+        // the most likely turn (-log), the first step whose runner-up may be
+        // deviated to, and each step's runner-up, with what it gives up
+        bool likely = false;
+        double cost = 0;
+        int from = 0;
+        std::vector<Deviation> runnersUp;
     };
     struct Tree {
         int game;
@@ -349,6 +414,21 @@ class BatchedSearch {
     // a command from priors over moves, at the turn temperature
     Command sampleCommand(Tree &tree, const std::vector<Command> &moves,
                           const std::vector<float> &priors);
+    // the turn being sampled's most likely next command, its runner-up kept
+    Command likelyCommand(Tree &tree, const std::vector<Command> &moves,
+                          const std::vector<float> &priors);
+    // whether a node's turns are the opponent's replies drawn by
+    // SearchConfig::replies
+    bool repliesAt(const Tree &tree, const Node &node) const;
+    // a move's (a >= 0) or turn's (-(e + 1)) utility for the node's player:
+    // the mean of the simulations through it, or with a backup other than
+    // MEAN, its child's backed-up utility. The edge has been visited.
+    double edgeUtility(const Tree &tree, const Node &node, int edge) const;
+    // the root's utility totals per move, as edgeUtility x visits
+    std::vector<double> rootUtilityTotals(const Tree &tree) const;
+    // with a backup other than MEAN, a node's backed-up value from its
+    // children's
+    void refresh(Tree &tree, int n);
     float utilityOf(float value, float scoreLead, float turnsLeft) const;
     void expand(Tree &tree, int node, const Evaluation &evaluation);
 };

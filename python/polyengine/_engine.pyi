@@ -863,6 +863,378 @@ class PlayerView:
 def make_view(game: Game, player: int, everything: bool = False) -> PlayerView:
     """What the player knows about the game. everything=True ignores fog."""
 
+class Replies(enum.Enum):
+    """
+    Turn search: how the opponent's replies are drawn (search.h, SearchConfig::replies).
+    """
+
+    SAMPLED = 0
+
+    LIKELY_FIRST = 1
+
+    DISCREPANCY = 2
+
+class Backup(enum.Enum):
+    """
+    How a node's value comes from its children's (search.h, SearchConfig::backup).
+    """
+
+    MEAN = 0
+
+    PBAR = 1
+
+    PBAR_OPPONENT = 2
+
+class SearchConfig:
+    """
+    A search's settings (search.h, SearchConfig), defaults as there. polyengine.search_config(**fields) makes one.
+    """
+
+    def __init__(self) -> None: ...
+
+    def copy(self) -> SearchConfig: ...
+
+    def __copy__(self) -> SearchConfig: ...
+
+    @property
+    def simulations(self) -> int:
+        """per determinized game (network evaluations with count_evaluations)"""
+
+    @simulations.setter
+    def simulations(self, arg: int, /) -> None: ...
+
+    @property
+    def samples(self) -> int:
+        """determinized games per decision"""
+
+    @samples.setter
+    def samples(self, arg: int, /) -> None: ...
+
+    @property
+    def exploration(self) -> float: ...
+
+    @exploration.setter
+    def exploration(self, arg: float, /) -> None: ...
+
+    @property
+    def fpu_reduction(self) -> float: ...
+
+    @fpu_reduction.setter
+    def fpu_reduction(self, arg: float, /) -> None: ...
+
+    @property
+    def first_play_urgency(self) -> bool: ...
+
+    @first_play_urgency.setter
+    def first_play_urgency(self, arg: bool, /) -> None: ...
+
+    @property
+    def horizon(self) -> int:
+        """turn changes a line may cross (UNLIMITED_HORIZON: no cutoff)"""
+
+    @horizon.setter
+    def horizon(self, arg: int, /) -> None: ...
+
+    @property
+    def root_noise(self) -> bool: ...
+
+    @root_noise.setter
+    def root_noise(self, arg: bool, /) -> None: ...
+
+    @property
+    def noise_alpha(self) -> float: ...
+
+    @noise_alpha.setter
+    def noise_alpha(self, arg: float, /) -> None: ...
+
+    @property
+    def noise_weight(self) -> float: ...
+
+    @noise_weight.setter
+    def noise_weight(self, arg: float, /) -> None: ...
+
+    @property
+    def determinize_tries(self) -> int: ...
+
+    @determinize_tries.setter
+    def determinize_tries(self, arg: int, /) -> None: ...
+
+    @property
+    def full_information(self) -> bool: ...
+
+    @full_information.setter
+    def full_information(self, arg: bool, /) -> None: ...
+
+    @property
+    def gumbel(self) -> bool: ...
+
+    @gumbel.setter
+    def gumbel(self, arg: bool, /) -> None: ...
+
+    @property
+    def gumbel_candidates(self) -> int: ...
+
+    @gumbel_candidates.setter
+    def gumbel_candidates(self, arg: int, /) -> None: ...
+
+    @property
+    def gumbel_visit_scale(self) -> float: ...
+
+    @gumbel_visit_scale.setter
+    def gumbel_visit_scale(self, arg: float, /) -> None: ...
+
+    @property
+    def gumbel_value_scale(self) -> float: ...
+
+    @gumbel_value_scale.setter
+    def gumbel_value_scale(self, arg: float, /) -> None: ...
+
+    @property
+    def explore_candidates(self) -> int: ...
+
+    @explore_candidates.setter
+    def explore_candidates(self, arg: int, /) -> None: ...
+
+    @property
+    def score_utility(self) -> float: ...
+
+    @score_utility.setter
+    def score_utility(self, arg: float, /) -> None: ...
+
+    @property
+    def win_sooner(self) -> float: ...
+
+    @win_sooner.setter
+    def win_sooner(self, arg: float, /) -> None: ...
+
+    @property
+    def turn_search(self) -> bool: ...
+
+    @turn_search.setter
+    def turn_search(self, arg: bool, /) -> None: ...
+
+    @property
+    def command_visits(self) -> int: ...
+
+    @command_visits.setter
+    def command_visits(self, arg: int, /) -> None: ...
+
+    @property
+    def turn_widening(self) -> float: ...
+
+    @turn_widening.setter
+    def turn_widening(self, arg: float, /) -> None: ...
+
+    @property
+    def turn_widening_power(self) -> float: ...
+
+    @turn_widening_power.setter
+    def turn_widening_power(self, arg: float, /) -> None: ...
+
+    @property
+    def turn_temperature(self) -> float: ...
+
+    @turn_temperature.setter
+    def turn_temperature(self, arg: float, /) -> None: ...
+
+    @property
+    def max_turn_commands(self) -> int: ...
+
+    @max_turn_commands.setter
+    def max_turn_commands(self, arg: int, /) -> None: ...
+
+    @property
+    def count_evaluations(self) -> bool: ...
+
+    @count_evaluations.setter
+    def count_evaluations(self, arg: bool, /) -> None: ...
+
+    @property
+    def replies(self) -> Replies:
+        """turn search: how the opponent's replies are drawn (Replies)"""
+
+    @replies.setter
+    def replies(self, arg: Replies, /) -> None: ...
+
+    @property
+    def backup(self) -> Backup:
+        """how a node's value comes from its children's (Backup)"""
+
+    @backup.setter
+    def backup(self, arg: Backup, /) -> None: ...
+
+def regularized_policy(prior: Sequence[float], q: Sequence[float], lambda_: float) -> list[float]:
+    """The policy PUCT heads toward (search.h, regularizedPolicy)."""
+
+class SelfPlayConfig:
+    """
+    Self-play's or a match's settings (selfPlay.h, SelfPlayConfig), defaults as there. polyengine.self_play_config(**fields) makes one.
+    """
+
+    def __init__(self) -> None: ...
+
+    def copy(self) -> SelfPlayConfig: ...
+
+    def __copy__(self) -> SelfPlayConfig: ...
+
+    @property
+    def search(self) -> SearchConfig: ...
+
+    @search.setter
+    def search(self, arg: SearchConfig, /) -> None: ...
+
+    @property
+    def side_search(self) -> list[SearchConfig | None]:
+        """per side, a whole search instead of `search` (None: `search`)"""
+
+    @side_search.setter
+    def side_search(self, arg: Sequence[SearchConfig | None], /) -> None: ...
+
+    @property
+    def map_size(self) -> int: ...
+
+    @map_size.setter
+    def map_size(self, arg: int, /) -> None: ...
+
+    @property
+    def max_turns(self) -> int: ...
+
+    @max_turns.setter
+    def max_turns(self, arg: int, /) -> None: ...
+
+    @property
+    def stall_turns(self) -> int: ...
+
+    @stall_turns.setter
+    def stall_turns(self, arg: int, /) -> None: ...
+
+    @property
+    def fog_share(self) -> float: ...
+
+    @fog_share.setter
+    def fog_share(self, arg: float, /) -> None: ...
+
+    @property
+    def peace_treaties(self) -> bool: ...
+
+    @peace_treaties.setter
+    def peace_treaties(self, arg: bool, /) -> None: ...
+
+    @property
+    def tree_reuse(self) -> bool: ...
+
+    @tree_reuse.setter
+    def tree_reuse(self, arg: bool, /) -> None: ...
+
+    @property
+    def network_beliefs(self) -> bool: ...
+
+    @network_beliefs.setter
+    def network_beliefs(self, arg: bool, /) -> None: ...
+
+    @property
+    def temperature_turns(self) -> int: ...
+
+    @temperature_turns.setter
+    def temperature_turns(self, arg: int, /) -> None: ...
+
+    @property
+    def full_share(self) -> float: ...
+
+    @full_share.setter
+    def full_share(self, arg: float, /) -> None: ...
+
+    @property
+    def quick_simulations(self) -> int: ...
+
+    @quick_simulations.setter
+    def quick_simulations(self, arg: int, /) -> None: ...
+
+    @property
+    def threads(self) -> int: ...
+
+    @threads.setter
+    def threads(self, arg: int, /) -> None: ...
+
+    @property
+    def sides(self) -> list[str]:
+        """who plays each side: network, score or random"""
+
+    @sides.setter
+    def sides(self, arg: Sequence[str], /) -> None: ...
+
+    @property
+    def paired(self) -> bool: ...
+
+    @paired.setter
+    def paired(self, arg: bool, /) -> None: ...
+
+    @property
+    def random_seats(self) -> bool: ...
+
+    @random_seats.setter
+    def random_seats(self, arg: bool, /) -> None: ...
+
+    @property
+    def train_sides(self) -> list[bool]: ...
+
+    @train_sides.setter
+    def train_sides(self, arg: Sequence[bool], /) -> None: ...
+
+    @property
+    def handicap_share(self) -> float: ...
+
+    @handicap_share.setter
+    def handicap_share(self, arg: float, /) -> None: ...
+
+    @property
+    def handicap_income_share(self) -> float: ...
+
+    @handicap_income_share.setter
+    def handicap_income_share(self, arg: float, /) -> None: ...
+
+    @property
+    def handicap_income(self) -> list[int]: ...
+
+    @handicap_income.setter
+    def handicap_income(self, arg: Sequence[int], /) -> None: ...
+
+    @property
+    def handicap_stars(self) -> list[int]: ...
+
+    @handicap_stars.setter
+    def handicap_stars(self, arg: Sequence[int], /) -> None: ...
+
+    @property
+    def handicap_catch_up_share(self) -> float: ...
+
+    @handicap_catch_up_share.setter
+    def handicap_catch_up_share(self, arg: float, /) -> None: ...
+
+    @property
+    def catch_up_from_turn(self) -> int: ...
+
+    @catch_up_from_turn.setter
+    def catch_up_from_turn(self, arg: int, /) -> None: ...
+
+    @property
+    def catch_up_below(self) -> float: ...
+
+    @catch_up_below.setter
+    def catch_up_below(self, arg: float, /) -> None: ...
+
+    @property
+    def trailing_search_factor(self) -> int: ...
+
+    @trailing_search_factor.setter
+    def trailing_search_factor(self, arg: int, /) -> None: ...
+
+    @property
+    def explore_candidates(self) -> int: ...
+
+    @explore_candidates.setter
+    def explore_candidates(self, arg: int, /) -> None: ...
+
 class LegalMoves:
     """
     The current player's legal commands, updated one command at a time instead of regenerated. For search: keep one next to each Game, and apply commands through it. Always matches game.legal_commands() as a set, though not in the same order.
@@ -913,6 +1285,15 @@ class GameRecord:
         """The game's random seed: identifies it among the others."""
 
     @property
+    def rules_version(self) -> int:
+        """
+        The rules the game was played by (GameSettings::rulesVersion; RULES_VERSION is the latest): older records replay by theirs.
+        """
+
+    @rules_version.setter
+    def rules_version(self, arg: int, /) -> None: ...
+
+    @property
     def head_start(self) -> list[int]:
         """
         Each player's head start in stars, in a handicap game; empty for an ordinary one.
@@ -929,24 +1310,20 @@ class GameRecord:
         """A catch-up game's boosts: (player, from turn, extra income)."""
 
     @property
+    def pool_opponent_seat(self) -> int:
+        """
+        In an opponent-pool game, the seat the earlier network played; -1 otherwise.
+        """
+
+    @property
     def catch_up(self) -> bool:
         """
         A catch-up game, whether or not its boost was given: its value targets count only from the boost on.
         """
 
     @property
-    def rules_version(self) -> int:
-        """
-        The rules the game was played by (GameSettings::rulesVersion; RULES_VERSION is the latest): older records replay by theirs.
-        """
-
-    @property
     def handicap_leader(self) -> int:
         """In a handicap game, the player given the edge; -1 otherwise."""
-
-    @property
-    def pool_opponent_seat(self) -> int:
-        """In an opponent-pool game, the earlier network's seat (its moves have no policy targets); -1 otherwise."""
 
     def replays_legally(self) -> bool:
         """
@@ -976,6 +1353,10 @@ class GameRecord:
 
     def start(self) -> Game:
         """The game before any command."""
+
+    @property
+    def commands(self) -> list[Command]:
+        """Every command played, in order, from start()."""
 
     def result(self, player: int) -> float:
         """+1 or -1 for a win or loss, 0 for a game cut off by the turn limit."""
@@ -1033,73 +1414,6 @@ class GameRecord:
     def score_value(self, player: int, scale: float = 500.0) -> float:
         """The final score lead, squashed into [-1, 1]."""
 
-class SearchConfig:
-    """A search's settings (search.h, SearchConfig), defaults as there. polyengine.search_config(**fields) makes one."""
-
-    def __init__(self) -> None: ...
-
-    def copy(self) -> SearchConfig: ...
-
-    simulations: int
-    samples: int
-    exploration: float
-    fpu_reduction: float
-    first_play_urgency: bool
-    horizon: int
-    root_noise: bool
-    noise_alpha: float
-    noise_weight: float
-    determinize_tries: int
-    full_information: bool
-    gumbel: bool
-    gumbel_candidates: int
-    gumbel_visit_scale: float
-    gumbel_value_scale: float
-    explore_candidates: int
-    score_utility: float
-    win_sooner: float
-    turn_search: bool
-    command_visits: int
-    turn_widening: float
-    turn_widening_power: float
-    turn_temperature: float
-    max_turn_commands: int
-    count_evaluations: bool
-
-class SelfPlayConfig:
-    """Self-play's or a match's settings (selfPlay.h, SelfPlayConfig), defaults as there. polyengine.self_play_config(**fields) makes one."""
-
-    def __init__(self) -> None: ...
-
-    def copy(self) -> SelfPlayConfig: ...
-
-    search: SearchConfig
-    side_search: list[SearchConfig | None]
-    map_size: int
-    max_turns: int
-    stall_turns: int
-    fog_share: float
-    peace_treaties: bool
-    tree_reuse: bool
-    network_beliefs: bool
-    temperature_turns: int
-    full_share: float
-    quick_simulations: int
-    threads: int
-    sides: list[str]
-    paired: bool
-    random_seats: bool
-    train_sides: list[bool]
-    handicap_share: float
-    handicap_income_share: float
-    handicap_income: list[int]
-    handicap_stars: list[int]
-    handicap_catch_up_share: float
-    catch_up_from_turn: int
-    catch_up_below: float
-    trailing_search_factor: int
-    explore_candidates: int
-
 def play_games(config: SelfPlayConfig, count: int, seed: int = 0, threads: int = 1) -> list[GameRecord]:
     """
     Self-play games with these settings, every side scored by the score lead (no network): the bootstrap before there's one.
@@ -1116,13 +1430,22 @@ class SelfPlaySession:
         records = session.take_finished()
     """
 
-    def __init__(self, config: SelfPlayConfig, parallel: int, games: int, seed: int = 0) -> None: ...
+    def __init__(self, config: SelfPlayConfig, parallel: int, games: int, seed: int = 0, first: int = 0) -> None:
+        """
+        `games` games with these settings, `parallel` at a time, numbered from `first`: with the same seed, sessions of games [0, n) and [n, m) play the same games as one of [0, m) (n even for paired games).
+        """
 
     def done(self) -> bool: ...
 
+    def clear_cache(self) -> None:
+        """Forget the cached evaluations: after the network changes."""
+
+    def cache_stats(self) -> tuple[int, int]:
+        """(lookups, hits) of the evaluation cache since the last call."""
+
     def depth_stats(self) -> list:
         """
-        Per side: simulations so far, their mean depth in commands below the root, and the share that reached the opponent's turn.
+        Per side: simulations so far, their mean depth in moves below the root (a sampled turn is one), the share that reached the opponent's turn, their mean turn changes (turn search reaches further), and the network evaluations asked for.
         """
 
     @property
@@ -1216,6 +1539,21 @@ class ReplayBuffer:
         Random training examples, sampled and encoded at once, so safe while another thread adds games. With augment, each is seen through a random one of the map's 8 symmetries (rotations and reflections). city_weight blends the value target with the final city lead (early in a run); cut_off_weight is the value weight of positions from games cut off by the turn limit or a stalemate. With positions, the dict also has game_seeds and moves [B]: which positions were drawn, to encode again later (Encoding.encode_examples).
         """
 
+    def game_seeds(self, without_estimates: bool = False) -> list[int]:
+        """
+        The seeds of the games held: all, or with without_estimates only those not reanalysed yet (set_value_estimates).
+        """
+
+    def turn_start_inputs(self, encoding: Encoding, seeds: Sequence[int], threads: int = 8) -> tuple[NDArray[numpy.float32], NDArray[numpy.float32], NDArray[numpy.uint64], NDArray[numpy.int32], NDArray[numpy.int32]]:
+        """
+        Reanalysis: the start of each player turn of those games still held, encoded for the player to move: (planes [B, C, N, N], globals [B, G], game seeds, turns, players [B]). Safe while another thread adds games.
+        """
+
+    def set_value_estimates(self, seeds: Sequence[int], turns: Sequence[int], players: Sequence[int], values: Sequence[float]) -> None:
+        """
+        Reanalysis: the network's values of those turn starts (turn_start_inputs), for the lambda-return value target (value_lambda). Games no longer held are skipped.
+        """
+
     def save(self, path: str) -> None:
         """Writes exactly the buffer's games to a record file, replacing it."""
 
@@ -1231,12 +1569,20 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
 
 def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = []) -> int:
     """
-    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. Returns the exit code.
+    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`). With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. Returns the exit code.
     """
 
 def search(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> tuple[list[Command], list[int], list[float], list[float], int, list[list[tuple[int, float]]]]:
     """
-    One search for the player to move, as the CLI's bot does, `evaluate` as for run_cli, with these settings (SearchConfig). Returns (moves, visits, values, priors, chosen index, leaves).
+    One search for the player to move, as the CLI's bot does, `evaluate` as for run_cli, with these settings (SearchConfig). Returns (moves, visits, values, priors, chosen index, leaves): leaves per move are (count, mean value for the searcher) of where its simulations ended: in the searcher's own turn, an opponent's, the searcher's later turns, the game's end.
+    """
+
+def profile_start() -> None:
+    """Starts timing self-play's phases (profile.h), from zero."""
+
+def profile_stop() -> dict:
+    """
+    Stops timing; per phase, the thread time spent (summed over threads) and how many times it ran.
     """
 
 def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, max_turns: int = 100) -> list[tuple[int, int]]:
@@ -1244,7 +1590,9 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
     """
 
-ENCODING_VERSION: int = 14
+ENCODING_VERSION: int = 15
+
+RULES_VERSION: int = 4
 
 MAP_TYPE_COUNT: int = 6
 
@@ -1367,6 +1715,11 @@ class Encoding:
 
     def decode_command(self, game: Game, index: int) -> Command:
         """The legal command in that slot; raises ValueError if none is."""
+
+def determinize(game: Game, player: int, seed: int, encoding: Encoding | None = None, beliefs: Annotated[NDArray[numpy.float32], dict(shape=(None,), order='C', writable=False)] | None = None) -> Game | None:
+    """
+    A game agreeing with everything `player` knows of `game`, the rest sampled as the search does: from the network's raw belief outputs for the player's position (with `encoding`), else the fixed priors. None if no sample fit.
+    """
 
 def possible_tribes(view: PlayerView, opponent: int, turns: int = 1, max_states: int = 5000, max_work: int = 50000) -> list[Tribe]:
     """

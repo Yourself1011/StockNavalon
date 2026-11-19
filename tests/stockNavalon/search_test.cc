@@ -623,3 +623,141 @@ TEST_CASE("a budget in evaluations ends even when every line ends in a known res
         CHECK(best(r).type == CAPTURE);
     }
 }
+
+TEST_CASE("the regularized policy: the prior with no evidence, the best move with plenty") {
+    std::vector<double> prior{0.5, 0.3, 0.2}, q{0.0, 0.5, -0.5};
+    auto sum = [](const std::vector<double> &p) {
+        double s = 0;
+        for (double x : p) {
+            s += x;
+        }
+        return s;
+    };
+    for (double lambda : {0.01, 0.1, 1.0, 10.0}) {
+        CAPTURE(lambda);
+        std::vector<double> p = regularizedPolicy(prior, q, lambda);
+        CHECK(sum(p) == doctest::Approx(1));
+        // better moves gain against the prior, worse ones lose
+        CHECK(p[1] / prior[1] > p[0] / prior[0]);
+        CHECK(p[0] / prior[0] > p[2] / prior[2]);
+    }
+    // equal values leave the prior as it is
+    std::vector<double> even = regularizedPolicy(prior, {0.2, 0.2, 0.2}, 0.3);
+    for (std::size_t a = 0; a < prior.size(); a++) {
+        CHECK(even[a] == doctest::Approx(prior[a]));
+    }
+    // a large lambda (little evidence) stays near the prior; a small one
+    // (much evidence) goes to the best move
+    CHECK(regularizedPolicy(prior, q, 1000)[0] == doctest::Approx(0.5).epsilon(0.01));
+    CHECK(regularizedPolicy(prior, q, 0.001)[1] > 0.99);
+    // moves without prior get nothing
+    CHECK(regularizedPolicy({1.0, 0.0}, {0.0, 1.0}, 0.5)[1] == 0);
+}
+
+TEST_CASE("backing up by the regularized policy leans toward the opponent's best reply") {
+    // their warrior on the player's capital: of the opponent's replies, the
+    // capture ends the game and the rest do nothing. With few simulations the
+    // mean still counts the harmless replies; the regularized policy's value
+    // is already close to the loss. (With many, it's regularized toward the
+    // even prior and ends a little above the mean: here at 20 simulations
+    // -0.76 against -0.54; at 160, -0.90 against -0.94.)
+    Game game = emptyGame();
+    addUnit(game, 1, UnitTypes::WARRIOR, 1, 1);
+    ScoreEvaluator evaluator;
+    double backed[3];
+    int k = 0;
+    for (SearchConfig::Backup backup : {SearchConfig::Backup::MEAN, SearchConfig::Backup::PBAR,
+                                        SearchConfig::Backup::PBAR_OPPONENT}) {
+        SearchConfig config{.simulations = 20, .samples = 1, .horizon = 1,
+                            .fullInformation = true};
+        config.backup = backup;
+        SearchResult r = search(game, Beliefs{}, evaluator, config, 5);
+        REQUIRE(r.moves.size() == r.backed.size());
+        double value = -2;
+        for (std::size_t i = 0; i < r.moves.size(); i++) {
+            if (r.moves[i].type == ENDTURN) {
+                value = r.backed[i];
+                // the reported value stays the mean
+                if (backup == SearchConfig::Backup::MEAN) {
+                    CHECK(r.backed[i] == doctest::Approx(r.values[i]));
+                }
+            }
+        }
+        REQUIRE(value > -2);
+        backed[k++] = value;
+    }
+    CHECK(backed[0] > -0.9);
+    CHECK(backed[1] < backed[0] - 0.1);
+    CHECK(backed[2] < backed[0] - 0.1);
+}
+
+TEST_CASE("the opponent's replies: the most likely first, then distinct deviations from it") {
+    // their warrior on the player's capital, the capture by far the likeliest
+    // command: the most likely reply is the capture alone
+    Game game = emptyGame();
+    addUnit(game, 1, UnitTypes::WARRIOR, 1, 1);
+    CapturingEvaluator evaluator;
+    Command end{ENDTURN};
+    for (SearchConfig::Replies replies :
+         {SearchConfig::Replies::LIKELY_FIRST, SearchConfig::Replies::DISCREPANCY}) {
+        CAPTURE(static_cast<int>(replies));
+        SearchConfig config = turnSearchConfig(0);
+        config.simulations = 40;
+        config.replies = replies;
+        BatchedSearch s({&game}, {Beliefs{}}, config, 3);
+        run(s, evaluator);
+        std::vector<std::vector<Command>> drawn = s.replies(0, end);
+        REQUIRE(drawn.size() >= 3);
+        CHECK(drawn[0] == std::vector<Command>{{CAPTURE, game.index(1, 1)}});
+        if (replies == SearchConfig::Replies::DISCREPANCY) {
+            // every one different, each leaving the capture for another first
+            // command (the only step the capture turn has)
+            for (std::size_t i = 1; i < drawn.size(); i++) {
+                CHECK(drawn[i].front().type != CAPTURE);
+                for (std::size_t j = 0; j < i; j++) {
+                    CHECK(drawn[i] != drawn[j]);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("every way of drawing replies and backing up stays within budget, and reuses its trees") {
+    Game game = makeGame(bigMap());
+    game.players[0].stars = 30;
+    ScoreEvaluator evaluator;
+    for (SearchConfig::Replies replies :
+         {SearchConfig::Replies::SAMPLED, SearchConfig::Replies::LIKELY_FIRST,
+          SearchConfig::Replies::DISCREPANCY}) {
+        for (SearchConfig::Backup backup :
+             {SearchConfig::Backup::MEAN, SearchConfig::Backup::PBAR,
+              SearchConfig::Backup::PBAR_OPPONENT}) {
+            CAPTURE(static_cast<int>(replies));
+            CAPTURE(static_cast<int>(backup));
+            SearchConfig config = turnSearchConfig(4);
+            config.simulations = 200;
+            config.gumbel = true;
+            config.countEvaluations = true;
+            config.replies = replies;
+            config.backup = backup;
+            BatchedSearch s({&game}, {Beliefs{}}, config, 7);
+            run(s, evaluator);
+            BatchedSearch::DepthStats d = s.takeDepthStats();
+            CHECK(d.evaluations >= config.simulations);
+            CHECK(d.evaluations < config.simulations + config.maxTurnCommands);
+            CHECK(d.reachedOpponent > 0);
+            SearchResult r = s.result(0);
+            REQUIRE(r.chosen >= 0);
+            for (std::size_t i = 0; i < r.moves.size(); i++) {
+                if (r.visits[i]) {
+                    CHECK(std::abs(r.backed[i]) <= 1.0 + 1e-6);
+                }
+            }
+            if (r.moves[r.chosen].type != ENDTURN) {
+                CHECK(s.reuse(r.moves[r.chosen], config));
+                run(s, evaluator);
+                CHECK_FALSE(s.result(0).moves.empty());
+            }
+        }
+    }
+}

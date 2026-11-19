@@ -65,6 +65,63 @@ std::vector<double> sigmaQ(const std::vector<float> &prior,
 }
 } // namespace
 
+std::vector<double> regularizedPolicy(const std::vector<double> &prior,
+                                      const std::vector<double> &q, double lambda) {
+    const std::size_t n = prior.size();
+    std::vector<double> out(n, 0.0);
+    double top = -1e300;
+    for (std::size_t a = 0; a < n; a++) {
+        if (prior[a] > 0) {
+            top = std::max(top, q[a]);
+        }
+    }
+    if (n == 0 || top == -1e300) {
+        return out;
+    }
+    if (!(lambda > 0)) {
+        // all on the best
+        for (std::size_t a = 0; a < n; a++) {
+            if (prior[a] > 0 && q[a] == top) {
+                out[a] = 1;
+                break;
+            }
+        }
+        return out;
+    }
+    // alpha between where the sum is at least 1 and at most 1 (the sum
+    // falls as alpha grows), found by bisection
+    double low = -1e300, high = top + lambda;
+    for (std::size_t a = 0; a < n; a++) {
+        if (prior[a] > 0) {
+            low = std::max(low, q[a] + lambda * prior[a]);
+        }
+    }
+    auto sum = [&](double alpha) {
+        double s = 0;
+        for (std::size_t a = 0; a < n; a++) {
+            if (prior[a] > 0) {
+                s += lambda * prior[a] / (alpha - q[a]);
+            }
+        }
+        return s;
+    };
+    for (int i = 0; i < 50 && high - low > 1e-12; i++) {
+        double mid = 0.5 * (low + high);
+        (sum(mid) > 1 ? low : high) = mid;
+    }
+    double alpha = high, total = 0;
+    for (std::size_t a = 0; a < n; a++) {
+        if (prior[a] > 0) {
+            out[a] = lambda * prior[a] / (alpha - q[a]);
+            total += out[a];
+        }
+    }
+    for (double &p : out) {
+        p /= total;
+    }
+    return out;
+}
+
 void ScoreEvaluator::evaluate(const std::vector<EvalRequest> &requests,
                               std::vector<Evaluation> &results) {
     results.resize(requests.size());
@@ -168,6 +225,8 @@ BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
         node.value = node.game.winner == node.toMove ? 1.0f : -1.0f;
         // over, with the whole lead, now
         node.utility = utilityOf(node.value, node.value, 0);
+        node.backedValue = node.value;
+        node.backedUtility = node.utility;
         return node;
     }
     if (crossed > config.horizon) {
@@ -245,11 +304,14 @@ bool BatchedSearch::descend(Tree &tree) {
                 for (double t : node.turnUtilityTotal) {
                     sum += t;
                 }
-                double untried = sum / (1 + node.parentVisits) -
-                                 config.fpuReduction * std::sqrt(explored);
+                double estimate = config.backup == SearchConfig::Backup::MEAN
+                                      ? sum / (1 + node.parentVisits)
+                                      : node.backedUtility;
+                double untried = estimate - config.fpuReduction * std::sqrt(explored);
                 double bestScore = -1e9;
                 for (std::size_t a = 0; a < node.moves.size(); a++) {
-                    double q = node.visits[a]            ? node.utilityTotal[a] / node.visits[a]
+                    double q = node.visits[a]
+                                   ? edgeUtility(tree, node, static_cast<int>(a))
                                : config.firstPlayUrgency ? untried
                                                          : 0.0;
                     double u = scale * node.prior[a] / (1 + node.visits[a]);
@@ -326,22 +388,59 @@ int BatchedSearch::turnMove(Tree &tree, int n) {
         // a new turn: its first command from the node's own priors, so with
         // no evaluation of its own
         tree.sampling = Sampling{.node = n, .game = node.game, .legal = node.legal};
+        Sampling &s = *tree.sampling;
+        bool replies = repliesAt(tree, node);
+        if (replies && drawn == 0) {
+            // the most likely reply first
+            s.likely = true;
+            int next = sampleStep(tree, likelyCommand(tree, node.moves, node.prior));
+            return next == TURN_SAMPLING ? TURN_WAITING : next;
+        }
+        if (replies && config.replies == SearchConfig::Replies::DISCREPANCY &&
+            !node.deviations.empty()) {
+            // the deviation giving up the least: the earlier turn to its
+            // step, then the runner-up there, then the most likely commands
+            auto it = std::min_element(node.deviations.begin(), node.deviations.end(),
+                                       [](const Deviation &x, const Deviation &y) {
+                                           return x.cost < y.cost;
+                                       });
+            Deviation d = *it;
+            *it = node.deviations.back();
+            node.deviations.pop_back();
+            s.likely = true;
+            s.cost = d.cost;
+            s.from = d.step + 1;
+            std::vector<Command> prefix(node.turns[d.turn].begin(),
+                                        node.turns[d.turn].begin() + d.step);
+            for (const Command &c : prefix) {
+                int next = sampleStep(tree, c);
+                if (next != TURN_SAMPLING) {
+                    return next;
+                }
+            }
+            int next = sampleStep(tree, d.command);
+            return next == TURN_SAMPLING ? TURN_WAITING : next;
+        }
         Command first = sampleCommand(tree, node.moves, node.prior);
         int next = sampleStep(tree, first);
         return next == TURN_SAMPLING ? TURN_WAITING : next;
     }
-    // PUCT over the turns drawn, each one's prior how often it was drawn
+    // PUCT over the turns drawn, by their weights as priors
     double scale = config.exploration * std::sqrt(std::max(1, node.parentVisits));
     double sum = node.utility;
     for (double t : node.turnUtilityTotal) {
         sum += t;
     }
-    double mean = sum / (1 + node.parentVisits);
+    double estimate = config.backup == SearchConfig::Backup::MEAN
+                          ? sum / (1 + node.parentVisits)
+                          : node.backedUtility;
+    double weights = std::accumulate(node.turnWeight.begin(), node.turnWeight.end(), 0.0);
     int best = 0;
     double bestScore = -1e9;
     for (std::size_t e = 0; e < node.turns.size(); e++) {
-        double q = node.turnVisits[e] ? node.turnUtilityTotal[e] / node.turnVisits[e] : mean;
-        double u = scale * node.turnCount[e] / drawn / (1 + node.turnVisits[e]);
+        double q = node.turnVisits[e] ? edgeUtility(tree, node, -static_cast<int>(e) - 1)
+                                      : estimate;
+        double u = scale * node.turnWeight[e] / weights / (1 + node.turnVisits[e]);
         if (q + u > bestScore) {
             bestScore = q + u;
             best = static_cast<int>(e);
@@ -386,6 +485,7 @@ int BatchedSearch::finishTurn(Tree &tree) {
                 // drawn before: it counts twice, and the simulation goes on
                 // below it
                 node.turnCount[e]++;
+                node.turnWeight[e] += s.likely ? std::exp(-s.cost) : 1.0;
                 tree.path.push_back({n, -(static_cast<int>(e) + 1)});
                 return node.turnChild[e];
             }
@@ -395,6 +495,16 @@ int BatchedSearch::finishTurn(Tree &tree) {
     tree.nodes.push_back(makeNode(std::move(s.game), std::move(s.legal), crossed));
     int child = static_cast<int>(tree.nodes.size()) - 1;
     Node &node = tree.nodes[n];
+    if (s.likely) {
+        // its runners-up after where it left the turn it came from
+        int turn = static_cast<int>(node.turns.size());
+        for (Deviation &d : s.runnersUp) {
+            if (d.step >= s.from) {
+                node.deviations.push_back({turn, d.step, d.command, s.cost + d.cost});
+            }
+        }
+    }
+    node.turnWeight.push_back(s.likely ? std::exp(-s.cost) : 1.0);
     node.turns.push_back(std::move(s.commands));
     node.turnCount.push_back(1);
     node.turnVisits.push_back(0);
@@ -428,6 +538,148 @@ Command BatchedSearch::sampleCommand(Tree &tree, const std::vector<Command> &mov
     }
     std::discrete_distribution<std::size_t> pick(weights.begin(), weights.end());
     return moves[pick(tree.rng)];
+}
+
+Command BatchedSearch::likelyCommand(Tree &tree, const std::vector<Command> &moves,
+                                     const std::vector<float> &priors) {
+    Sampling &s = *tree.sampling;
+    int best = -1, second = -1;
+    auto prior = [&](int a) {
+        return a < static_cast<int>(priors.size()) ? std::max(0.0f, priors[a]) : 0.0f;
+    };
+    for (int a = 0; a < static_cast<int>(moves.size()); a++) {
+        if (best < 0 || prior(a) > prior(best)) {
+            second = best;
+            best = a;
+        } else if (second < 0 || prior(a) > prior(second)) {
+            second = a;
+        }
+    }
+    if (second >= 0 && prior(second) > 0) {
+        s.runnersUp.push_back({0, static_cast<int>(s.commands.size()), moves[second],
+                               std::log(prior(best)) - std::log(prior(second))});
+    }
+    return moves[best];
+}
+
+bool BatchedSearch::repliesAt(const Tree &tree, const Node &node) const {
+    return config.replies != SearchConfig::Replies::SAMPLED &&
+           node.toMove != tree.nodes[0].toMove;
+}
+
+double BatchedSearch::edgeUtility(const Tree &tree, const Node &node, int edge) const {
+    bool move = edge >= 0;
+    int e = move ? edge : -edge - 1;
+    if (config.backup == SearchConfig::Backup::MEAN) {
+        return move ? node.utilityTotal[e] / node.visits[e]
+                    : node.turnUtilityTotal[e] / node.turnVisits[e];
+    }
+    const Node &child = tree.nodes[move ? node.child[e] : node.turnChild[e]];
+    return child.toMove == node.toMove ? child.backedUtility : -child.backedUtility;
+}
+
+std::vector<double> BatchedSearch::rootUtilityTotals(const Tree &tree) const {
+    const Node &root = tree.nodes[0];
+    if (config.backup == SearchConfig::Backup::MEAN) {
+        return root.utilityTotal;
+    }
+    std::vector<double> out(root.moves.size(), 0.0);
+    for (std::size_t a = 0; a < root.moves.size(); a++) {
+        if (root.visits[a]) {
+            out[a] = edgeUtility(tree, root, static_cast<int>(a)) * root.visits[a];
+        }
+    }
+    return out;
+}
+
+void BatchedSearch::refresh(Tree &tree, int n) {
+    Node &node = tree.nodes[n];
+    if (!node.evaluated || node.terminal || node.atHorizon) {
+        return;
+    }
+    // The edges a simulation would take here now (sampled turns or
+    // commands) are weighed; visits through the others (a turn the policy
+    // completed before the node went command by command) count as plain
+    // samples, like the node's own evaluation.
+    bool turns = n != 0 && sampledTurns(node);
+    std::size_t count = turns ? node.turns.size() : node.moves.size();
+    double plainValue = node.value, plainUtility = node.utility;
+    int plain = 1;
+    auto childOf = [&](bool turn, std::size_t e) -> const Node & {
+        return tree.nodes[turn ? node.turnChild[e] : node.child[e]];
+    };
+    for (std::size_t e = 0; e < (turns ? node.moves.size() : node.turns.size()); e++) {
+        int v = turns ? node.visits[e] : node.turnVisits[e];
+        if (v > 0) {
+            const Node &c = childOf(!turns, e);
+            double sign = c.toMove == node.toMove ? 1.0 : -1.0;
+            plainValue += v * sign * c.backedValue;
+            plainUtility += v * sign * c.backedUtility;
+            plain += v;
+        }
+    }
+    // the weighed edges: prior, visits, value and utility (for toMove)
+    std::vector<double> prior, q, value;
+    std::vector<int> visits;
+    double unvisited = 0, weightSum = 0;
+    int visited = 0;
+    if (turns) {
+        weightSum = std::accumulate(node.turnWeight.begin(), node.turnWeight.end(), 0.0);
+    }
+    for (std::size_t e = 0; e < count; e++) {
+        int v = turns ? node.turnVisits[e] : node.visits[e];
+        double p = turns ? (weightSum > 0 ? node.turnWeight[e] / weightSum : 0.0)
+                         : node.prior[e];
+        if (v == 0) {
+            unvisited += p;
+            continue;
+        }
+        const Node &c = childOf(turns, e);
+        double sign = c.toMove == node.toMove ? 1.0 : -1.0;
+        prior.push_back(p);
+        q.push_back(sign * c.backedUtility);
+        value.push_back(sign * c.backedValue);
+        visits.push_back(v);
+        visited += v;
+    }
+    if (visited == 0) {
+        node.backedValue = static_cast<float>(plainValue / plain);
+        node.backedUtility = static_cast<float>(plainUtility / plain);
+        return;
+    }
+    std::vector<double> weight;
+    bool weighed = config.backup == SearchConfig::Backup::PBAR ||
+                   node.toMove != tree.nodes[0].toMove;
+    if (weighed) {
+        // the edges not tried yet as one, at what an untried move counts as
+        // (first-play urgency, as in descend)
+        double explored = 1 - unvisited;
+        double untried = config.firstPlayUrgency
+                             ? node.backedUtility - config.fpuReduction * std::sqrt(explored)
+                             : 0.0;
+        prior.push_back(unvisited);
+        q.push_back(untried);
+        double lambda = config.exploration * std::sqrt(static_cast<double>(visited)) /
+                        (static_cast<double>(count) + visited);
+        weight = regularizedPolicy(prior, q, lambda);
+        weight.pop_back();
+        prior.pop_back();
+        q.pop_back();
+    } else {
+        weight.assign(visits.begin(), visits.end());
+    }
+    // the weights over the visited edges, then blended with the plain
+    // samples as visits would be
+    double total = std::accumulate(weight.begin(), weight.end(), 0.0);
+    double meanValue = 0, meanUtility = 0;
+    for (std::size_t i = 0; i < weight.size(); i++) {
+        double w = total > 0 ? weight[i] / total : 1.0 / weight.size();
+        meanValue += w * value[i];
+        meanUtility += w * q[i];
+    }
+    node.backedValue = static_cast<float>((plainValue + visited * meanValue) / (plain + visited));
+    node.backedUtility =
+        static_cast<float>((plainUtility + visited * meanUtility) / (plain + visited));
 }
 
 float BatchedSearch::utilityOf(float value, float scoreLead, float turnsLeft) const {
@@ -469,6 +721,12 @@ void BatchedSearch::backup(Tree &tree, int leaf, float value, float utility) {
         }
         node.parentVisits++;
     }
+    if (config.backup != SearchConfig::Backup::MEAN) {
+        // from the leaf up, each node's value from its children's
+        for (auto it = tree.path.rbegin(); it != tree.path.rend(); ++it) {
+            refresh(tree, it->first);
+        }
+    }
     tree.path.clear();
 }
 
@@ -477,6 +735,8 @@ void BatchedSearch::expand(Tree &tree, int n, const Evaluation &evaluation) {
     node.evaluated = true;
     node.value = evaluation.value;
     node.utility = utilityOf(evaluation.value, evaluation.scoreLead, evaluation.turnsLeft);
+    node.backedValue = node.value;
+    node.backedUtility = node.utility;
     if (!node.moves.empty()) {
         if (evaluation.priors.size() == node.moves.size()) {
             double sum = 0;
@@ -573,7 +833,7 @@ int BatchedSearch::gumbelRootMove(Tree &tree) {
         if (tree.phaseTarget >= 0) {
             // the phase is done: the better half stays in
             std::vector<double> sigma =
-                sigmaQ(root.prior, root.visits, root.utilityTotal, root.utility, config);
+                sigmaQ(root.prior, root.visits, rootUtilityTotals(tree), root.utility, config);
             std::stable_sort(remaining.begin(), remaining.end(), [&](int a, int b) {
                 return tree.gumbel[a] + choiceLogit(tree, a) + sigma[a] >
                        tree.gumbel[b] + choiceLogit(tree, b) + sigma[b];
@@ -698,6 +958,16 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
     return true;
 }
 
+std::vector<std::vector<Command>> BatchedSearch::replies(int t, const Command &move) const {
+    const Tree &tree = trees.at(t);
+    const Node &root = tree.nodes[0];
+    auto it = std::find(root.moves.begin(), root.moves.end(), move);
+    if (it == root.moves.end() || root.child[it - root.moves.begin()] < 0) {
+        return {};
+    }
+    return tree.nodes[root.child[it - root.moves.begin()]].turns;
+}
+
 bool BatchedSearch::done() const {
     return std::all_of(trees.begin(), trees.end(), [&](const Tree &t) {
         return t.waiting < 0 && !t.sampling && !budgetLeft(t);
@@ -734,7 +1004,10 @@ void BatchedSearch::submit(const std::vector<Evaluation> &results) {
         tree.evaluations++;
         depthStats.evaluations++;
         if (tree.sampling) {
-            Command next = sampleCommand(tree, tree.sampling->moves, results[i].priors);
+            Command next =
+                tree.sampling->likely
+                    ? likelyCommand(tree, tree.sampling->moves, results[i].priors)
+                    : sampleCommand(tree, tree.sampling->moves, results[i].priors);
             int r = sampleStep(tree, next);
             if (r >= 0) {
                 tree.resume = r;
@@ -763,7 +1036,7 @@ SearchResult BatchedSearch::result(int game) const {
     std::vector<char> standing, exploring;
     // what moves are chosen by (SearchConfig::scoreUtility); the values
     // reported stay pure
-    std::vector<double> utilities;
+    std::vector<double> utilities, backedTotals;
     double rootUtility = 0;
     for (const Tree &tree : trees) {
         if (tree.game != game) {
@@ -772,6 +1045,7 @@ SearchResult BatchedSearch::result(int game) const {
         out.samples++;
         const Node &root = tree.nodes[0];
         rootUtility += root.utility;
+        const std::vector<double> rootUtilities = rootUtilityTotals(tree);
         for (std::size_t a = 0; a < root.moves.size(); a++) {
             auto [it, added] = index.try_emplace(root.moves[a], out.moves.size());
             if (added) {
@@ -781,6 +1055,7 @@ SearchResult BatchedSearch::result(int game) const {
                 out.leafValues.push_back({});
                 totals.push_back(0);
                 utilities.push_back(0);
+                backedTotals.push_back(0);
                 priorSum.push_back(0);
                 priorCount.push_back(0);
                 standing.push_back(0);
@@ -794,7 +1069,15 @@ SearchResult BatchedSearch::result(int game) const {
                 }
             }
             totals[it->second] += root.total[a];
-            utilities[it->second] += root.utilityTotal[a];
+            if (root.visits[a]) {
+                const Node &c = tree.nodes[root.child[a]];
+                backedTotals[it->second] +=
+                    root.visits[a] * (config.backup == SearchConfig::Backup::MEAN
+                                          ? root.total[a] / root.visits[a]
+                                      : c.toMove == root.toMove ? c.backedValue
+                                                                : -c.backedValue);
+            }
+            utilities[it->second] += rootUtilities[a];
             priorSum[it->second] += root.prior[a];
             priorCount[it->second]++;
         }
@@ -808,6 +1091,7 @@ SearchResult BatchedSearch::result(int game) const {
     const std::size_t n = out.moves.size();
     for (std::size_t i = 0; i < n; i++) {
         out.values.push_back(out.visits[i] ? totals[i] / out.visits[i] : 0);
+        out.backed.push_back(out.visits[i] ? backedTotals[i] / out.visits[i] : 0);
         out.priors.push_back(priorSum[i] / priorCount[i]);
     }
     if (!config.gumbel || out.samples == 0 || n == 0) {

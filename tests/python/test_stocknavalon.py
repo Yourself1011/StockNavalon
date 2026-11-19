@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import math
 import os
@@ -425,6 +426,23 @@ def test_a_runs_settings_bootstrap_self_play_and_gates(tmp_path):
                                                "--evaluations", "100"]))
     assert turns.turn_search and turns.command_visits == 0 and turns.horizon == 3
     assert turns.count_evaluations and turns.simulations == 100
+    assert turns.replies == pe.Replies.SAMPLED and turns.backup == pe.Backup.MEAN
+
+
+def test_per_side_search_flags_take_one_value_or_one_each():
+    from stocknavalon.play import main as _  # noqa: F401  (play's flags import cleanly)
+    from stocknavalon.settings import add_search_arguments, side_count, side_searches
+    p = argparse.ArgumentParser()
+    add_search_arguments(p, simulations=64, samples=1)
+    args = p.parse_args(["--turn-search", "8", "--replies", "likely", "discrepancy",
+                         "--backup", "pbar-opponent"])
+    assert side_count(args) == 2
+    a, b = side_searches(args, side_count(args))
+    assert a.turn_search and b.turn_search and a.command_visits == b.command_visits == 8
+    assert (a.replies, b.replies) == (pe.Replies.LIKELY_FIRST, pe.Replies.DISCREPANCY)
+    assert a.backup == b.backup == pe.Backup.PBAR_OPPONENT
+    with pytest.raises(SystemExit):
+        side_searches(p.parse_args(["--backup", "mean", "pbar", "pbar"]), 2)
 
 
 def test_a_gate_splits_its_games_among_several_bests():
