@@ -143,3 +143,72 @@ TEST_CASE("a naval plan: the port's tech, a port, then over the sea, every move 
         CHECK(landings >= 1);
     }
 }
+
+TEST_CASE("a plan once ahead: it starts at the side's first decision after its value reached the mark, and lasts its turns") {
+    // network sides (the score evaluator answering), so the search values
+    // that trigger the plan are kept
+    SelfPlayConfig config;
+    config.search.simulations = 16;
+    config.search.samples = 1;
+    config.quickSimulations = 4;
+    config.fullShare = 1.0;
+    config.fogShare = 0.0;
+    config.maxTurns = 30;
+    config.paired = true;
+    config.sidePlans = {Plan::CONVERT, Plan::NONE};
+    config.planTurns = 8;
+    config.planWhenAhead = 0.3;
+    config.mapTypes = {MapTypes::CONTINENTS};
+    SelfPlaySession session(config, 8, 8, 5);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    while (!session.done()) {
+        const std::vector<EvalRequest> &requests = session.pending();
+        if (requests.empty()) {
+            break;
+        }
+        evaluator.evaluate(requests, results);
+        session.submit(results);
+    }
+    std::vector<GameRecord> records = session.takeFinished();
+    REQUIRE(records.size() == 8);
+    int triggered = 0, crossings = 0;
+    for (const GameRecord &r : records) {
+        int seat = forcedSeat(r);
+        Game game = r.start();
+        int reached = -1, start = -1;
+        for (const RecordedMove &m : r.moves) {
+            const Command &c = m.command;
+            if (m.player == seat) {
+                // the plan starts at the first decision after the value got there
+                if (reached >= 0 && start < 0) {
+                    start = game.turn;
+                }
+                bool inPlan = start >= 0 && game.turn < start + config.planTurns;
+                // a forced decision records no targets; outside the plan a full
+                // search does
+                CHECK(m.visits.empty() == inPlan);
+                if (inPlan) {
+                    std::vector<Command> legal;
+                    for (const Command &l : game.legalCommands()) {
+                        if (l.type != RESIGN && l.type != STAY) {
+                            legal.push_back(l);
+                        }
+                    }
+                    std::vector<Command> allowed = planAllowed(Plan::CONVERT, game, legal);
+                    CHECK(std::find(allowed.begin(), allowed.end(), c) != allowed.end());
+                    crossings += c.type == BUILD && (c.arg == ImprovementTypes::BRIDGE ||
+                                                     c.arg == ImprovementTypes::PORT);
+                }
+                if (reached < 0 && !std::isnan(m.rootValue) && m.rootValue >= config.planWhenAhead) {
+                    reached = game.turn;
+                }
+            }
+            game.apply(c);
+        }
+        triggered += start >= 0;
+    }
+    MESSAGE("the plan started in " << triggered << " of 8 games; " << crossings
+                                   << " bridges or ports in it");
+    CHECK(triggered >= 2);
+}

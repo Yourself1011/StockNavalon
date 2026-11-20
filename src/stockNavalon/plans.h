@@ -26,10 +26,14 @@ enum class Plan {
     // toward the enemy capital (walking, embarking at a port, sailing,
     // disembarking), and the turn doesn't end while one can get closer
     NAVAL,
+    // Winning when ahead (with SelfPlayConfig::planWhenAhead): the way over,
+    // bridges where the fewest can join the landmasses, else by sea as
+    // NAVAL, then the march by land and sea
+    CONVERT,
 };
 
 std::string planName(Plan plan);
-// "none", "bridge", "naval"; throws on anything else
+// "none", "bridge", "naval", "convert"; throws on anything else
 Plan planNamed(const std::string &name);
 
 // The commands among `legal` that `plan` allows the player to move in

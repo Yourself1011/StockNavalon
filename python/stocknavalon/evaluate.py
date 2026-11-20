@@ -67,6 +67,7 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
           finish_share: float = 0.9, extra_moves: int = 50,
           max_minutes: float = 10.0, sessions: int = 1,
           plans: tuple[str, str] = ("none", "none"), plan_turns: int = 20,
+          plan_when_ahead: float | None = None,
           map_types: list | None = None,
           keep: list[pe.GameRecord] | None = None) -> dict[str, Any]:
     """`model` (side 0) against `opponent` (side 1): another Network, or
@@ -78,7 +79,9 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
     other side's seat, as opponent-pool games do). Returns side 0's results.
     `progress`, if given, is
     called every `progress_seconds` with the results so far. `plans` forces
-    each side's opening (plans.h: none, bridge or naval) before `plan_turns`;
+    each side's play (plans.h: none, bridge, naval or convert) for
+    `plan_turns` turns, from the start or, with `plan_when_ahead`, once the
+    side's own search value reaches it;
     `map_types` (polyengine.MapType) limits the maps. With `sessions`
     2, the games are split between two sessions taking turns, so the CPU and
     the GPU overlap as in self-play (the same games for a seed); one by
@@ -106,7 +109,8 @@ def match(model: Network, opponent, encoding: pe.Encoding, device: torch.device,
         max_turns=max_turns, temperature_turns=1, full_share=1.0, sides=sides, paired=True,
         stall_turns=stall_turns, fog_share=fog_share, network_beliefs=network_beliefs,
         peace_treaties=peace_treaties, threads=threads, train_sides=list(train_sides),
-        side_plans=list(plans), plan_turns=plan_turns, map_types=list(map_types or []))
+        side_plans=list(plans), plan_turns=plan_turns, map_types=list(map_types or []),
+        plan_when_ahead=float("nan") if plan_when_ahead is None else plan_when_ahead)
     # with two sessions, the games split so they're the same as one
     # session's
     first = games // 4 * 2 if sessions == 2 else games  # whole pairs in each

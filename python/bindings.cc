@@ -717,9 +717,12 @@ void bindConfigs(nb::module_ &m) {
                 }
                 c.sidePlans = {planNamed(v[0]), planNamed(v[1])};
             },
-            "each side's forced opening (plans.h): none, bridge or naval")
+            "each side's forced plan (plans.h): none, bridge, naval or convert")
         .def_rw("plan_turns", &SelfPlayConfig::planTurns,
-                "forced openings apply before this turn")
+                "turns a forced plan lasts, from its start")
+        .def_rw("plan_when_ahead", &SelfPlayConfig::planWhenAhead,
+                "NaN: plans from the start; else from a side's first decision with "
+                "its own search value at least this")
         .def_rw("map_types", &SelfPlayConfig::mapTypes,
                 "the map types games are drawn from, evenly; empty for every type")
         .def_rw("paired", &SelfPlayConfig::paired)
@@ -1261,11 +1264,16 @@ void bindSearch(nb::module_ &m) {
         [](std::vector<std::string> args, const EncodingConfig &encoding,
            nb::callable evaluate, const SearchConfig &config, bool networkBeliefs,
            bool explain, const std::vector<std::optional<SearchConfig>> &seatSearch,
-           const std::vector<std::string> &seatPlans, int planTurns) {
+           const std::vector<std::string> &seatPlans, int planTurns, double planWhenAhead) {
             std::vector<Plan> plans;
             for (const std::string &name : seatPlans) {
                 plans.push_back(planNamed(name));
             }
+            // per seat: the turn its plan started (-1 before), and its last
+            // evaluation, for planWhenAhead
+            auto planStart = std::make_shared<std::vector<int>>(
+                plans.size(), std::isnan(planWhenAhead) ? 0 : -1);
+            auto lastValue = std::make_shared<std::vector<float>>(plans.size(), std::nanf(""));
             args.insert(args.begin(), "stocknavalon.play");
             std::vector<char *> argv;
             for (std::string &a : args) {
@@ -1274,10 +1282,11 @@ void bindSearch(nb::module_ &m) {
             auto evaluator = std::make_shared<PythonEvaluator>(encoding, evaluate);
             return runCli(static_cast<int>(argv.size()), argv.data(),
                           [config, seatSearch, evaluator, networkBeliefs, explain, plans,
-                           planTurns](std::uint64_t seed) -> BotTurn {
+                           planTurns, planWhenAhead, planStart,
+                           lastValue](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
                 return [config, seatSearch, evaluator, rng, networkBeliefs, explain, plans,
-                        planTurns](Game &game) {
+                        planTurns, planWhenAhead, planStart, lastValue](Game &game) {
                     int player = game.currentPlayer;
                     // this seat's own search, if it has one
                     const SearchConfig &search =
@@ -1286,13 +1295,25 @@ void bindSearch(nb::module_ &m) {
                             : config;
                     float value;
                     std::string decisions;
-                    // this seat's forced opening, if any
-                    Plan plan = player < static_cast<int>(plans.size()) ? plans[player]
-                                                                        : Plan::NONE;
+                    // this seat's forced plan, if any, from the start or once its
+                    // last evaluation was ahead enough
+                    Plan plan = Plan::NONE;
+                    int planUntil = 0;
+                    if (player < static_cast<int>(plans.size())) {
+                        int &start = (*planStart)[player];
+                        if (start < 0 && (*lastValue)[player] >= planWhenAhead) {
+                            start = game.turn;
+                        }
+                        plan = start >= 0 ? plans[player] : Plan::NONE;
+                        planUntil = start + planTurns;
+                    }
                     BotResult result{.commands = playTurn(game, *evaluator, search, *rng,
                                                           networkBeliefs, &value,
                                                           explain ? &decisions : nullptr,
-                                                          plan, planTurns)};
+                                                          plan, planUntil)};
+                    if (player < static_cast<int>(lastValue->size())) {
+                        (*lastValue)[player] = value;
+                    }
                     if (!std::isnan(value)) {
                         // as the search sees it before ending the turn: the
                         // value, and as a chance of winning
@@ -1329,6 +1350,7 @@ void bindSearch(nb::module_ &m) {
         "explain"_a = false,
         "seat_search"_a = std::vector<std::optional<SearchConfig>>{},
         "seat_plans"_a = std::vector<std::string>{}, "plan_turns"_a = 20,
+        "plan_when_ahead"_a = std::nan(""),
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
         "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "
@@ -1337,7 +1359,9 @@ void bindSearch(nb::module_ &m) {
         "turn samples the hidden state from the network's beliefs (asked once "
         "per turn), else from the fixed priors. seat_search gives seats their "
         "own search (None, or seats past it: `search`); seat_plans their forced "
-        "openings before plan_turns (plans.h: none, bridge or naval). With explain, each bot turn "
+        "plans (plans.h: none, bridge, naval or convert) for plan_turns turns, from "
+        "the start or (plan_when_ahead) once the seat's evaluation reaches it. With "
+        "explain, each bot turn "
         "also lists its decisions: the command played and the search's "
         "leading moves, with priors, visits and values. Returns the exit code.");
     m.def(

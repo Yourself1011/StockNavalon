@@ -58,8 +58,10 @@ struct SelfPlaySession::Slot {
     int commandsThisTurn = 0, turn = -1, mover = -1;
     bool active = false;
     // whether the decision being searched is a full one, recorded for the
-    // policy, and whether it's in a forced opening (SelfPlayConfig::sidePlans)
+    // policy, and whether it's in a forced plan (SelfPlayConfig::sidePlans)
     bool full = true, forced = false;
+    // per side, the turn its plan started, -1 before
+    std::array<int, 2> planStart{0, 0};
     // the game's number, and the side to move at the search's root
     int number = 0, side = 0;
     // the move count at which the game is cut short, -1 for none
@@ -164,6 +166,8 @@ void SelfPlaySession::startGame(Slot &slot) {
     slot.randomBot.emplace(slot.rng());
     slot.game.emplace(slot.record.start());
     slot.lastValues.assign(slot.game->players.size(), std::nanf(""));
+    // plans from the start, or once ahead
+    slot.planStart.fill(std::isnan(config.planWhenAhead) ? 0 : -1);
     slot.valueSums.clear();
     slot.valueCounts.clear();
     slot.lastCombat = -1;
@@ -306,8 +310,13 @@ void SelfPlaySession::advance(Slot &slot) {
             // a forced opening: only the plan's commands, played at once
             // when there's one
             std::vector<Command> allowed;
-            slot.forced =
-                config.sidePlans[slot.side] != Plan::NONE && game.turn < config.planTurns;
+            int &planStart = slot.planStart[slot.side];
+            if (planStart < 0 && config.sidePlans[slot.side] != Plan::NONE &&
+                slot.lastValues[game.currentPlayer] >= config.planWhenAhead) {
+                planStart = game.turn;
+            }
+            slot.forced = config.sidePlans[slot.side] != Plan::NONE && planStart >= 0 &&
+                          game.turn < planStart + config.planTurns;
             bool restricted = false;
             if (slot.forced) {
                 std::vector<Command> legal;

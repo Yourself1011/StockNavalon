@@ -3,6 +3,7 @@
 #include "moveSearch.h"
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 
@@ -14,6 +15,8 @@ std::string planName(Plan plan) {
         return "bridge";
     case Plan::NAVAL:
         return "naval";
+    case Plan::CONVERT:
+        return "convert";
     default:
         return "none";
     }
@@ -28,6 +31,9 @@ Plan planNamed(const std::string &name) {
     }
     if (name == "naval") {
         return Plan::NAVAL;
+    }
+    if (name == "convert") {
+        return Plan::CONVERT;
     }
     throw std::invalid_argument("Unknown plan: " + name);
 }
@@ -225,21 +231,20 @@ std::pair<int, int> capitals(const Game &game) {
     return {game.cities[mine].tile, game.cities[theirs].tile};
 }
 
-// the bridge rush has its tech and the two landmasses joined (or no bridges
-// could join them)
-bool bridgeDone(const Game &game) {
-    auto [home, target] = capitals(game);
-    const Player &me = game.players[game.currentPlayer];
-    return home < 0 || (me.hasTech(improvementInfo(ImprovementTypes::BRIDGE).tech) &&
-                        nextCrossing(game, landmasses(game), home, target).empty());
-}
-
-std::vector<Command> bridgeRush(const Game &game, const std::vector<Command> &legal) {
+// The bridge stage: the commands it allows while a way over bridges is
+// still being made (the bridge's tech, then the fewest bridges), or nullopt
+// once the two landmasses are joined or no bridges could join them
+std::optional<std::vector<Command>> bridgeStage(const Game &game,
+                                                const std::vector<Command> &legal) {
     const int player = game.currentPlayer;
     const Player &me = game.players[player];
     auto [home, target] = capitals(game);
     if (home < 0) {
-        return legal;
+        return std::nullopt;
+    }
+    std::vector<int> sites = nextCrossing(game, landmasses(game), home, target);
+    if (sites.empty()) {
+        return std::nullopt;
     }
     const ImprovementData &bridge = improvementInfo(ImprovementTypes::BRIDGE);
     // the bridge's tech first
@@ -248,12 +253,7 @@ std::vector<Command> bridgeRush(const Game &game, const std::vector<Command> &le
         Command research{RESEARCH, -1, -1, next};
         return saving(game, legal, {research}, game.techCost(player, next));
     }
-    // then the next bridge on the way with the fewest, until the two
-    // landmasses are joined; after that, nothing
-    std::vector<int> sites = nextCrossing(game, landmasses(game), home, target);
-    if (sites.empty()) {
-        return legal;
-    }
+    // then the next bridge on the way with the fewest
     std::vector<Command> purchases;
     for (const Command &c : legal) {
         if (c.type == BUILD && c.arg == ImprovementTypes::BRIDGE &&
@@ -353,17 +353,19 @@ std::vector<int> routeSteps(const Game &game, int player, int target) {
     return steps;
 }
 
-std::vector<Command> naval(const Game &game, const std::vector<Command> &legal) {
-    const int player = game.currentPlayer, enemy = 1 - player;
+// The naval stage: the commands it allows while the way by sea is being
+// made (the port's tech and the ocean's if shallow water doesn't reach the
+// enemy's shore, then a port, the one nearest the enemy capital), or nullopt
+// once the player has them
+std::optional<std::vector<Command>> navalStage(const Game &game,
+                                               const std::vector<Command> &legal) {
+    const int player = game.currentPlayer;
     const Player &me = game.players[player];
-    if (me.capital < 0 || game.players[enemy].capital < 0) {
-        return legal;
+    auto [home, target] = capitals(game);
+    if (home < 0) {
+        return std::nullopt;
     }
-    const int home = game.cities[me.capital].tile;
-    const int target = game.cities[game.players[enemy].capital].tile;
     const ImprovementData &port = improvementInfo(ImprovementTypes::PORT);
-    // the port's tech, and the ocean's if shallow water doesn't reach the
-    // enemy's shore
     std::vector<TechTypes::TechType> techs{port.tech};
     if (!shallowRoute(game, landmasses(game), home, target)) {
         techs.push_back(oceanTech());
@@ -375,49 +377,74 @@ std::vector<Command> naval(const Game &game, const std::vector<Command> &legal) 
             return saving(game, legal, {research}, game.techCost(player, next));
         }
     }
-    // then a port, the one nearest the enemy capital
     bool hasPort = false;
     for (int t = 0; t < static_cast<int>(game.tiles.size()); t++) {
         hasPort |= game.tiles[t].building == ImprovementTypes::PORT && game.tileOwner(t) == player;
     }
-    if (!hasPort) {
-        // nothing to save for while no port can be built yet
-        bool buildable = false;
-        for (int t = 0; t < static_cast<int>(game.tiles.size()) && !buildable; t++) {
-            buildable = game.canBuild(player, t, ImprovementTypes::PORT, false);
-        }
-        if (!buildable) {
-            return legal;
-        }
-        std::vector<Command> nearest;
-        int best = FAR;
-        for (const Command &c : legal) {
-            if (c.type != BUILD || c.arg != ImprovementTypes::PORT) {
-                continue;
-            }
-            int d = game.distance(c.from, target);
-            if (d < best) {
-                best = d;
-                nearest.clear();
-            }
-            if (d == best) {
-                nearest.push_back(c);
-            }
-        }
-        int reserve = nearest.empty() ? port.cost : starsSpent(game, nearest.front());
-        return saving(game, legal, nearest, reserve);
+    if (hasPort) {
+        return std::nullopt;
     }
-    // then over the sea to the enemy
-    std::vector<int> steps = routeSteps(game, player, target);
+    // nothing to save for while no port can be built yet
+    bool buildable = false;
+    for (int t = 0; t < static_cast<int>(game.tiles.size()) && !buildable; t++) {
+        buildable = game.canBuild(player, t, ImprovementTypes::PORT, false);
+    }
+    if (!buildable) {
+        return legal;
+    }
+    std::vector<Command> nearest;
+    int best = FAR;
+    for (const Command &c : legal) {
+        if (c.type != BUILD || c.arg != ImprovementTypes::PORT) {
+            continue;
+        }
+        int d = game.distance(c.from, target);
+        if (d < best) {
+            best = d;
+            nearest.clear();
+        }
+        if (d == best) {
+            nearest.push_back(c);
+        }
+    }
+    int reserve = nearest.empty() ? port.cost : starsSpent(game, nearest.front());
+    return saving(game, legal, nearest, reserve);
+}
+
+// the march to the enemy capital, by land and sea
+std::vector<Command> marchOn(const Game &game, const std::vector<Command> &legal) {
+    auto [home, target] = capitals(game);
+    if (home < 0) {
+        return legal;
+    }
+    std::vector<int> steps = routeSteps(game, game.currentPlayer, target);
     return march(game, legal, [&](int) -> const std::vector<int> & { return steps; });
+}
+
+// the way over: bridges where they can join the landmasses, else by sea
+std::optional<std::vector<Command>> crossingStage(const Game &game,
+                                                  const std::vector<Command> &legal) {
+    auto [home, target] = capitals(game);
+    if (home < 0) {
+        return std::nullopt;
+    }
+    std::vector<int> mass = landmasses(game);
+    if (mass[home] == mass[target]) {
+        return std::nullopt;
+    }
+    if (!nextCrossing(game, mass, home, target).empty()) {
+        return bridgeStage(game, legal);
+    }
+    return navalStage(game, legal);
 }
 } // namespace
 
 bool planDone(Plan plan, const Game &game) {
     switch (plan) {
     case Plan::BRIDGE_RUSH:
-        return bridgeDone(game);
+        return !bridgeStage(game, {});
     case Plan::NAVAL:
+    case Plan::CONVERT:
         return false;
     default:
         return true;
@@ -427,9 +454,17 @@ bool planDone(Plan plan, const Game &game) {
 std::vector<Command> planAllowed(Plan plan, const Game &game, const std::vector<Command> &legal) {
     switch (plan) {
     case Plan::BRIDGE_RUSH:
-        return bridgeRush(game, legal);
+        return bridgeStage(game, legal).value_or(legal);
     case Plan::NAVAL:
-        return naval(game, legal);
+        if (auto stage = navalStage(game, legal)) {
+            return *stage;
+        }
+        return marchOn(game, legal);
+    case Plan::CONVERT:
+        if (auto stage = crossingStage(game, legal)) {
+            return *stage;
+        }
+        return marchOn(game, legal);
     default:
         return legal;
     }

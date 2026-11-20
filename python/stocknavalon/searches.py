@@ -114,6 +114,32 @@ def aggression(records: list[pe.GameRecord]) -> list[tuple[float, float, float]]
     return [(bridges[k] / n, ports[k] / n, first[k] / n) for k in (0, 1)]
 
 
+def conversions(records: list[pe.GameRecord], ahead: float = 0.5) -> list[dict]:
+    """Per side: the games where its own search value first reached `ahead`
+    before the other's did, and how they ended: won, lost or undecided, and
+    the turns from then to a win."""
+    out = [{"games": 0, "won": 0, "lost": 0, "undecided": 0, "turns": 0} for _ in (0, 1)]
+    for r in records:
+        values, game, leader, at = r.root_values, r.start(), None, 0
+        for i, c in enumerate(r.commands):
+            if (leader is None and i < len(values) and not math.isnan(values[i])
+                    and values[i] >= ahead):
+                leader, at = game.current_player, game.turn
+            game.apply(c)
+        if leader is None:
+            continue
+        o = out[side_of_seat(r, leader)]
+        o["games"] += 1
+        if r.winner == leader:
+            o["won"] += 1
+            o["turns"] += r.turns - at
+        elif r.winner >= 0:
+            o["lost"] += 1
+        else:
+            o["undecided"] += 1
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Two search settings, one network.")
     parser.add_argument("checkpoint", help="a run directory (its best network) or a .pt file")
@@ -132,9 +158,12 @@ def main():
     parser.add_argument("--backup", nargs="+", choices=list(BACKUPS),
                         help="how values are backed up; one for both sides or one each")
     parser.add_argument("--plan", nargs=2, metavar=("A", "B"), default=["none", "none"],
-                        help="each side's forced opening: none, bridge or naval")
+                        help="each side's forced plan: none, bridge, naval or convert")
     parser.add_argument("--plan-turns", type=int, default=20,
-                        help="forced openings apply before this turn")
+                        help="turns a forced plan lasts, from its start")
+    parser.add_argument("--plan-when-ahead", type=float,
+                        help="start the plans once the side's own search value reaches "
+                             "this (by default from the start)")
     parser.add_argument("--map-types", nargs="+", type=str.upper,
                         choices=list(pe.MapType.__members__),
                         help="only these map types (by default all)")
@@ -149,7 +178,9 @@ def main():
                              "whether more search pays")
     parser.add_argument("--gumbel-candidates", type=int, default=16)
     parser.add_argument("--score-utility", type=float, default=0.05)
-    parser.add_argument("--win-sooner", type=float, default=0.05)
+    parser.add_argument("--win-sooner", type=float, nargs="+", default=[0.05],
+                        help="the tie-break toward a quicker win (or a slower loss); "
+                             "one for both sides or one each")
     parser.add_argument("--fog-share", type=float, default=1.0)
     parser.add_argument("--max-turns", type=int, default=150)
     parser.add_argument("--stall-turns", type=int, default=25)
@@ -203,6 +234,11 @@ def main():
             if args.exploration:
                 changes[k]["exploration"] = args.exploration[k]
                 parts[k].append(f"exploration {args.exploration[k]}")
+        sooner = per_side(args.win_sooner, 2, "--win-sooner")
+        if sooner[0] != sooner[1]:
+            for k in (0, 1):
+                changes[k]["win_sooner"] = sooner[k]
+                parts[k].append(f"win sooner {sooner[k]}")
         for k in (0, 1):
             if args.plan[k] != "none":
                 parts[k].append(f"{args.plan[k]} plan")
@@ -221,7 +257,7 @@ def main():
         shared = pe.search_config(simulations=simulations, samples=args.samples, gumbel=True,
                                   gumbel_candidates=args.gumbel_candidates,
                                   score_utility=args.score_utility,
-                                  win_sooner=args.win_sooner,
+                                  win_sooner=args.win_sooner[0],
                                   count_evaluations=bool(args.evaluations))
         records: list[pe.GameRecord] = []
         result = match(model, model, encoding, device, games=args.games,
@@ -232,6 +268,7 @@ def main():
                        peace_treaties=False, threads=args.threads,
                        max_minutes=1e9, seed=simulations if args.seed is None else args.seed,
                        plans=tuple(args.plan), plan_turns=args.plan_turns,
+                       plan_when_ahead=args.plan_when_ahead,
                        map_types=[pe.MapType.__members__[m] for m in args.map_types or []],
                        keep=records, progress=show_progress, progress_seconds=10)
         clear_progress()
@@ -249,6 +286,7 @@ def main():
         decisions = searched_decisions(records)
         untaken = villages_left(records)
         attacks = aggression(records)
+        converted = conversions(records)
         for side, (name, d) in enumerate(zip(names, result["depth"])):
             print(f"  {name}: mean depth {d['mean_depth']:.2f} moves, "
                   f"{100 * d['reached_opponent']:.0f}% of simulations reached the "
@@ -258,6 +296,12 @@ def main():
                   f"{attacks[side][0]:.1f} bridges and {attacks[side][1]:.1f} ports a game, "
                   f"first attack turn {attacks[side][2]:.1f}",
                   flush=True)
+            c = converted[side]
+            if c["games"]:
+                print(f"    once ahead (its value +0.5 first, {c['games']} games): won "
+                      f"{100 * c['won'] / c['games']:.0f}%, lost {100 * c['lost'] / c['games']:.0f}%, "
+                      f"undecided {100 * c['undecided'] / c['games']:.0f}%; "
+                      f"{c['turns'] / max(1, c['won']):.1f} turns to a win", flush=True)
 
 
 if __name__ == "__main__":
