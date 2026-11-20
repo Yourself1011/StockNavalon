@@ -549,7 +549,16 @@ def parse_map(text: str) -> MapData:
 
 def ruin_count_for_size(size: int) -> int: ...
 
-def generate_map(tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, candidates: int = 10) -> MapData:
+TERRAIN_CHARS: str = 'FTMWO'
+
+RESOURCE_CHARS: str = ' fcgmhsa'
+
+def start_inequality(map: MapData) -> float:
+    """
+    How unequal the players' starts are, as the real game scores it (GAME.md section 18): the best territory's score over the worst's.
+    """
+
+def generate_map(tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, candidates: int = 50) -> MapData:
     """Generates a map for the tribes, in seat order (GAME.md section 18)."""
 
 class Game:

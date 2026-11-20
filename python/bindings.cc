@@ -398,6 +398,15 @@ void bindMaps(nb::module_ &m) {
         },
         "text"_a, "Parses a map from text in the map file format.");
     m.def("ruin_count_for_size", &ruinCountForSize, "size"_a);
+    // the map file format's characters (map.h), by TerrainType and
+    // ResourceType value
+    m.attr("TERRAIN_CHARS") = std::string(TerrainTypes::terrainChars.begin(),
+                                          TerrainTypes::terrainChars.end());
+    m.attr("RESOURCE_CHARS") = std::string(ResourceTypes::resourceChars.begin(),
+                                           ResourceTypes::resourceChars.end());
+    m.def("start_inequality", &startInequality, "map"_a,
+          "How unequal the players' starts are, as the real game scores it "
+          "(GAME.md section 18): the best territory's score over the worst's.");
     m.def(
         "generate_map",
         [](std::vector<TribeTypes::Tribe> tribes, MapTypes::MapType type,
@@ -409,8 +418,9 @@ void bindMaps(nb::module_ &m) {
                                 .candidates = candidates});
         },
         "tribes"_a, "type"_a = MapTypes::LAKES, "size"_a = 14, "seed"_a = 0,
-        "candidates"_a = 10,
-        "Generates a map for the tribes, in seat order (GAME.md section 18).");
+        "candidates"_a = MapGenSettings{}.candidates,
+        "Generates a map for the tribes, in seat order (GAME.md section 18): up "
+        "to `candidates` of them, keeping the fairest.");
 }
 
 void bindGame(nb::module_ &m) {

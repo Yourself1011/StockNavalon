@@ -41,6 +41,8 @@ One request a line on stdin, one JSON answer a line on stdout. The first line ou
 | `state <id>` | the whole `GameState` |
 | `map <id>` | its `MapData`: size and tiles |
 | `mapsettings <id>` | the `MapGeneratorSettings` its map was made with (wetness, richness, city densities, ...) |
+| `fairness <id>` | `{"inequality": x}`: the map generator's own fairness score for the game (`MapFairnessCalculations.GetInequality`), the best player's territory score over the worst's |
+| `turfs <id>` | the territories that score comes from (`CreateTurfs`): per player, every tile it claims with its cost from the capital |
 | `free <id>` | `{}`, and the game is gone |
 
 ```bash
@@ -63,7 +65,7 @@ cmake --build --preset release
 
 `--by-tribe` instead compares rates inside each tribe's climate region, since every tribe has its own terrain and resource modifiers: terrain shares of the land, each resource's rate per terrain next to a settlement and two away, and the starting resources next to the capital, with a z-score each (3,000 maps take about 40 seconds).
 
-Ours is the build tree's module (`build/release/python`, or `POLYENGINE_BUILD_PACKAGE`), not the installed one, so it measures the engine as built. `--save game/maps.jsonl` keeps the real maps (in `game/`, since they come from the game). About 15 seconds for 1,000 maps of each. Results so far are in [`notes/integration.md`](../notes/integration.md) section 5.
+Ours is the build tree's module (`build/release/python`, or `POLYENGINE_BUILD_PACKAGE`), not the installed one, so it measures the engine as built. `--size N --players P` for other sizes and player counts. The real generator itself fails on some large maps with several players (an exception, or the oracle dies); those games are left out and the count printed, the oracle running in batches of 25 so one crash loses only its batch. `--save game/maps.jsonl` keeps the real maps (in `game/`, since they come from the game). About 15 seconds for 1,000 maps of each. Results so far are in [`notes/integration.md`](../notes/integration.md) section 5.
 
 ## How it works
 

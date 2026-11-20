@@ -87,9 +87,9 @@ void sampleUnexplored(Game &g, const Beliefs &beliefs, const Known &known,
         tile.terrain = sampled >= 0 ? static_cast<TerrainType>(sampled) : FIELD;
         std::array<float, ResourceTypes::RESOURCE_TYPE_SIZE> resource = beliefs.resource[t];
         for (int r = 0; r < ResourceTypes::RESOURCE_TYPE_SIZE; r++) {
-            // a village or ruin has no resource
+            // a village has no resource (a ruin can)
             if (!resourceFitsTerrain(static_cast<ResourceTypes::ResourceType>(r), tile.terrain) ||
-                (feature != TileFeature::NONE && r != ResourceTypes::NONE)) {
+                (feature == TileFeature::VILLAGE && r != ResourceTypes::NONE)) {
                 resource[r] = 0;
             }
         }

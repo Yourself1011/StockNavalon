@@ -84,6 +84,24 @@ def our_map(map_data):
                list(map_data.regions))
 
 
+def map_data(m, map_type):
+    """A shared Map as polyengine's MapData, through the map file format
+    (map.h), with the engine's own characters: terrain, resource, village,
+    ruin, lighthouse, each capital's seat, each tile's climate region."""
+    tokens = []
+    for t in range(m.n * m.n):
+        token = pe.TERRAIN_CHARS[pe.TerrainType[m.terrain[t].upper()]]
+        if m.resource[t] and m.resource[t].upper() in pe.ResourceType.__members__:
+            token += pe.RESOURCE_CHARS[pe.ResourceType[m.resource[t].upper()]]
+        token += {"village": "V", "ruin": "R", "lighthouse": "L"}.get(m.building[t], "")
+        if t in m.capitals:
+            token += str(m.capitals.index(t))
+        if m.region[t] >= 0:
+            token += f"^{m.region[t]}"
+        tokens.append(token)
+    return pe.parse_map(f"{m.n} {int(map_type)}\n" + " ".join(tokens))
+
+
 def chebyshev(n, a, b):
     return max(abs(a % n - b % n), abs(a // n - b // n))
 
@@ -143,7 +161,9 @@ def stats(m):
 
     caps = m.capitals
     if len(caps) >= 2:
-        s["capital distance"] = chebyshev(n, caps[0], caps[1])
+        # each capital's distance to the nearest other, averaged
+        s["capital distance"] = sum(
+            min(chebyshev(n, c, o) for o in caps if o != c) for c in caps) / len(caps)
     per_capital = {}
     for c in caps:
         values = {
@@ -234,10 +254,10 @@ TRIBE_RATES = [
 START = ["fruit", "crop", "game", "metal", "fish"]
 
 
-def by_tribe(real, ours, pairs, maps):
+def by_tribe(real, ours, real_pairs, our_pairs):
     """Prints, per tribe, each rate real against ours with its z-score."""
     totals = {}
-    for source, items in (("real", real), ("ours", ours)):
+    for source, items, pairs in (("real", real, real_pairs), ("ours", ours, our_pairs)):
         for m, pair in zip(items, pairs):
             for tribe, c in tribe_counts(m, pair):
                 t = totals.setdefault((source, tribe), {"seats": 0})
@@ -267,6 +287,40 @@ def by_tribe(real, ours, pairs, maps):
                 continue
             print(f"{tribe:10} {name:28} {pr:7.3f} {po:7.3f} {z:6.1f}{flag}")
     print("* |z| > 4; start rows are counts per capital")
+
+
+def real_maps_from_oracle(args, preset, lineups, batch=25):
+    """The real game's maps for the lineups, by index, from the oracle in
+    batches. The real generator sometimes fails on large maps with several
+    players (an exception, or the process dies); those games are left out,
+    a crashed batch being retried one game at a time."""
+    def run(indices):
+        # each process numbers its games from 0, a failed one included, so
+        # the k-th game of the batch is game k; three answers each (new, map,
+        # free), an error for each when the game failed
+        requests = "".join(
+            f"new {preset} {args.size} might crazy {' '.join(lineups[i])}\nmap {k}\nfree {k}\n"
+            for k, i in enumerate(indices))
+        result = subprocess.run([args.oracle, args.build], input=requests,
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        lines = [json.loads(line) for line in result.stdout.splitlines()[1:]]
+        return {i: lines[3 * k + 1] for k, i in enumerate(indices)
+                if lines[3 * k + 1].get("$type") == "MapData"}
+    data = {}
+    indices = list(range(len(lineups)))
+    for start in range(0, len(indices), batch):
+        chunk = indices[start:start + batch]
+        found = run(chunk)
+        if found is None:
+            found = {}
+            for i in chunk:
+                one = run([i])
+                if one:
+                    found.update(one)
+        data.update(found)
+    return data
 
 
 def ks(a, b):
@@ -305,42 +359,41 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--oracle", default="build/release/oracle")
     parser.add_argument("--build", default="game/current")
+    parser.add_argument("--players", type=int, default=2)
     parser.add_argument("--save", help="write the real maps here, one JSON a line")
     parser.add_argument("--by-tribe", action="store_true",
                         help="terrain and resource rates inside each tribe's region")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    pairs = [rng.sample(TRIBES, 2) for _ in range(args.maps)]
+    pairs = [rng.sample(TRIBES, args.players) for _ in range(args.maps)]
     preset = PRESETS.get(args.type, args.type)
-    requests = "".join(
-        f"new {preset} {args.size} might crazy {a} {b}\nmap {i}\nfree {i}\n"
-        for i, (a, b) in enumerate(pairs))
-    out = subprocess.run([args.oracle, args.build], input=requests,
-                         capture_output=True, text=True, check=True).stdout
-    lines = [json.loads(line) for line in out.splitlines()]
-    errors = [line["error"] for line in lines if "error" in line]
-    if errors:
-        raise SystemExit(f"oracle: {errors[0]}")
-    real_data = [line for line in lines if line.get("$type") == "MapData"]
+    real_data = real_maps_from_oracle(args, preset, pairs)
+    if len(real_data) < len(pairs):
+        print(f"(the real generator failed on {len(pairs) - len(real_data)} of {len(pairs)} "
+              "games; they're left out)")
+    real_pairs = [pairs[i] for i in sorted(real_data)]
+    real_data = [real_data[i] for i in sorted(real_data)]
     if args.save:
         with open(args.save, "w") as f:
-            for data, pair in zip(real_data, pairs):
+            for data, pair in zip(real_data, real_pairs):
                 f.write(json.dumps({"tribes": pair, "map": data}) + "\n")
 
     map_type = pe.MapType[args.type.upper()]
-    real_maps = [real_map(data, pair) for data, pair in zip(real_data, pairs)]
-    our_maps = [our_map(pe.generate_map([pe.Tribe[a.upper()], pe.Tribe[b.upper()]],
+    real_maps = [real_map(data, pair) for data, pair in zip(real_data, real_pairs)]
+    our_maps = [our_map(pe.generate_map([pe.Tribe[t.upper()] for t in lineup],
                                         map_type, args.size, seed=args.seed + i))
-                for i, (a, b) in enumerate(pairs)]
+                for i, lineup in enumerate(pairs)]
     if args.by_tribe:
         print(f"{args.type} {args.size}x{args.size}, {len(real_maps)} maps each, by tribe")
-        by_tribe(real_maps, our_maps, pairs, len(real_maps))
+        by_tribe(real_maps, our_maps, real_pairs, pairs)
         return
     real = [stats(m) for m in real_maps]
     ours = [stats(m) for m in our_maps]
+    for s_, m in list(zip(real, real_maps)) + list(zip(ours, our_maps)):
+        s_["start inequality"] = pe.start_inequality(map_data(m, map_type))
 
-    print(f"{args.type} {args.size}x{args.size}, {len(real)} real maps, "
+    print(f"{args.type} {args.size}x{args.size}, {args.players} players, {len(real)} real maps, "
           f"{len(ours)} of ours ({pe._engine.__file__})")
     print(f"{'statistic':42} {'real':>8} {'ours':>8} {'gap (SE)':>9} "
           f"{'KS D':>6} {'KS p':>8}")

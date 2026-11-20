@@ -570,13 +570,20 @@ Sources: <https://polytopia.io/2025-balance-pass/>, <https://github.com/bengreff
 
 We only need maps that look like real ones (similar statistics), not exact seed-for-seed copies. The rules below come from the wiki's Map Generation page and a PolyChampions video. Both are based on an analysis of the game's map code by the PolyMod community. They're precise, but the result still gets tuned later against real maps.
 
-**Several attempts per game:** the game generates several candidate maps and keeps the one with the fairest starting conditions (video). How fairness is scored isn't public. Community ports even out the resources near each capital. **VERIFY**; a first version can score each capital by the resources and villages it can reach early.
+**Several attempts per game** (game: read from the generator's code; the engine's `startInequality` equals the game's own score on all of 1,200 maps of every type): the generator makes up to 50 candidate maps and keeps the fairest, stopping early at one whose inequality is at most 1.01 (the generator's `equalityIterations` and `equalityLimit`). Real 14×14 maps come out at a median inequality of 1.006–1.009 and at most about 1.10.
+
+- **Territories:** one search from every capital at once, lowest cost first, gives each tile to the capital that reaches it most cheaply; a tile two capitals reach at the same cost goes to the one first in seat order. A step costs 1 onto land, 4 onto a mountain, 4 from water to water, and into water from land 8 from a capital, 16 from a village, and 1,000 from anywhere else.
+- **Each tile's score,** with d = (its cost − 3) ÷ (0.8 × map width − 3), clamped to 0–1:
+  - a village or capital: 100 − 90d, plus 40 at cost exactly 3 or 20 at exactly 4;
+  - a ruin: 5 − 3d, plus 5 at cost 4 or less;
+  - every tile: 0.1, and on land 1.5 − d more.
+- **Inequality:** the best territory's total over the worst's.
 
 | Size                                      | Tiny  | Small | Normal | Large | Huge  | Massive |
 | ----------------------------------------- | ----- | ----- | ------ | ----- | ----- | ------- |
 | Tiles                                     | 11×11 | 14×14 | 16×16  | 18×18 | 20×20 | 30×30   |
 | Ruins                                     | 4     | 5     | 7      | 9     | 11    | 23      |
-| Tiny island villages (Continents, Pangea) | 0     | 1     | 2      | 3     | 4     | 9       |
+| Tiny island villages (Continents, Pangea) | 1     | 1     | 2      | 3     | 4     | 9       |
 
 - **Map size in Domination** depends on the number of opponents: 1 → Tiny, 2 → Small, 3 → Normal, 4 or more → Large. Perfection uses Normal.
 - **Player limit:** Tiny maps hold at most 9 players, the other sizes at most 16.
@@ -585,8 +592,8 @@ We only need maps that look like real ones (similar statistics), not exact seed-
 | ----------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Drylands    | 0–10%   | All land, apart from 2 fish water tiles at Kickoo and Luxidoor capitals                                                      |
 | Lakes       | 25–30%  | Scattered inland lakes, with land bridges always along the map edges. Every player gets a land route to at least 2 villages. |
-| Pangea      | 49.5%   | One central landmass surrounded by ocean, plus the tiny island village (game, measured on 14×14: half the map, every time)  |
-| Continents  | 36–41%  | 1–3 landmasses (2 players), at least 1 tile apart, the land round the map's edges and a sea in the middle (game, measured)  |
+| Pangea      | about 50% | One central landmass surrounded by ocean, never touching the edge, plus tiny island villages                               |
+| Continents  | 36–47%  | 2–7 continents, never touching straight on, the land round the map's edges and a sea in the middle                          |
 | Archipelago | 60–80%  | Broken, irregular islands; almost every city is coastal                                                                      |
 | Water World | 90–100% | Small islands of 1–2 villages; land is forced under every city                                                               |
 
@@ -608,16 +615,16 @@ We only need maps that look like real ones (similar statistics), not exact seed-
 | Suburbs               | no       | yes     | yes                  | no          | no                  |
 | Pre-terrain villages  | no       | 0.3     | 0.3                  | 0.1         | no                  |
 | Post-terrain villages | yes      | yes     | yes                  | yes         | yes                 |
-| Tiny island villages  | no       | no      | no                   | yes         | yes                 |
-| Ruins on water        | max 1/3  | max 1/3 | max 1/3 (**VERIFY**) | no limit    | max 1/3             |
+| Tiny island villages  | no       | no      | no                   | no          | yes                 |
 
 The pre-terrain row gives the density coefficient.
 
 **Shared steps:**
 
-- **Capitals in quadrants:** the map is split into equal domains: 4 for 1–4 players, 9 for 5–9, 16 for 10–16. Each capital goes in an unoccupied domain, chosen with weighted randomness. Within its domain each coordinate is at least 2 in from the domain's sides and leans to the middle (game, measured): on 14×14 (7-wide domains) 2, 3 or 4 in, about 1:2:1; wider domains spread further, still peaked in the middle. So on 14×14 capitals are 2–3 tiles from the map edge 94% of the time.
-- **Suburbs:** 1 or 2 villages per capital (the generator's settings), 3 tiles from it (game, measured: half of all real Lakes villages are exactly 3 from the nearest capital, 5% are 4). They also follow the spacing rules above.
-- **Pre-terrain villages:** `(floor(width / 3)² − capitals − suburbs) × density`.
+- **Capitals in quadrants:** the map is split into k × k domains, k = ⌈√players⌉ (4 for 1–4 players, 9 for 5–9, 16 for 10–16), each width ÷ k tiles, the grid centred on the map with the leftover tiles at the edges, the odd one first (the generator's `DomainSize`; game, measured: on 11×11 the domains are [1, 6) and [6, 11), so capitals are always on 3 or 8). Each capital goes in an unoccupied domain. Within it each coordinate is at least 2 in from the domain's sides, weighted by (half the domain − its distance from offset half the domain)², at least 1 (game, measured at every size from 11 to 30: a 7-wide domain gives 2, 3 or 4 at 1 : 2.3 : 1, a 6-wide one 2 or 3 at 31 : 69).
+- **Early-village room:** t = int(0.33 × width), so 3, 4, 5, 5, 6, 9 for widths 11, 14, 16, 18, 20, 30, and the room is t² − capitals (game: the generator's own count).
+- **Suburbs:** per capital, the room ÷ players, clamped to the map type's minimum and maximum (Lakes and Archipelago 1–2, so 2 on every size), 3 tiles from it (game: the count from the generator's code, the distance measured: half of all real Lakes villages are exactly 3 from the nearest capital, 5% are 4). They also follow the spacing rules above.
+- **Pre-terrain villages:** `int((room − suburbs) × density)`, truncated (game: the generator's own count), so 11×11 Water World gets none.
 - **Lighthouses:** one in each of the 4 corners, on the corner's own terrain (game): land becomes field, water stays water or ocean. On Pangea every corner is ocean; on Archipelago and Continents about half are water.
 
 **Water on Lakes, Archipelago and Water World** (game: the generator's method names, its settings, and statistics of real maps):
@@ -678,24 +685,18 @@ The "data" rows are the real generator's settings (`MapGeneratorSettings`). Whic
     6. lighthouses
     7. resources
     8. ruins and starfish
-- **Pangea:**
-    1. land grows from a seed in the centre of the map, roughly in a circle, until exactly half the tiles are water
-    2. villages placed on the land one at a time under the post-terrain rules until none fit, the ring 2 tiles in from the edge first, and never with a coordinate 3 from its nearer edge (game, measured: 39% of villages are on that ring, 2% have such a coordinate, against 16% on Drylands)
-    3. some villages on that ring become capitals, as far apart as possible: on 2-player maps nearly always opposite sides of it, 9 tiles apart (game, measured)
-    4. tiny island villages
-    5. terrain by tribe
-    6. lighthouses
-    7. resources
-    8. ruins and starfish
-- **Continents:**
-    1. landmasses grown from noise in which the outside of the map counts as land (the generator's settings: wetness 0.5, one smoothing pass), so land runs round the edges: about 65% land on the outer four rings, 20% at the centre (game, measured). 2-player 14×14 maps have 1, 2 or 3 landmasses of 3+ tiles 19 / 53 / 28% of the time, at least a tile apart, with 36–41% water (game, measured).
-    2. villages placed one at a time on each continent, at least one per continent where possible, then as on Pangea
-    3. tiny island villages
-    4. one village per player becomes a capital, as on Pangea. Both capitals share one landmass on 28% of 2-player 14×14 maps and 40% of 11×11 ones; in 90% of 11×11 maps they share one or can be joined by bridges (game, measured).
-    5. mountains and forests by tribe
-    6. lighthouses
-    7. resources
-    8. ruins and starfish
+- **Continents and Pangea** (game: read from the generator's code, `TryGenerateMapFromIslands` and `AddContinents`, and checked against real maps at sizes 11–30 with 2–8 players):
+    1. **Noise:** a random value per tile, smoothed once, the outside of the map counting as land on Continents and as water on Pangea.
+    2. **Seeds:** on Continents, a count picked at random from 2 to 7, among those that give each continent (1 − wetness) × tiles ÷ count = 30 to 200 tiles (2 on 11×11; 2–3 on 14×14; 3–7 on 30×30), placed like capitals in a grid of domains. It doesn't depend on the players. On Pangea, one seed in the middle.
+    3. **Which continents get capitals:** all of them when there are at least as many players; otherwise fewer, until each has at least 2.
+    4. **Sizes:** the land is (1 − wetness) × tiles, half a continent's share more with several continents. Each continent's target is half of it shared out evenly plus half shared by capitals, which go round-robin over the continents that get them.
+    5. **Growth,** one continent at a time to its target (at most 1,000 steps each): from a random tile of the continent, its straight neighbour with the best score above 0 joins it. The score is the noise + 1, less a fifth of the tile's distance from the map edge on Continents (so land runs round the edges, with a sea in the middle) or 1 over it on Pangea (so never the edge), and for each tile of another continent around it a random 0.5 to 3 less, 10 more when straight beside it. A tile with nothing to take is never tried again. So continents never touch straight on, though they can corner to corner. Everything else is water.
+    6. **Villages,** round-robin over the continents until every one in a row has failed: a random tile of the continent at least 2 from the map edge, with neither coordinate 3 from its nearer edge, and no village within 2. That's why villages there pile up 2 from the edge and almost never sit 3 from it. Failing that, any tile off the edge touching its own continent and no other is used, but counts as a failure, so full continents keep getting these while others still have room.
+    7. **Capitals:** each player in turn takes a village on the next continent that gets capitals: the one furthest from the capitals so far (counted up to 20, and at least 4 away where a domain is wider than 4 tiles, else 3), at least 2 from the map edge, with 1 extra for 2 to 6 water tiles around it, the earliest in the order the continent grew among equals. Then each player picks again with all the others placed. With no such village, a random tile fit for a capital anywhere. If that fails too, the villages are wiped, each player takes the next fit tile along the map (row by row), and the villages are placed again.
+    8. **Tiny island villages:** wetness × tiles ÷ 50 of them (1, 1, 2, 3, 4, 9 for 11 to 30 wide), each on open water, off the edge, with no land around and no village within 2.
+    9. Then terrain by tribe, lighthouses, resources, ruins and starfish, as on every map type.
+
+    If the capitals can't be placed at all, the real game falls back to the noise path; the engine tries another candidate map instead.
 
 **Terrain:** each tile takes the modifiers of the tribe whose climate region it's in (section 17). Measured tribe by tribe against real maps (game; `src/oracle/mapstats.py --by-tribe`, 3,000 Drylands and Lakes maps), not from the wiki.
 
@@ -722,12 +723,13 @@ The "data" rows are the real generator's settings (`MapGeneratorSettings`). Whic
 - **AquaCrop** is Aquarion's water crop (section 4); it's placed on every map with water, whatever the tribes, taking its tile.
 - **Then each tribe's starting resources** (section 17): the capital's 8 neighbours get at least as many of each resource as the tribe's list has, counting what's already there (Hoodrick's 2 game come to 2.5 on average, Luxidoor's 8 fill all 8). Each missing one goes on a random neighbour, whatever was on it except a resource the list still needs, changing its terrain to fit (game, measured: Kickoo's fish replace land resources as often as not).
 
-**Ruins** (count from the size table), placed last together with starfish:
+**Ruins** (count from the size table), placed last together with starfish (game: read from the generator's code, `AddRuins`): one pass over the tiles in random order, a ruin on each that fits until the count is reached, so a crowded map can have fewer.
 
-- Only on mountain, forest, field or ocean (never shallow water).
-- Never next to another ruin or a village.
-- Ocean ruins must be at least 2 tiles from any village.
-- The water limit per map type is in the table above.
+- On land or ocean (never shallow water), never a corner.
+- No village within 1, no capital within 2, no other ruin within 2 (so ruins are at least 3 apart).
+- On ocean also off the edge and no village within 2.
+- A ruin can stand on a resource, which stays there.
+- No limit on how many go on water: the wiki's third is wrong (14×14 Pangea has up to 4 of its 5 on water).
 
 **Starfish:** the map type's wetness (section 18's table; Drylands 0, Continents and Pangea 0.5) × the map's tiles ÷ 25, rounded up (game: the generator's own count): 3 on 14×14 Lakes, 7 on Water World. Each try is a random water tile, kept if it's empty and not next to a village or another starfish; there are as many tries as water tiles. A starfish can land on a water corner, and the corner's lighthouse then takes the tile (game, measured: starfish are next to corners as often as anywhere, and there's one fewer than the count on 10–15% of maps).
 
@@ -737,7 +739,6 @@ The details below aren't public. The engine uses these defaults for now. They'll
 
 | Unknown                                          | Default                                                                                                                                                                                       |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| How the fairest map is picked                    | The real game makes up to 50 candidates and scores them by territories around the capitals (its `MapFairnessCalculations`; how exactly isn't read). Until that's matched: generate 10 candidate maps. Score each capital by the resources within 2 tiles of it plus the villages within 4 tiles. Keep the map with the smallest gap between the best and worst capital. |
 | Who gets the meeting bonus                       | Only the player who meets the other tribe. The other tribe meets them when it sees one of theirs, or receives their peace offer or embassy.                                                   |
 | Archipelago water ruins                          | At most a third, like Lakes and Pangea.                                                                                                                                                       |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10.                                                                                                                                                         |
@@ -855,8 +856,8 @@ Each item, with the section it's from:
   - Default: random tiles next to the capital (section 18)
 - [x] Map-generation terrain percentages (§18)
   - Wiki Map Generation page
-- [ ] Map generation: how the fairest map is picked (§18)
-  - Climate regions, resource modifiers and water modifiers are settled by measuring real maps (§18); the fairness score is the real `MapFairnessCalculations`, not yet matched
+- [x] Map generation: how the fairest map is picked (§18)
+  - Read from the generator's code and checked against its own score (§18). Climate regions, resource modifiers and water modifiers are settled by measuring real maps
   - Defaults are in §18 "Defaults until verified". These get settled by comparing against real maps.
 - [ ] Map generation: the limit on water ruins for Archipelago (§18)
 - [x] Giant push directions when a Giant spawns on an occupied city (§7)

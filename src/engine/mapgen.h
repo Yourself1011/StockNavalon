@@ -16,24 +16,21 @@ struct MapGenSettings {
 
     // Defaults until verified (GAME.md section 18), all tunable. A negative
     // value means the map type's own default.
-    // candidate maps; the fairest is kept
-    int candidates = 10;
-    // share of water tiles: Drylands 0, Lakes 25.5-28.1%, Pangea and
-    // Continents 45-55%, Archipelago 61.2-64.3%, Water World 84.7-85.7%
+    // up to this many candidate maps; the fairest is kept, and the first at
+    // most equalityLimit ends the search (game: the generator's settings)
+    int candidates = 50;
+    double equalityLimit = 1.01;
+    // share of water tiles on the noise path: Drylands 0, Lakes 25.5-28.1%,
+    // Archipelago 61.2-64.3%, Water World 84.7-85.7% (Continents and Pangea
+    // get theirs from how their continents grow)
     double minWater = -1, maxWater = -1;
     // the noise path (Lakes, Archipelago, Water World): smoothing passes
     // over the noise (Lakes 2, Archipelago 0, Water World 2); the wetness,
     // which the noise beside a capital is lifted to at least (Lakes 0.3,
     // Archipelago 0.65, Water World 0.85); the noise counted outside the map
-    // when smoothing (Lakes 1, Continents 1, others 0.5)
+    // when smoothing (Lakes 1, Continents 1, Pangea 0, others 0.5)
     int smoothing = -1;
     double wetness = -1, edgeNoise = -1;
-    // Continents: one per player, or one fewer or one more this often
-    // (game: measured on 2-player maps)
-    double continentFewer = 0.19, continentMore = 0.28;
-    // Continents: how much a tile's land neighbours on the continent count
-    // against its noise when the continent grows, for compact coasts
-    double continentCompactness = 0.05;
     // pre-terrain villages: Lakes and Archipelago 0.3, Water World 0.1,
     // otherwise none
     double preTerrainDensity = -1;
@@ -77,13 +74,17 @@ bool resourceFitsTerrain(ResourceTypes::ResourceType resource,
                          TerrainTypes::TerrainType terrain);
 // corners always have a lighthouse: on field, or on the water already there
 bool isCornerTile(int x, int y, int size);
-// ruins: never on shallow water, at least this far from a village or capital
-// on land and on ocean, and at least RUIN_SPACING from another ruin
+// ruins (game: the generator's own rules): never on shallow water or a
+// corner, at least this far from a village on land and from any settlement
+// on ocean, from a capital, and from another ruin; on a resource or not
 constexpr int RUIN_LAND_SETTLEMENT_DISTANCE = 2;
 constexpr int RUIN_OCEAN_SETTLEMENT_DISTANCE = 3;
-constexpr int RUIN_SPACING = 2;
+constexpr int RUIN_CAPITAL_DISTANCE = 3;
+constexpr int RUIN_SPACING = 3;
 
-// villages on 1-tile islands: Continents, Pangea and Water World
-int tinyIslandCountForSize(int size);
+
+// How unequal the players' starts are, as the real game scores it (GAME.md
+// section 18): the best territory's score over the worst's, 1 when equal.
+double startInequality(const MapData &map);
 
 MapData generateMap(const MapGenSettings &settings);

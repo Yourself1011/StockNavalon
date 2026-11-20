@@ -110,7 +110,9 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 
 | | |
 | --- | --- |
-| `generate_map(tribes, type=LAKES, size=14, seed=0, candidates=10)` | a generated map for the tribes, in seat order. `candidates` maps are made and the fairest kept. |
+| `generate_map(tribes, type=LAKES, size=14, seed=0, candidates=50)` | a generated map for the tribes, in seat order: up to `candidates` maps, the fairest kept, stopping at the first fair enough (GAME.md section 18). |
+| `start_inequality(map)` | how unequal the players' starts are, as the real game scores it: the best territory's score over the worst's |
+| `TERRAIN_CHARS`, `RESOURCE_CHARS` | the map file format's characters, by `TerrainType` and `ResourceType` value |
 | `load_map(path)`, `parse_map(text)` | a map from the text format (see `src/engine/map.h`) |
 | `MapData` | `size`, `type`, `tiles`, `capitals` (each player's capital tile), `regions` (each tile's climate region, by seat) |
 | `ruin_count_for_size(size)` | ruins a map of that size gets |

@@ -145,7 +145,8 @@ TEST_CASE("a naval plan: the port's tech, a port, then over the sea, every move 
         }
         MESSAGE("map " << static_cast<int>(map) << ": a port in " << ports
                        << " of 8 games, landed somewhere in " << landings);
-        CHECK(ports >= 6);
+        // 24-25 of 32 games on these maps: 8 games give 5 to 7
+        CHECK(ports >= 5);
         CHECK(landings >= 1);
     }
 }

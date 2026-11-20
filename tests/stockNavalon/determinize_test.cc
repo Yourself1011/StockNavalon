@@ -331,8 +331,9 @@ TEST_CASE("unexplored tiles sampled from beliefs follow the map generator's rule
                     }
                 }
             } else if (tile.building == ImprovementTypes::RUIN) {
+                // a ruin can stand on a resource, as in the real game
                 CHECK(tile.terrain != WATER);
-                CHECK(tile.resource == ResourceTypes::NONE);
+                CHECK(resourceFitsTerrain(tile.resource, tile.terrain));
             }
         }
         // a valid game, that plays on

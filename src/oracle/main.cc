@@ -57,6 +57,8 @@ std::string handle(const std::string &line) {
         while (words >> tribe) {
             g.tribes.push_back(oracle::enumValue("TribeType", tribe));
         }
+        // the id is used up even if the game fails, so the k-th new is
+        // always game k
         int id = nextGame++;
         games[id] = gchandle_new(oracle::createLocalGame(g), false);
         return "{\"game\":" + std::to_string(id) + "}";
@@ -73,6 +75,44 @@ std::string handle(const std::string &line) {
         return oracle::dump(invoke(
             findMethod(object_get_class(settings), "GetMapGeneratorSettings", 0),
             settings, nullptr));
+    }
+    if (request == "fairness") {
+        // the map generator's score of how unequal the players' starts are
+        // (MapFairnessCalculations.GetInequality): the best territory's
+        // score over the worst's
+        Object *state = game(words);
+        const Image *logic = image("GameLogicAssembly.dll");
+        void *args[] = {state};
+        Object *result = invoke(
+            findMethod(findClass(logic, "", "MapFairnessCalculations"), "GetInequality", 1),
+            nullptr, args);
+        return "{\"inequality\":" + std::to_string(*static_cast<float *>(object_unbox(result))) + "}";
+    }
+    if (request == "turfs") {
+        // the territories the fairness score is made from
+        // (MapFairnessCalculations.CreateTurfs): per player, each tile with
+        // its cost from the capital
+        Object *state = game(words);
+        const Image *logic = image("GameLogicAssembly.dll");
+        void *args[] = {state};
+        Object *turfs = invoke(
+            findMethod(findClass(logic, "", "MapFairnessCalculations"), "CreateTurfs", 1),
+            nullptr, args);
+        // a Dictionary<int, List<TurfTile>>: each player's list through
+        // the dictionary's own methods, as [player, list] pairs
+        Class *dict = object_get_class(turfs);
+        const Method *has = findMethod(dict, "ContainsKey", 1);
+        const Method *get = findMethod(dict, "get_Item", 1);
+        std::string out = "[";
+        for (int player = 0; player < 256; player++) {
+            void *key[] = {&player};
+            if (!*static_cast<bool *>(object_unbox(invoke(has, turfs, key)))) {
+                continue;
+            }
+            out += (out.size() > 1 ? ",[" : "[") + std::to_string(player) + "," +
+                   oracle::dump(invoke(get, turfs, key)) + "]";
+        }
+        return out + "]";
     }
     if (request == "free") {
         int id = -1;
