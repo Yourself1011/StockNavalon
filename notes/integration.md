@@ -175,7 +175,14 @@ So the order and the per-type steps agree (the community's description came from
   - **Pangea:** capitals always on the ring 2 in, while real ones move inland as maps grow and players increase (average 2.9–3.8 from the edge at 18–30); slightly too many villages up to 20×20, too few at 30×30.
   - **Continents** drifts most with size: the edge ring too much land (73–83% / 58–67%), too little ocean (30×30: 20.5% / 30.8% with 2 players, 12.5% / 28% with 8), capitals always on the ring (real 2.5–3.5 from the edge with 4–8 players), too many villages at 30×30 (52 / 42 with 8 players).
   - The real generator itself fails on some large multi-player maps (an exception "Crash occured IN FINAL STEP to generate a map" on 18×18 Pangea with 4 players, or a segfault); `mapstats` now runs the oracle in batches and leaves those games out.
-  - Next, if large maps matter: Continents' shape and both continent types' capital placement are the fitted parts of the generator (from statistics, not read from the code), and they're what drifts. Reading `TryGenerateMapFromIslands` and `AddContinents` would replace the fitting.
+- **Continents and Pangea rebuilt from the real code** (2026-11-20): a subagent read `TryGenerateMapFromIslands`, `AddContinents`, the village and capital placement and `AddRuins` from the assembly, checked against the oracle (GAME.md section 18 now describes it). Rebuilt in `generateIslands`, along with the real ruin rules (no water cap, 3 apart, 3 from capitals, can stand on a resource; determinization now allows that). Full grid again, flags per run (KS p < 0.001):
+  - **Continents and Pangea:** down from 5–10 each to 0–2, all small (ocean share under 1 point, starfish within 0.6).
+  - **Drylands:** 0 everywhere.
+  - **Lakes:** 1–4, small; 11×11 has too many islets (landmasses 1.30 / 1.01) and a little more ocean (5.6% / 3.4%).
+  - **Archipelago:** 4–6 per run: ocean about 2 points low, water about 1 high, the edge ring about 3 points more land, landmasses 5–10% fewer, a village or so too many.
+  - **Water World:** 6–7 per run from 16×16 up: 1–2 villages short (and the AquaCrop near them), landmasses 15–20% fewer, ocean 2 points high.
+  - These last are the noise path's fitted parts (which tiles get lifted; how water is cut). Reading `GenerateMapFromNoise`, `GetCapitalNeighborIndices` and `SetTerrainFromNoise` the same way would replace the fitting.
+  - The real generator itself failed on 1 game in 150–300 on a few large multi-player configurations; `mapstats` leaves those out.
 - The oracle's general dumper segfaults on a `Dictionary<int, List<TurfTile>>`; `turfs` goes round it through the dictionary's own methods. Worth fixing before phase 3 needs dictionaries.
 
 ## 6. Engine changes this needs
