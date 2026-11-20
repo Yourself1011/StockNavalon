@@ -119,12 +119,12 @@ def test_encoding_shapes_and_round_trip():
     import numpy as np
 
     enc = pe.Encoding(map_size=11, players=2)
-    assert (enc.plane_count, enc.global_count, enc.action_count) == (105, 149, 26410)
+    assert (enc.plane_count, enc.global_count, enc.action_count) == (106, 149, 26410)
     tribes = [pe.Tribe.IMPERIUS, pe.Tribe.BARDUR]
     game = pe.Game(pe.generate_map(tribes, size=11, seed=3), tribes, seed=3)
 
     planes, globals_ = enc.encode_state(game, 0)
-    assert planes.shape == (105, 11, 11) and planes.dtype == np.float32
+    assert planes.shape == (106, 11, 11) and planes.dtype == np.float32
     assert globals_.shape == (149,) and globals_.dtype == np.float32
     assert planes[0].sum() == 121  # every tile is on the map
 
@@ -138,7 +138,7 @@ def test_encoding_shapes_and_round_trip():
 
     games = [game, game.copy()]
     batch_planes, batch_globals = enc.encode_states(games, [0, 1])
-    assert batch_planes.shape == (2, 105, 11, 11)
+    assert batch_planes.shape == (2, 106, 11, 11)
     assert batch_globals.shape == (2, 149)
     assert np.array_equal(batch_planes[0], planes)
     assert enc.legal_masks(games).shape == (2, 26410)

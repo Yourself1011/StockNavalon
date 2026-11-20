@@ -9,7 +9,7 @@ struct EncodingConfig {
     int mapSize = 11;       // N: every map is padded to N x N
     int players = 2;        // P: seats encoded, the player to move first
 };
-constexpr int ENCODING_VERSION = 15;
+constexpr int ENCODING_VERSION = 16;
 ```
 
 - **First target: 11×11 (Tiny), 1v1.** That's the smallest game that still has the whole game in it, so it's the fastest way to find out whether the architecture learns at all. Every number in this document is derived from the config; the concrete counts shown are for N = 11, P = 2.
@@ -21,6 +21,7 @@ constexpr int ENCODING_VERSION = 15;
   - Version 3: climate planes, the tribes each opponent could be, and the climates seen.
   - Version 4: each opponent's opening score changes, and where each tribe they could be puts their capital (section 4.2).
   - Version 5: the map-wide `unexplored` belief head (section 8.2).
+  - Version 16: the AquaCrop plane (section 3), last, and AquaCrop in the `unexplored` head's resources (section 8.2), whose weights from before are dropped and relearned (`load_weights`).
   - Version 15: reach and danger follow the movement rule that any movement left allows a step (a road step, then an ordinary one); no layout change.
   - Version 14: each player's capital income bonus (section 4), last.
   - Version 13: each player's head start (section 4), last.
@@ -43,7 +44,7 @@ constexpr int ENCODING_VERSION = 15;
 
 ## 3. Spatial planes: `[C, N, N]`
 
-C = 99 + 3P, which is **105** for P = 2.
+C = 100 + 3P, which is **106** for P = 2.
 
 ### Board (50 planes)
 
@@ -52,7 +53,7 @@ C = 99 + 3P, which is **105** for P = 2.
 | `on_map` | 1 | 1 on real tiles, 0 on padding |
 | `explored` | 1 | 1 if the player has explored the tile |
 | terrain | 5 | one-hot: field, forest, mountain, shallow water, ocean |
-| resource | 6 | one-hot: fruit, crop, game, metal, fish, starfish. Only resources the player can see (`TileView.resource`), so it's all zeros until the matching tech is researchable. |
+| resource | 6 | one-hot: fruit, crop, game, metal, fish, starfish. Only resources the player can see (`TileView.resource`), so it's all zeros until the matching tech is researchable. AquaCrop has its own plane, last. |
 | road | 1 | road or bridge |
 | building | 22 | one-hot: village, ruin, lighthouse, farm, mine, lumber hut, windmill, sawmill, forge, market, port, temple, forest temple, mountain temple, water temple, then the 7 monuments. Cities have their own planes. |
 | building level | 1 | Windmill, Sawmill or Forge level ÷ 8, or temple level ÷ 5. The building planes say which it is. |
@@ -122,6 +123,7 @@ A city is captured by a unit that starts its turn on it, so an empty city an ene
 | Planes | Count | Value |
 | --- | --- | --- |
 | lethal | 1 | on each of the player's units: the total damage every visible enemy that could hit it next turn would deal (each as the threats' damage, against this unit on this tile), over its HP, capped at 1. At 1 it dies if they all attack it: the worst case, ignoring retaliation and order. A weak unit put on a city under attack shows 1. |
+| aquacrop | 1 | 1 on a visible tile with AquaCrop, Aquarion's water crop (GAME.md section 4). Added after the other resources' planes, so it's last. |
 
 ## 4. Global vector: `[G]`
 
@@ -306,7 +308,7 @@ Per opponent, so `P − 1` of each in general; one in 1v1. A belief head's targe
 | hidden unit type | `[T, N, N]`, softmax over the T = 20 unit types per tile | that unit's type, as it is now (a boat is its boat type) | tiles that have a hidden unit |
 | hidden unit count | softmax over 0 to 20, the last meaning 20 or more | how many of their units the player can't see | always |
 | opponent's exploration | softmax over 0 to N² | how many tiles they've explored | always |
-| unexplored (the map's, not per opponent: opponent 0, after the others) | `[15, N, N]`: per tile a softmax over the 5 terrains, one over the 7 resources (none first), one over the features (none, village, ruin) | what the tile holds now | tiles the player hasn't explored, except corners (always a lighthouse) and cities (determinization places those) |
+| unexplored (the map's, not per opponent: opponent 0, after the others) | `[16, N, N]`: per tile a softmax over the 5 terrains, one over the 8 resources (none first, AquaCrop last), one over the features (none, village, ruin) | what the tile holds now | tiles the player hasn't explored, except corners (always a lighthouse) and cities (determinization places those) |
 
 - **"Can't see"** means on an unexplored tile, or hidden (a Cloak or Dagger) anywhere.
 - **The joint for one tile:** P(a Rider here) = P(unit here) × P(Rider | unit here). The two are separate heads so the "here" loss can weight the rare tiles with units without distorting the type proportions ([`notes/design.md`](../notes/design.md) section 5).

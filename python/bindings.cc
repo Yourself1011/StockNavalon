@@ -186,7 +186,7 @@ void bindEnums(nb::module_ &m) {
                                            nb::is_arithmetic())
         V(ResourceTypes, NONE) V(ResourceTypes, FRUIT) V(ResourceTypes, CROP)
         V(ResourceTypes, GAME) V(ResourceTypes, METAL) V(ResourceTypes, FISH)
-        V(ResourceTypes, STARFISH);
+        V(ResourceTypes, STARFISH) V(ResourceTypes, AQUACROP);
 
     nb::enum_<ImprovementTypes::ImprovementType>(m, "ImprovementType",
                                                  nb::is_arithmetic())

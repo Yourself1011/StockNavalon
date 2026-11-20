@@ -10,7 +10,7 @@ using namespace ResourceTypes;
 
 ResourceModifiers
 resources(std::initializer_list<std::pair<ResourceType, double>> mods) {
-    ResourceModifiers out = {1, 1, 1, 1, 1, 1, 1};
+    ResourceModifiers out = noResourceModifiers();
     for (auto [resource, mod] : mods) {
         out[resource] = mod;
     }

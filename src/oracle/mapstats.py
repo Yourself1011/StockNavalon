@@ -176,6 +176,99 @@ def stats(m):
     return s
 
 
+def tribe_counts(m, tribes):
+    """Per seat, counts inside its climate region: terrain of the land the
+    generator chose freely (not settlements or corners), and resources by
+    terrain, next to a settlement (inner) or two away (outer), leaving out
+    the capital's own neighbours, where starting resources go; those are
+    counted separately."""
+    n, tiles = m.n, m.n * m.n
+    settlements = [t for t in range(tiles) if m.building[t] in ("village", "capital")]
+    out = []
+    for seat, tribe in enumerate(tribes):
+        c = {}
+        def add(key, k=1):
+            c[key] = c.get(key, 0) + k
+        capital = m.capitals[seat]
+        for t in range(tiles):
+            if m.region[t] != seat:
+                continue
+            add("tiles")
+            terrain = m.terrain[t]
+            if terrain in ("water", "ocean"):
+                add("water")
+            corner = (t % n in (0, n - 1)) and (t // n in (0, n - 1))
+            if t in settlements or corner:
+                continue
+            if terrain not in ("water", "ocean"):
+                add("land")
+                add(f"terrain {terrain}")
+            if chebyshev(n, t, capital) == 1:
+                if m.resource[t]:
+                    add(f"start {m.resource[t]}")
+                continue
+            d = min((chebyshev(n, t, v) for v in settlements), default=n)
+            if d > 2:
+                continue
+            band = "inner" if d == 1 else "outer"
+            add(f"{terrain} {band}")
+            if m.resource[t]:
+                add(f"{terrain} {band} {m.resource[t]}")
+        out.append((tribe, c))
+    return out
+
+
+# per-tribe rates: (name, numerator key, denominator key)
+TRIBE_RATES = [
+    ("water share of region", "water", "tiles"),
+    ("field share of land", "terrain field", "land"),
+    ("forest share of land", "terrain forest", "land"),
+    ("mountain share of land", "terrain mountain", "land"),
+] + [
+    (f"{res} on {ter}, {band}", f"{ter} {band} {res}", f"{ter} {band}")
+    for ter, ress in (("field", ("fruit", "crop")), ("forest", ("game",)),
+                      ("mountain", ("metal",)), ("water", ("fish", "aquacrop")),
+                      ("ocean", ("fish",)))
+    for res in ress for band in ("inner", "outer")
+]
+START = ["fruit", "crop", "game", "metal", "fish"]
+
+
+def by_tribe(real, ours, pairs, maps):
+    """Prints, per tribe, each rate real against ours with its z-score."""
+    totals = {}
+    for source, items in (("real", real), ("ours", ours)):
+        for m, pair in zip(items, pairs):
+            for tribe, c in tribe_counts(m, pair):
+                t = totals.setdefault((source, tribe), {"seats": 0})
+                t["seats"] += 1
+                for k, v in c.items():
+                    t[k] = t.get(k, 0) + v
+    print(f"{'tribe':10} {'rate':28} {'real':>7} {'ours':>7} {'z':>6}")
+    for tribe in sorted({tr for _, tr in totals}):
+        r, o = totals.get(("real", tribe)), totals.get(("ours", tribe))
+        if not r or not o:
+            continue
+        rows = []
+        for name, num, den in TRIBE_RATES:
+            if not r.get(den) or not o.get(den):
+                continue
+            pr, po = r.get(num, 0) / r[den], o.get(num, 0) / o[den]
+            se = math.sqrt(pr * (1 - pr) / r[den] + po * (1 - po) / o[den])
+            z = (po - pr) / se if se > 0 else 0.0
+            rows.append((name, pr, po, z))
+        for res in START:
+            pr = r.get(f"start {res}", 0) / r["seats"]
+            po = o.get(f"start {res}", 0) / o["seats"]
+            rows.append((f"start {res} per capital", pr, po, float("nan")))
+        for name, pr, po, z in rows:
+            flag = " *" if abs(z) > 4 else ""
+            if pr == 0 and po == 0:
+                continue
+            print(f"{tribe:10} {name:28} {pr:7.3f} {po:7.3f} {z:6.1f}{flag}")
+    print("* |z| > 4; start rows are counts per capital")
+
+
 def ks(a, b):
     """Two-sample Kolmogorov-Smirnov statistic and asymptotic p-value."""
     a, b = sorted(a), sorted(b)
@@ -213,6 +306,8 @@ def main():
     parser.add_argument("--oracle", default="build/release/oracle")
     parser.add_argument("--build", default="game/current")
     parser.add_argument("--save", help="write the real maps here, one JSON a line")
+    parser.add_argument("--by-tribe", action="store_true",
+                        help="terrain and resource rates inside each tribe's region")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -234,10 +329,16 @@ def main():
                 f.write(json.dumps({"tribes": pair, "map": data}) + "\n")
 
     map_type = pe.MapType[args.type.upper()]
-    real = [stats(real_map(data, pair)) for data, pair in zip(real_data, pairs)]
-    ours = [stats(our_map(pe.generate_map([pe.Tribe[a.upper()], pe.Tribe[b.upper()]],
-                                          map_type, args.size, seed=args.seed + i)))
-            for i, (a, b) in enumerate(pairs)]
+    real_maps = [real_map(data, pair) for data, pair in zip(real_data, pairs)]
+    our_maps = [our_map(pe.generate_map([pe.Tribe[a.upper()], pe.Tribe[b.upper()]],
+                                        map_type, args.size, seed=args.seed + i))
+                for i, (a, b) in enumerate(pairs)]
+    if args.by_tribe:
+        print(f"{args.type} {args.size}x{args.size}, {len(real_maps)} maps each, by tribe")
+        by_tribe(real_maps, our_maps, pairs, len(real_maps))
+        return
+    real = [stats(m) for m in real_maps]
+    ours = [stats(m) for m in our_maps]
 
     print(f"{args.type} {args.size}x{args.size}, {len(real)} real maps, "
           f"{len(ours)} of ours ({pe._engine.__file__})")

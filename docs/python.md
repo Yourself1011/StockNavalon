@@ -98,7 +98,7 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | `MapType` | `DRYLANDS`, `LAKES`, `PANGEA`, `CONTINENTS`, `ARCHIPELAGO`, `WATERWORLD` |
 | `CommandType` | the command types above |
 | `TerrainType` | `FIELD`, `FOREST`, `MOUNTAIN`, `WATER` (shallow), `OCEAN` |
-| `ResourceType` | `NONE`, `FRUIT`, `CROP`, `GAME`, `METAL`, `FISH`, `STARFISH` |
+| `ResourceType` | `NONE`, `FRUIT`, `CROP`, `GAME`, `METAL`, `FISH`, `STARFISH`, `AQUACROP` |
 | `ImprovementType` | map features (`CITY`, `VILLAGE`, `RUIN`, `LIGHTHOUSE`), buildings, monuments and actions (`HARVESTFRUIT`, `ROAD`, ...) |
 | `UnitType` | land units, then boats (`RAFT`, `SCOUT`, `RAMMER`, `BOMBER`, `JUGGERNAUT`, `DINGHY`, `PIRATE`) |
 | `TechType` | `BASIC` (everyone owns it) and the 25 techs |

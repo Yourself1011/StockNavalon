@@ -18,9 +18,22 @@ struct MapGenSettings {
     // value means the map type's own default.
     // candidate maps; the fairest is kept
     int candidates = 10;
-    // share of water tiles: Drylands 0, Lakes 25-30%, Pangea and Continents
-    // 45-55%, Archipelago 60-80%, Water World 90-100%
+    // share of water tiles: Drylands 0, Lakes 25.5-28.1%, Pangea and
+    // Continents 45-55%, Archipelago 61.2-64.3%, Water World 84.7-85.7%
     double minWater = -1, maxWater = -1;
+    // the noise path (Lakes, Archipelago, Water World): smoothing passes
+    // over the noise (Lakes 2, Archipelago 0, Water World 2); the wetness,
+    // which the noise beside a capital is lifted to at least (Lakes 0.3,
+    // Archipelago 0.65, Water World 0.85); the noise counted outside the map
+    // when smoothing (Lakes 1, Continents 1, others 0.5)
+    int smoothing = -1;
+    double wetness = -1, edgeNoise = -1;
+    // Continents: one per player, or one fewer or one more this often
+    // (game: measured on 2-player maps)
+    double continentFewer = 0.19, continentMore = 0.28;
+    // Continents: how much a tile's land neighbours on the continent count
+    // against its noise when the continent grows, for compact coasts
+    double continentCompactness = 0.05;
     // pre-terrain villages: Lakes and Archipelago 0.3, Water World 0.1,
     // otherwise none
     double preTerrainDensity = -1;
@@ -38,26 +51,24 @@ struct MapGenSettings {
     int settlementSpacing = 3;
     // ruins; -1 uses the map size table
     int ruins = -1;
-    // lakes are grown this many tiles at a time
-    int minLake = 4, maxLake = 12;
-    // fish chance on ocean next to a village, and two tiles from one
-    double oceanFishInner = 0.5, oceanFishOuter = 0.25;
-    // Climate regions grow from the capitals, so they're Voronoi-like; this
-    // is the chance a tile's claim waits a round, giving irregular borders
-    // like the real game's
-    double climateIrregularity = 0.2;
+    // a tile two from a settlement gets a resource drawn as next to one this
+    // often, and none otherwise (game: measured, 0.32-0.35 of the rate next
+    // to a settlement for every tribe and resource)
+    double outerShare = 0.32;
 };
 
 int ruinCountForSize(int size);
 
 // ---- placement rules, also read by stockNavalon's determinization ----
 
-// Each resource the generator can put on a terrain, with its share of
-// tiles next to a village (inner) and two away (outer). Starfish come
-// separately: any water tile can have one.
+// Each resource the generator can put on a terrain, with the chance it
+// tries for a tile next to a settlement, before the tribe's modifier. Every
+// resource tries on its own; if several succeed, one of them is picked
+// (game: measured, tribe by tribe). Starfish come separately: any water
+// tile can have one.
 struct ResourceRate {
     ResourceTypes::ResourceType resource;
-    double inner, outer;
+    double chance;
 };
 std::vector<ResourceRate> resourceRates(TerrainTypes::TerrainType terrain,
                                         const MapGenSettings &settings = {});

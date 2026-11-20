@@ -179,9 +179,20 @@ void checkMap(const MapData &map, int players) {
             CHECK(villages >= need);
         }
     }
-    // Continents: capitals on different landmasses where possible
-    if (type == MapTypes::CONTINENTS && players == 2) {
-        CHECK_FALSE(landFrom(map, map.capitals[0])[map.capitals[1]]);
+    // Continents and Pangea: capitals exactly 2 from the edge, and no
+    // village with a coordinate 3 from its nearer edge
+    if (type == MapTypes::CONTINENTS || type == MapTypes::PANGEA) {
+        for (int c : map.capitals) {
+            CHECK(edgeDistance(map, c) == 2);
+        }
+        for (int t : towns) {
+            bool tiny = true;
+            forNeighbours(map, t, [&](int u) { tiny &= !isLand(map, u); });
+            if (!tiny) {
+                CHECK(std::min(t % n, n - 1 - t % n) != 3);
+                CHECK(std::min(t / n, n - 1 - t / n) != 3);
+            }
+        }
     }
     // Pangea: the capitals share the one big landmass
     if (type == MapTypes::PANGEA) {

@@ -45,24 +45,39 @@ struct FailedCandidate : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-// a map type's defaults for the settings left negative
+// a map type's defaults for the settings left negative. Water shares on the
+// noise path are the real game's 10th to 90th percentiles on 14x14 (game:
+// measured); smoothing passes, wetness and the edge's noise its generator's
+// settings (smoothIterations, wetness, surroundingSpaceValue).
 struct TypeDefaults {
     double minWater, maxWater, preTerrainDensity;
+    int smoothing;
+    double wetness, edgeNoise;
+    // the noise path's lifted tiles (game: measured, the real generator's
+    // own rule isn't read): all 8 of a capital's neighbours or only its
+    // straight ones, and the straight neighbours of the other early
+    // villages or none
+    bool liftCapitalDiagonals, liftVillages;
 };
 
 TypeDefaults typeDefaults(MapTypes::MapType type) {
     switch (type) {
     case MapTypes::DRYLANDS:
-        return {0, 0, 0};
+        return {0, 0, 0, 0, 0, 0.5, false, false};
     case MapTypes::LAKES:
-        return {0.25, 0.30, 0.3};
+        return {0.255, 0.281, 0.3, 2, 0.3, 1, true, true};
     case MapTypes::PANGEA:
+        // half the map water, then a tiny island village (game: measured,
+        // 49.5% water on every 14x14 map)
+        return {0.5, 0.5, 0, 0, 0.5, 0, false, false};
     case MapTypes::CONTINENTS:
-        return {0.45, 0.55, 0};
+        // one smoothing pass, the outside of the map counting as land (the
+        // generator's settings)
+        return {0.362, 0.413, 0, 1, 0.5, 1, false, false};
     case MapTypes::ARCHIPELAGO:
-        return {0.60, 0.80, 0.3};
+        return {0.612, 0.643, 0.3, 0, 0.65, 0.5, false, false};
     default:
-        return {0.90, 1.0, 0.1};
+        return {0.847, 0.857, 0.1, 2, 0.85, 0.5, true, true};
     }
 }
 
@@ -77,6 +92,12 @@ class Generator {
         preTerrainDensity = s.preTerrainDensity >= 0
                                 ? s.preTerrainDensity
                                 : defaults.preTerrainDensity;
+        smoothing = s.smoothing >= 0 ? s.smoothing : defaults.smoothing;
+        wetness = s.wetness >= 0 ? s.wetness : defaults.wetness;
+        edgeNoise = s.edgeNoise >= 0 ? s.edgeNoise : defaults.edgeNoise;
+        liftCapitalDiagonals = defaults.liftCapitalDiagonals;
+        liftVillages = defaults.liftVillages;
+        edgeLand = s.type == MapTypes::LAKES || s.type == MapTypes::DRYLANDS;
     }
 
     MapData run();
@@ -98,6 +119,11 @@ class Generator {
     // villages on 1-tile islands, which never become capitals
     std::vector<int> tinyIslands;
     double minWater, maxWater, preTerrainDensity;
+    int smoothing;
+    double wetness, edgeNoise;
+    bool liftCapitalDiagonals, liftVillages;
+    // the outer ring is always land (game: Lakes, and Drylands has no water)
+    bool edgeLand;
 
     // a water target picked in the type's range
     int waterTarget() {
@@ -166,10 +192,22 @@ class Generator {
         return best;
     }
 
-    // every village and capital: on land, off the edge, spaced apart
+    // every village and capital: on land, off the edge, spaced apart. On
+    // Continents and Pangea, also never with a coordinate 3 from its nearer
+    // edge (game: measured, 2-3% of villages there, 16% on Drylands)
     bool villageAllowed(int t) const {
-        return land(t) && edgeDistance(t) > 0 &&
-               nearestSettlement(t) >= s.settlementSpacing;
+        if (!land(t) || edgeDistance(t) == 0 ||
+            nearestSettlement(t) < s.settlementSpacing) {
+            return false;
+        }
+        if (s.type == MapTypes::CONTINENTS || s.type == MapTypes::PANGEA) {
+            for (int c : {x(t), y(t)}) {
+                if (std::min(c, n - 1 - c) == 3) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
     void addVillage(int t) {
         villages.push_back(t);
@@ -179,7 +217,10 @@ class Generator {
     void placeCapitals();
     void placeSuburbs();
     void placePreTerrainVillages();
-    bool placeWater();
+    // the noise path's water: Lakes, Archipelago, Water World. False when a
+    // Lakes capital can't reach 2 villages over land
+    bool shapeFromNoise();
+    std::vector<double> landNoise();
     void classifyWater();
     void placePostTerrainVillages();
     void growClimateRegions();
@@ -189,8 +230,6 @@ class Generator {
     void placeRuins();
     void placeStarfish();
 
-    void shapeArchipelago();
-    void shapeWaterWorld();
     void shapePangea();
     void shapeContinents();
     // Continents: a village on each landmass first, then as many as fit
@@ -291,54 +330,70 @@ void Generator::placePreTerrainVillages() {
     }
 }
 
-bool Generator::placeWater() {
+std::vector<double> Generator::landNoise() {
+    // (game: the generator's noise) a random value per tile, high for land;
+    // around the capitals and early villages (TypeDefaults) it's lifted to
+    // at least the wetness, so those tiles lean to land. Each smoothing pass
+    // averages every 3x3, the outside of the map counting as edgeNoise.
+    std::vector<double> noise(n * n);
+    for (double &v : noise) {
+        v = rng.unit();
+    }
+    std::vector<char> lifted(n * n, 0);
+    auto lift = [&](int nb) { lifted[nb] = 1; };
+    for (int c : capitals) {
+        if (liftCapitalDiagonals) {
+            forEachNeighbour(c, lift);
+        } else {
+            forEachStraight(c, lift);
+        }
+    }
+    if (liftVillages) {
+        for (int v : villages) {
+            forEachStraight(v, lift);
+        }
+    }
+    for (int t = 0; t < n * n; t++) {
+        if (lifted[t]) {
+            noise[t] = wetness + (1 - wetness) * noise[t];
+        }
+    }
+    for (int pass = 0; pass < smoothing; pass++) {
+        std::vector<double> smoothed(n * n);
+        for (int t = 0; t < n * n; t++) {
+            double sum = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x(t) + dx, ny = y(t) + dy;
+                    bool inside = nx >= 0 && ny >= 0 && nx < n && ny < n;
+                    sum += inside ? noise[ny * n + nx] : edgeNoise;
+                }
+            }
+            smoothed[t] = sum / 9;
+        }
+        noise = std::move(smoothed);
+    }
+    return noise;
+}
+
+bool Generator::shapeFromNoise() {
+    // the lowest noise becomes water, up to the type's share
+    std::vector<double> noise = landNoise();
+    // settlements stay land, and on Lakes the outer ring
+    std::vector<int> order = tilesWhere([&](int t) {
+        return !settlement[t] && !(edgeLand && edgeDistance(t) == 0);
+    });
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return noise[a] < noise[b]; });
     for (Tile &tile : tiles) {
         tile.terrain = FIELD;
     }
-    int target = waterTarget();
-    // the outer ring stays land, and so do capitals and villages
-    auto locked = [&](int t) { return edgeDistance(t) == 0 || settlement[t]; };
-
-    int water = 0;
-    while (water < target) {
-        // start a new lake away from the others where possible
-        std::vector<int> seeds = tilesWhere([&](int t) {
-            if (!land(t) || locked(t)) {
-                return false;
-            }
-            bool nearWater = false;
-            forEachNeighbour(t, [&](int nb) { nearWater |= !land(nb); });
-            return !nearWater;
-        });
-        if (seeds.empty()) {
-            seeds = tilesWhere([&](int t) { return land(t) && !locked(t); });
-        }
-        if (seeds.empty()) {
-            break;
-        }
-        int size = std::min(target - water,
-                            s.minLake + rng.below(s.maxLake - s.minLake + 1));
-        std::vector<int> frontier{rng.pick(seeds)};
-        int grown = 0;
-        while (grown < size && !frontier.empty()) {
-            int i = rng.below(static_cast<int>(frontier.size()));
-            int t = frontier[i];
-            frontier[i] = frontier.back();
-            frontier.pop_back();
-            if (!land(t) || locked(t)) {
-                continue;
-            }
-            tiles[t].terrain = WATER;
-            water++;
-            grown++;
-            // straight neighbours, for rounder lakes
-            for (int d : {-1, 1, -n, n}) {
-                int nb = t + d;
-                if (nb >= 0 && nb < n * n && dist(nb, t) == 1) {
-                    frontier.push_back(nb);
-                }
-            }
-        }
+    int target = std::min(waterTarget(), static_cast<int>(order.size()));
+    for (int i = 0; i < target; i++) {
+        tiles[order[i]].terrain = WATER;
+    }
+    if (s.type != MapTypes::LAKES) {
+        return true;
     }
 
     // every player needs a land route to at least 2 villages
@@ -382,81 +437,84 @@ void Generator::classifyWater() {
 }
 
 void Generator::placePostTerrainVillages() {
+    // On Continents and Pangea the ring capitalEdgeDistance in fills first,
+    // where the capitals will come from (game: measured, 41% of villages
+    // there are on that ring, and capitals are nearly always on opposite
+    // sides of it)
+    bool ringFirst = s.type == MapTypes::CONTINENTS || s.type == MapTypes::PANGEA;
     while (true) {
         std::vector<int> options =
             tilesWhere([&](int t) { return villageAllowed(t); });
         if (options.empty()) {
             return;
         }
+        if (ringFirst) {
+            std::vector<int> ring;
+            for (int t : options) {
+                if (edgeDistance(t) == s.capitalEdgeDistance) {
+                    ring.push_back(t);
+                }
+            }
+            if (!ring.empty()) {
+                options = std::move(ring);
+            }
+        }
         addVillage(rng.pick(options));
     }
 }
 
 void Generator::growClimateRegions() {
-    // every capital claims one ring of tiles a round, ties broken at random
-    std::vector<std::vector<int>> frontier(capitals.size());
-    for (std::size_t p = 0; p < capitals.size(); p++) {
-        region[capitals[p]] = static_cast<int>(p);
-        frontier[p] = {capitals[p]};
+    // The regions take turns claiming one tile each, a random one from the
+    // unclaimed tiles beside it, so they come out the same size with
+    // irregular borders (game: measured, the larger of two regions holds
+    // 50.7% of a Drylands map's land, and 7% of tiles lie nearer the other
+    // capital)
+    int players = static_cast<int>(capitals.size());
+    std::vector<std::vector<int>> frontier(players);
+    auto claim = [&](int t, int p) {
+        region[t] = p;
+        forEachNeighbour(t, [&](int nb) {
+            if (region[nb] < 0) {
+                frontier[p].push_back(nb);
+            }
+        });
+    };
+    for (int p = 0; p < players; p++) {
+        claim(capitals[p], p);
     }
-    while (true) {
-        std::vector<std::vector<int>> claimants(n * n);
-        bool any = false;
-        for (std::size_t p = 0; p < frontier.size(); p++) {
-            for (int t : frontier[p]) {
-                forEachNeighbour(t, [&](int nb) {
-                    auto &c = claimants[nb];
-                    int player = static_cast<int>(p);
-                    if (region[nb] < 0 &&
-                        std::find(c.begin(), c.end(), player) == c.end()) {
-                        c.push_back(player);
-                        any = true;
-                    }
-                });
-            }
-        }
-        if (!any) {
-            return;
-        }
-        for (auto &f : frontier) {
-            f.clear();
-        }
-        for (int t = 0; t < n * n; t++) {
-            if (claimants[t].empty()) {
-                continue;
-            }
-            // sometimes a claim waits, so borders aren't straight lines.
-            // Its claimants stay on the frontier to try again.
-            if (rng.unit() < s.climateIrregularity) {
-                for (int p : claimants[t]) {
-                    forEachNeighbour(t, [&](int nb) {
-                        if (region[nb] == p) {
-                            frontier[p].push_back(nb);
-                        }
-                    });
+    for (bool any = true; any;) {
+        any = false;
+        for (int p = 0; p < players; p++) {
+            auto &f = frontier[p];
+            while (!f.empty()) {
+                int i = rng.below(static_cast<int>(f.size()));
+                int t = f[i];
+                f[i] = f.back();
+                f.pop_back();
+                if (region[t] < 0) {
+                    claim(t, p);
+                    any = true;
+                    break;
                 }
-                continue;
             }
-            int p = rng.pick(claimants[t]);
-            region[t] = p;
-            frontier[p].push_back(t);
         }
     }
 }
 
 void Generator::placeTerrain() {
-    // field 48%, forest 38%, mountain 14%, hit as exactly as possible in each
-    // tribe's region. The mountain modifier goes first, with forest and field
-    // scaling to fit; then the forest modifier, taking only from fields.
+    // field 48, forest 38 and mountain 14, the last two times the tribe's
+    // modifiers, as shares of their sum (game: measured, every tribe within
+    // about a point), hit as exactly as possible in each tribe's region
     for (std::size_t p = 0; p < capitals.size(); p++) {
         const TribeData &tribe = tribeData[s.tribes[p]];
         std::vector<int> open = tilesWhere([&](int t) {
             return region[t] == static_cast<int>(p) && land(t) &&
                    !settlement[t] && !corner(t);
         });
-        double mountain = std::min(1.0, 0.14 * tribe.mountainModifier);
-        double forest = std::min(1.0 - mountain, 0.38 * (1 - mountain) / 0.86 *
-                                                     tribe.forestModifier);
+        double fieldWeight = 0.48, forestWeight = 0.38 * tribe.forestModifier,
+               mountainWeight = 0.14 * tribe.mountainModifier;
+        double sum = fieldWeight + forestWeight + mountainWeight;
+        double mountain = mountainWeight / sum, forest = forestWeight / sum;
         int total = static_cast<int>(open.size());
         int mountains = static_cast<int>(std::lround(total * mountain));
         int forests = std::min(total - mountains,
@@ -471,34 +529,24 @@ void Generator::placeTerrain() {
 }
 
 void Generator::placeResources() {
-    // shares of all tiles of each terrain: inner (next to a village) and
-    // outer (two away)
-    auto rates = [&](TerrainType terrain) { return resourceRates(terrain, s); };
-
+    // within 2 of a settlement (resourceRates): next to one, each resource
+    // tries at its chance times the tribe's modifier, and one of those that
+    // succeed is picked; two away, the same draw outerShare of the time
     for (int t = 0; t < n * n; t++) {
         int d = nearestSettlement(t);
-        if (settlement[t] || corner(t) || d > 2) {
+        if (settlement[t] || corner(t) || d > 2 ||
+            (d == 2 && rng.unit() >= s.outerShare)) {
             continue;
         }
         const TribeData &tribe = tribeData[s.tribes[region[t]]];
-        std::vector<ResourceRate> options = rates(tiles[t].terrain);
-        // each chance times the tribe modifier, scaled down to fit if they
-        // add up to more than 1
-        std::vector<double> chances;
-        double sum = 0;
-        for (const ResourceRate &r : options) {
-            double chance = (d == 1 ? r.inner : r.outer) *
-                            tribe.resourceModifiers[r.resource];
-            chances.push_back(chance);
-            sum += chance;
-        }
-        double roll = rng.unit() * std::max(1.0, sum);
-        for (std::size_t i = 0; i < options.size(); i++) {
-            if (roll < chances[i]) {
-                tiles[t].resource = options[i].resource;
-                break;
+        std::vector<ResourceType> won;
+        for (const ResourceRate &r : resourceRates(tiles[t].terrain, s)) {
+            if (rng.unit() < r.chance * tribe.resourceModifiers[r.resource]) {
+                won.push_back(r.resource);
             }
-            roll -= chances[i];
+        }
+        if (!won.empty()) {
+            tiles[t].resource = rng.pick(won);
         }
     }
 }
@@ -507,13 +555,24 @@ void Generator::placeStartingResources() {
     for (std::size_t p = 0; p < capitals.size(); p++) {
         int capital = capitals[p];
         std::vector<int> placed;
-        for (ResourceType resource :
-             tribeData[s.tribes[p]].startingResources) {
-            // random tiles next to the capital, changed to fit if needed.
-            // Tiles whose terrain already fits come first (empty ones, then
-            // ones whose resource gets replaced), so the map's shape barely
-            // changes; only then does a tile's terrain change. Water next to
-            // another landmass never becomes land, so Continents stay apart.
+        const std::vector<ResourceType> &starting =
+            tribeData[s.tribes[p]].startingResources;
+        for (ResourceType resource : starting) {
+            // the capital's neighbours get at least as many of each as the
+            // tribe's list has, counting what's there already (game:
+            // measured, e.g. Hoodrick's 2 game come to 2.5 on average)
+            int wanted = static_cast<int>(
+                std::count(starting.begin(), starting.end(), resource));
+            int have = 0;
+            forEachNeighbour(capital, [&](int t) { have += tiles[t].resource == resource; });
+            if (have >= wanted) {
+                continue;
+            }
+            // a random tile next to the capital, changed to fit if needed,
+            // whatever was on it (game: measured, Kickoo's fish take land
+            // resources with them as often as not), except a tile holding
+            // a resource the list still needs. Water next to another
+            // landmass never becomes land, so Continents stay apart.
             bool wantsWater = resource == ResourceTypes::FISH;
             auto bridges = [&](int t) {
                 bool other = false;
@@ -523,23 +582,21 @@ void Generator::placeStartingResources() {
                 });
                 return !wantsWater && !land(t) && other;
             };
+            auto needed = [&](int t) {
+                ResourceType held = tiles[t].resource;
+                int listed = static_cast<int>(std::count(starting.begin(), starting.end(), held));
+                int around = 0;
+                forEachNeighbour(capital, [&](int u) { around += tiles[u].resource == held; });
+                return held != ResourceTypes::NONE && around <= listed;
+            };
             std::vector<int> options;
-            for (int pass = 0; pass < 4 && options.empty(); pass++) {
-                forEachNeighbour(capital, [&](int t) {
-                    bool used = std::find(placed.begin(), placed.end(), t) !=
-                                placed.end();
-                    bool empty = tiles[t].resource == ResourceTypes::NONE;
-                    bool fits = land(t) != wantsWater;
-                    bool allowed = pass == 0   ? fits && empty
-                                   : pass == 1 ? fits
-                                   : pass == 2 ? empty
-                                               : true;
-                    if (!settlement[t] && !used && edgeDistance(t) > 0 &&
-                        !bridges(t) && allowed) {
-                        options.push_back(t);
-                    }
-                });
-            }
+            forEachNeighbour(capital, [&](int t) {
+                bool used = std::find(placed.begin(), placed.end(), t) != placed.end();
+                if (!settlement[t] && !used && edgeDistance(t) > 0 && !bridges(t) &&
+                    !needed(t)) {
+                    options.push_back(t);
+                }
+            });
             if (options.empty()) {
                 continue;
             }
@@ -597,98 +654,34 @@ void Generator::placeRuins() {
 }
 
 void Generator::placeStarfish() {
-    int water = static_cast<int>(tilesWhere([&](int t) { return !land(t); }).size());
-    int count = static_cast<int>(std::lround(water / 25.0));
+    // the type's wetness times the tiles, over 25, rounded up (game: the
+    // generator's own count, e.g. 3 on 14x14 Lakes, 7 on Water World). Each
+    // try is a random water tile, kept if it fits, with as many tries as
+    // there are water tiles. A corner can take one, and loses it to its
+    // lighthouse, placed after in the real game (game: measured, starfish
+    // are next to corners as often as anywhere, and Pangea, all of whose
+    // corners are water, has one fewer on 11% of maps)
+    int count = static_cast<int>(std::ceil(wetness * n * n / 25.0 - 1e-9));
+    std::vector<int> water = tilesWhere([&](int t) { return !land(t); });
     std::vector<int> starfish;
-    for (int i = 0; i < count; i++) {
-        // never next to another starfish, a lighthouse or a village
-        std::vector<int> options = tilesWhere([&](int t) {
-            if (land(t) || tiles[t].resource != ResourceTypes::NONE ||
-                tiles[t].building != ImprovementTypes::NONE ||
-                nearestSettlement(t) < 2) {
-                return false;
-            }
-            bool nearLighthouse = false;
-            forEachNeighbour(t, [&](int nb) { nearLighthouse |= corner(nb); });
-            return !nearLighthouse &&
-                   std::none_of(starfish.begin(), starfish.end(),
-                                [&](int f) { return dist(f, t) < 2; });
-        });
-        if (options.empty()) {
-            return;
+    auto fits = [&](int t) {
+        // empty, not next to a village or another starfish
+        if ((tiles[t].resource != ResourceTypes::NONE ||
+             tiles[t].building != ImprovementTypes::NONE) && !corner(t)) {
+            return false;
         }
-        int t = rng.pick(options);
-        starfish.push_back(t);
-        tiles[t].resource = ResourceTypes::STARFISH;
-    }
-}
-
-void Generator::shapeArchipelago() {
-    // land grown as peninsulas around the capitals and villages
-    int target = n * n - waterTarget();
-    fillWater();
-    std::vector<int> frontier;
-    auto grow = [&](int t) {
-        makeLand(t);
-        forEachStraight(t, [&](int nb) {
-            if (!land(nb)) {
-                frontier.push_back(nb);
-            }
-        });
+        return nearestSettlement(t) >= 2 &&
+               std::none_of(starfish.begin(), starfish.end(),
+                            [&](int f) { return dist(f, t) < 2; });
     };
-    for (int t = 0; t < n * n; t++) {
-        if (settlement[t]) {
-            grow(t);
-            forEachStraight(t, [&](int nb) {
-                if (!land(nb)) {
-                    grow(nb);
-                }
-            });
-        }
-    }
-    while (landCount() < target && !frontier.empty()) {
-        // of a few random coast tiles, the one with the least land around
-        // it, so land reaches out in fingers
-        int best = -1, bestLand = 9;
-        for (int i = 0; i < 3; i++) {
-            int pick = rng.below(static_cast<int>(frontier.size()));
-            int t = frontier[pick];
-            if (land(t)) {
-                frontier[pick] = frontier.back();
-                frontier.pop_back();
-                if (frontier.empty()) {
-                    break;
-                }
-                continue;
+    for (std::size_t tries = 0;
+         tries < water.size() && static_cast<int>(starfish.size()) < count; tries++) {
+        int t = rng.pick(water);
+        if (fits(t)) {
+            starfish.push_back(t);
+            if (!corner(t)) {
+                tiles[t].resource = ResourceTypes::STARFISH;
             }
-            int around = 0;
-            forEachStraight(t, [&](int nb) { around += land(nb); });
-            if (around < bestLand) {
-                best = t;
-                bestLand = around;
-            }
-        }
-        if (best >= 0) {
-            grow(best);
-        }
-    }
-}
-
-void Generator::shapeWaterWorld() {
-    // all water, with land forced under every city: a plus shape under each
-    // capital and a tile or three under each village
-    fillWater();
-    for (int c : capitals) {
-        makeLand(c);
-        forEachStraight(c, [&](int nb) { makeLand(nb); });
-    }
-    for (int v : villages) {
-        makeLand(v);
-        int extra = rng.below(3);
-        for (int i = 0; i < extra; i++) {
-            std::vector<int> around;
-            forEachNeighbour(v, [&](int nb) { around.push_back(nb); });
-            makeLand(rng.pick(around));
         }
     }
 }
@@ -730,16 +723,26 @@ void Generator::shapePangea() {
 }
 
 void Generator::shapeContinents() {
-    // separate landmasses, at least a tile apart, of 30 to 200 tiles
+    // Continents grown from the noise (shapeFromNoise's, the outside of the
+    // map counting as land, so land runs round the edges: game, measured,
+    // about 65% land on the outer four rings, 20% at the centre). Each takes
+    // in turn its unclaimed neighbour with the highest noise, never one
+    // touching another continent, so they stay apart by at least a tile,
+    // until the land target is reached. How many: one per player, then one
+    // fewer or one more at continentFewer and continentMore (game:
+    // measured, 2 players give 1, 2 or 3 continents 19 / 53 / 28% of the
+    // time).
+    std::vector<double> noise = landNoise();
     int target = n * n - waterTarget();
     int players = static_cast<int>(s.tribes.size());
-    // about 60 tiles each, no fewer than 30, but at least one per player
-    int count = std::min(static_cast<int>(std::lround(target / 60.0)),
-                         target / 30);
-    count = std::max({1, players, count});
+    double r = rng.unit();
+    int count = std::max(1, players + (r < s.continentFewer   ? -1
+                                       : r > 1 - s.continentMore ? 1
+                                                                  : 0));
     fillWater();
 
-    // seeds spread out: each as far as possible from the others
+    // seeds as far from each other as possible, the highest noise among
+    // equals
     std::vector<int> seeds;
     for (int i = 0; i < count; i++) {
         int bestDistance = -1;
@@ -760,12 +763,16 @@ void Generator::shapeContinents() {
                 best.push_back(t);
             }
         }
-        seeds.push_back(rng.pick(best));
+        if (best.empty()) {
+            break;
+        }
+        seeds.push_back(*std::max_element(best.begin(), best.end(), [&](int a, int b) {
+            return noise[a] < noise[b];
+        }));
     }
+    count = static_cast<int>(seeds.size());
 
-    std::vector<int> sizes(count, 0);
     std::vector<std::vector<int>> frontier(count);
-    // a tile can join a landmass only if no other landmass touches it
     auto canJoin = [&](int t, int mass) {
         if (land(t)) {
             return false;
@@ -779,29 +786,46 @@ void Generator::shapeContinents() {
     auto grow = [&](int t, int mass) {
         makeLand(t);
         landmass[t] = mass;
-        sizes[mass]++;
-        forEachStraight(t, [&](int nb) { frontier[mass].push_back(nb); });
+        forEachNeighbour(t, [&](int nb) {
+            if (!land(nb)) {
+                frontier[mass].push_back(nb);
+            }
+        });
     };
     for (int i = 0; i < count; i++) {
         grow(seeds[i], i);
     }
     int total = count;
-    bool growing = true;
-    while (total < target && growing) {
+    for (bool growing = true; growing && total < target;) {
         growing = false;
         for (int mass = 0; mass < count && total < target; mass++) {
             auto &f = frontier[mass];
-            while (sizes[mass] < 200 && !f.empty()) {
-                int pick = rng.below(static_cast<int>(f.size()));
-                int t = f[pick];
-                f[pick] = f.back();
-                f.pop_back();
-                if (canJoin(t, mass)) {
-                    grow(t, mass);
-                    total++;
-                    growing = true;
-                    break;
+            // the neighbour this continent can still take with the best
+            // noise, plus a pull towards tiles it already surrounds
+            int best = -1;
+            double bestScore = 0;
+            for (std::size_t i = 0; i < f.size();) {
+                if (!canJoin(f[i], mass)) {
+                    f[i] = f.back();
+                    f.pop_back();
+                    continue;
                 }
+                int around = 0;
+                forEachNeighbour(f[i], [&](int nb) { around += landmass[nb] == mass; });
+                double score = noise[f[i]] + s.continentCompactness * around;
+                if (best < 0 || score > bestScore) {
+                    best = static_cast<int>(i);
+                    bestScore = score;
+                }
+                i++;
+            }
+            if (best >= 0) {
+                int t = f[best];
+                f[best] = f.back();
+                f.pop_back();
+                grow(t, mass);
+                total++;
+                growing = true;
             }
         }
     }
@@ -844,46 +868,32 @@ void Generator::placeTinyIslandVillages() {
 
 void Generator::pickCapitalsFromVillages() {
     int players = static_cast<int>(s.tribes.size());
-    auto coastal = [&](int t) {
-        bool water = false;
-        forEachNeighbour(t, [&](int nb) { water |= !land(nb); });
-        return water;
-    };
     for (int p = 0; p < players; p++) {
-        // as far from the other capitals as possible, on a new landmass
-        // where possible, then next to water
-        std::vector<int> pool;
+        // a village exactly capitalEdgeDistance from the edge (game:
+        // measured, on both types), as far from the other capitals as
+        // possible
+        std::vector<int> best;
+        int bestFar = -1;
         for (int v : villages) {
             bool tiny = std::find(tinyIslands.begin(), tinyIslands.end(), v) !=
                         tinyIslands.end();
-            if (!tiny && edgeDistance(v) >= s.capitalEdgeDistance) {
-                pool.push_back(v);
+            if (tiny || edgeDistance(v) != s.capitalEdgeDistance) {
+                continue;
             }
-        }
-        // capitals are never nearer the edge (game: measured)
-        if (pool.empty()) {
-            throw FailedCandidate("No village left to make a capital");
-        }
-        std::vector<int> best;
-        std::tuple<int, int, int> bestKey{-1, -1, -1};
-        for (int v : pool) {
-            bool newMass = landmass[v] < 0 ||
-                           std::none_of(capitals.begin(), capitals.end(),
-                                        [&](int c) {
-                                            return landmass[c] == landmass[v];
-                                        });
             int far = n;
             for (int c : capitals) {
                 far = std::min(far, dist(c, v));
             }
-            std::tuple<int, int, int> key{newMass, far, coastal(v)};
-            if (key > bestKey) {
-                bestKey = key;
+            if (far > bestFar) {
+                bestFar = far;
                 best.clear();
             }
-            if (key == bestKey) {
+            if (far == bestFar) {
                 best.push_back(v);
             }
+        }
+        if (best.empty()) {
+            throw FailedCandidate("No village left to make a capital");
         }
         int chosen = rng.pick(best);
         villages.erase(std::find(villages.begin(), villages.end(), chosen));
@@ -896,27 +906,20 @@ MapData Generator::run() {
     case MapTypes::DRYLANDS:
         placeCapitals();
         break;
-    case MapTypes::LAKES: {
+    case MapTypes::LAKES:
+    case MapTypes::ARCHIPELAGO:
+    case MapTypes::WATERWORLD: {
         placeCapitals();
-        placeSuburbs();
+        if (s.type != MapTypes::WATERWORLD) {
+            placeSuburbs();
+        }
         placePreTerrainVillages();
         bool ok = false;
         for (int attempt = 0; attempt < 30 && !ok; attempt++) {
-            ok = placeWater();
+            ok = shapeFromNoise();
         }
         break;
     }
-    case MapTypes::ARCHIPELAGO:
-        placeCapitals();
-        placeSuburbs();
-        placePreTerrainVillages();
-        shapeArchipelago();
-        break;
-    case MapTypes::WATERWORLD:
-        placeCapitals();
-        placePreTerrainVillages();
-        shapeWaterWorld();
-        break;
     case MapTypes::PANGEA:
         shapePangea();
         classifyWater();
@@ -1001,18 +1004,17 @@ int Generator::fairnessGap() const {
 
 std::vector<ResourceRate> resourceRates(TerrainType terrain,
                                         const MapGenSettings &s) {
+    (void)s;
     switch (terrain) {
     case FIELD:
-        return {{ResourceTypes::FRUIT, 0.18 / 0.48, 0.06 / 0.48},
-                {ResourceTypes::CROP, 0.18 / 0.48, 0.06 / 0.48}};
+        return {{ResourceTypes::FRUIT, 0.5}, {ResourceTypes::CROP, 0.5}};
     case FOREST:
-        return {{ResourceTypes::GAME, 0.19 / 0.38, 0.06 / 0.38}};
+        return {{ResourceTypes::GAME, 0.5}};
     case MOUNTAIN:
-        return {{ResourceTypes::METAL, 0.11 / 0.14, 0.03 / 0.14}};
+        return {{ResourceTypes::METAL, 0.8}};
     case WATER:
-        return {{ResourceTypes::FISH, 0.5, 0.5}};
     case OCEAN:
-        return {{ResourceTypes::FISH, s.oceanFishInner, s.oceanFishOuter}};
+        return {{ResourceTypes::FISH, 0.52}, {ResourceTypes::AQUACROP, 0.3}};
     default:
         return {};
     }

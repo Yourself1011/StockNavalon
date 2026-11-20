@@ -123,10 +123,11 @@ Sources: <https://polytopia.io/2025-balance-pass/>, <https://polytopia.fandom.co
 | Field         | Fruit, Crop    |                                                           |
 | Forest        | Game           | Entering it ends movement (section 10)                    |
 | Mountain      | Metal          | Needs Climbing to enter. Units on a mountain see 2 tiles. |
-| Shallow water | Fish, Starfish | Water with land among its 4 straight neighbours (game)    |
-| Ocean         | Starfish       | Any other water (game). Ruins can appear here.            |
+| Shallow water | Fish, Starfish, AquaCrop | Water with land among its 4 straight neighbours (game) |
+| Ocean         | Fish, Starfish, AquaCrop | Any other water (game). Ruins can appear here.  |
 
 - Whales and Whale Hunting were removed in 2.8; Starfish replaced them.
+- **AquaCrop** is Aquarion's water crop: only their Aquaculture tech uses it (the Aqua Farm). It's on every map with water whatever the tribes (game), so the engine places it and keeps it on the tile, ready for Aquarion; to regular tribes it's a water tile without fish. **VERIFY** whether regular tribes see it (the engine shows it, since no tech it needs exists here) and whether it blocks a Port or Bridge.
 - **Hidden resources:** every resource is on the map from the start. A resource is only shown to a player once the tech that uses it is researchable or owned (game). For example, crops appear once Farming can be bought, which happens after Organization.
 
 Sources: <https://polytopia.fandom.com/wiki/Terrain>, <https://polytopia.fandom.com/wiki/Technology>
@@ -561,7 +562,7 @@ All values are from the data file. Modifiers left blank are 1.
   - Oumaji also has water 0.5.
   - Zebasi has no crop ×2 modifier; it gets its crop from the 2 starting crops instead.
   - Quetzali has no metal modifier.
-- **VERIFY** where starting resources are placed, e.g. on the tiles next to the capital (one source says Kickoo's fish go straight up, down, left and right).
+- Starting resources go on the capital's 8 neighbours, topping up what's there (section 18, game).
 
 Sources: <https://polytopia.io/2025-balance-pass/>, <https://github.com/bengreff/polytopia/blob/main/docs/strategy/universal-book.md>, <https://github.com/HenBOMB/Polyfish>, <https://github.com/QuasiStellar/Polytopia-Map-Generator>
 
@@ -584,8 +585,8 @@ We only need maps that look like real ones (similar statistics), not exact seed-
 | ----------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Drylands    | 0–10%   | All land, apart from 2 fish water tiles at Kickoo and Luxidoor capitals                                                      |
 | Lakes       | 25–30%  | Scattered inland lakes, with land bridges always along the map edges. Every player gets a land route to at least 2 villages. |
-| Pangea      | 40–60%  | One central landmass surrounded by ocean, plus occasional islands                                                            |
-| Continents  | 40–70%  | Separate large landmasses, each 30–200 tiles and at least 1 tile apart; often has 1-tile shallow "rivers"                    |
+| Pangea      | 49.5%   | One central landmass surrounded by ocean, plus the tiny island village (game, measured on 14×14: half the map, every time)  |
+| Continents  | 36–41%  | 1–3 landmasses (2 players), at least 1 tile apart, the land round the map's edges and a sea in the middle (game, measured)  |
 | Archipelago | 60–80%  | Broken, irregular islands; almost every city is coastal                                                                      |
 | Water World | 90–100% | Small islands of 1–2 villages; land is forced under every city                                                               |
 
@@ -619,6 +620,22 @@ The pre-terrain row gives the density coefficient.
 - **Pre-terrain villages:** `(floor(width / 3)² − capitals − suburbs) × density`.
 - **Lighthouses:** one in each of the 4 corners, on the corner's own terrain (game): land becomes field, water stays water or ocean. On Pangea every corner is ocean; on Archipelago and Continents about half are water.
 
+**Water on Lakes, Archipelago and Water World** (game: the generator's method names, its settings, and statistics of real maps):
+
+- A random value per tile, high meaning land. Tiles next to a capital, and on some map types next to the early villages, have theirs lifted to at least the map type's **wetness**, so they lean to land.
+- The values are smoothed: each pass averages every 3×3, counting the outside of the map as a fixed value (land-leaning on Lakes).
+- The lowest values become water until the map type's share is reached. Settlements stay land, and on Lakes so does the outer ring.
+
+| Setting | Lakes | Archipelago | Water World |
+| --- | --- | --- | --- |
+| Wetness (data) | 0.3 | 0.65 | 0.85 |
+| Smoothing passes (data) | 2 | 0 | 2 |
+| Outside the map counts as (data) | 1 | 0.5 | 0.5 |
+| Water share, 10th–90th percentile (measured, 14×14) | 25.5–28.1% | 61.2–64.3% | 84.7–85.7% |
+| Lifted (measured) | capitals' 8 neighbours, villages' 4 | capitals' 4 | capitals' 8, villages' 4 |
+
+The "data" rows are the real generator's settings (`MapGeneratorSettings`). Which tiles are lifted is fitted to the water next to real capitals and villages, since the generator's own rule hasn't been read; on Archipelago, which isn't smoothed, a capital's straight neighbours are always land and its diagonals water as often as anywhere.
+
 **Order per map type** (from the video's worked examples):
 
 - **Drylands:**
@@ -636,7 +653,7 @@ The pre-terrain row gives the density coefficient.
     1. capitals
     2. suburbs
     3. pre-terrain villages
-    4. water, placed around the capitals and villages. The map's outer ring is always land; about 25–30% of tiles end up water.
+    4. water from noise (above). The map's outer ring is always land; 25.5–28.1% of tiles end up water.
     5. post-terrain villages (often none fit)
     6. mountains and forests
     7. lighthouses
@@ -646,70 +663,64 @@ The pre-terrain row gives the density coefficient.
     1. capitals
     2. suburbs
     3. pre-terrain villages
-    4. land grown as peninsulas around the capitals and suburbs, about ¾ of the map water
+    4. water from noise (above), 61–64% of the map
     5. mountains and forests. These can cut a suburb off from land access.
     6. post-terrain villages
     7. lighthouses
     8. resources
     9. ruins and starfish
 - **Water World:**
-    1. every tile starts as ocean
-    2. capitals, with their tile and some tiles around them forced to land
-    3. pre-terrain villages (density 0.1)
+    1. capitals
+    2. pre-terrain villages (density 0.1)
+    3. water from noise (above), 85% of the map
     4. terrain
     5. post-terrain villages (usually none fit)
     6. lighthouses
     7. resources
     8. ruins and starfish
 - **Pangea:**
-    1. land grows from a seed in the centre of the map, roughly in a circle, until about half the tiles are water
-    2. villages placed on the land one at a time under the post-terrain rules until none fit
-    3. some villages become capitals, chosen to be as far apart as possible and preferring tiles next to water (so capitals are almost always coastal)
+    1. land grows from a seed in the centre of the map, roughly in a circle, until exactly half the tiles are water
+    2. villages placed on the land one at a time under the post-terrain rules until none fit, the ring 2 tiles in from the edge first, and never with a coordinate 3 from its nearer edge (game, measured: 39% of villages are on that ring, 2% have such a coordinate, against 16% on Drylands)
+    3. some villages on that ring become capitals, as far apart as possible: on 2-player maps nearly always opposite sides of it, 9 tiles apart (game, measured)
     4. tiny island villages
     5. terrain by tribe
     6. lighthouses
     7. resources
     8. ruins and starfish
 - **Continents:**
-    1. landmasses made from noise. Their number depends on player count, wetness and map size. Each is 30–200 tiles, at least 1 tile from the others, and about half the map is water; e.g. 2 players on 14×14 gives about 50 land tiles each. One-tile strips of shallow water ("rivers") are common.
-    2. villages placed one at a time on each continent, at least one per continent where possible
+    1. landmasses grown from noise in which the outside of the map counts as land (the generator's settings: wetness 0.5, one smoothing pass), so land runs round the edges: about 65% land on the outer four rings, 20% at the centre (game, measured). 2-player 14×14 maps have 1, 2 or 3 landmasses of 3+ tiles 19 / 53 / 28% of the time, at least a tile apart, with 36–41% water (game, measured).
+    2. villages placed one at a time on each continent, at least one per continent where possible, then as on Pangea
     3. tiny island villages
-    4. one village per player becomes a capital, on different landmasses where possible. Capitals are never closer than 2 tiles to the map edge, and are usually exactly 2 from it (game, measured; Pangea too). Both capitals share one landmass on 30–40% of real 2-player maps.
+    4. one village per player becomes a capital, as on Pangea. Both capitals share one landmass on 28% of 2-player 14×14 maps and 40% of 11×11 ones; in 90% of 11×11 maps they share one or can be joined by bridges (game, measured).
     5. mountains and forests by tribe
     6. lighthouses
     7. resources
     8. ruins and starfish
 
-**Terrain:** each tile takes the modifiers of the tribe whose climate region it's in (section 17).
+**Terrain:** each tile takes the modifiers of the tribe whose climate region it's in (section 17). Measured tribe by tribe against real maps (game; `src/oracle/mapstats.py --by-tribe`, 3,000 Drylands and Lakes maps), not from the wiki.
 
-- Base rates: field 48%, forest 38%, mountain 14%.
+- Base weights: field 48, forest 38, mountain 14. The forest and mountain modifiers multiply their weights, and each terrain's share of the land is its weight over the sum. E.g. Hoodrick (forest 1.5, mountain 0.5): 48 : 57 : 7, so 43% field, 51% forest, 6% mountain (real: 43, 51, 7). Oumaji (forest 0.2, mountain 0.5): 77% field, 12% forest, 11% mountain (real: 76, 13, 12).
 - Since 2.0.58 these rates are hit as exactly as possible within each tribe's region, rather than rolled per tile.
-- **Tribe modifiers apply in order:**
-    1. The mountain modifier scales mountains, and forest and field adjust proportionally.
-    2. The forest modifier then scales forest, taking only from fields.
-    3. Field is whatever is left.
-- **Water modifiers:** per the wiki, Oumaji's water reduction has no effect on generation. Kickoo's ×2 water is meant to turn 40% of its tiles to water on Continents, but that is bugged and doesn't apply. **VERIFY** whether Kickoo's water modifier does anything on other map types.
-- **Climate regions:** land is split roughly equally between the tribes in the game. They're roughly Voronoi-like around the capitals, with some deviation (game); the exact method isn't known. Earlier sources describe each capital growing its region outward one tile per round, which is Voronoi-like in Chebyshev distance.
+- **Water modifiers** have no effect: on Lakes, Kickoo's region (water 2) is 27.7% water, Oumaji's (water 0.5) 26.8%, a tribe without one 27.8% (game, measured).
+- **Climate regions:** every tile, water too, is in some tribe's region, and the regions are the same size: on 2-player Drylands the larger holds 50.7% of the land on average, on Lakes 53.1% (game, measured). Their borders are irregular: about 7% of tiles are nearer the other capital than their own (game, measured). The exact method isn't read; the regions taking turns to claim one random tile next to them each matches both.
 
-**Resources** only appear within 2 tiles of a city or village. "Inner" means next to a city or village, "outer" 2 tiles away. These are shares of all tiles of that terrain, before tribe modifiers:
+**Resources** only appear within 2 tiles of a city or village (game, measured tribe by tribe as above):
 
-| Terrain        | Resource | Inner | Outer |
-| -------------- | -------- | ----- | ----- |
-| Field (48%)    | Fruit    | 18%   | 6%    |
-|                | Crop     | 18%   | 6%    |
-|                | Empty    | 12%   | 36%   |
-| Forest (38%)   | Game     | 19%   | 6%    |
-|                | Empty    | 19%   | 32%   |
-| Mountain (14%) | Metal    | 11%   | 3%    |
-|                | Empty    | 3%    | 11%   |
-| Shallow water  | Fish     | 50%   | 50%   |
+- **Next to a settlement,** each resource that can go on the tile's terrain tries on its own, with its chance times the tribe's modifier (capped at 1). If more than one succeeds, one of them is picked at random; if none, the tile stays empty.
 
-- **Tribe resource modifiers** multiply these rates. Where the result exceeds the terrain's share, every such tile gets the resource (video).
-  - Imperius fields next to a village: fruit 36% + crop 18% > 48%, so every one has a resource.
-  - Xin-xi and Vengir mountains next to a village: metal 16.5% or 22% > 14%, so every one has metal.
-  - **VERIFY** the exact method. The video also claims Quetzali fields are always full, which these numbers don't give (36% + 1.8%).
-- Fish can also appear on ocean tiles inside a tribe's borders, and on some ocean tiles just outside them.
-- Then each tribe's starting resources are added (section 17).
+  | Terrain | Resource | Chance |
+  | --- | --- | --- |
+  | Field | Fruit | 0.5 |
+  |  | Crop | 0.5 |
+  | Forest | Game | 0.5 |
+  | Mountain | Metal | 0.8 |
+  | Shallow water, ocean | Fish | 0.52 |
+  |  | AquaCrop | 0.3 |
+
+  So a field without modifiers has fruit 37.5%, crop 37.5%, nothing 25%. Imperius (fruit 2): fruit always tries, so 75% fruit and 25% crop (real: 75.3, 24.7). Quetzali (fruit 2, crop 0.1): 97.5% fruit, 2.5% crop (real: 97.5, 2.5). Bardur (crop 0): 50% fruit (real 49.8).
+- **Two tiles away,** the tile gets the same draw 32% of the time, and nothing otherwise: for every tribe and resource the rate two away is 0.32–0.35 of the rate next to a settlement.
+- **AquaCrop** is Aquarion's water crop (section 4); it's placed on every map with water, whatever the tribes, taking its tile.
+- **Then each tribe's starting resources** (section 17): the capital's 8 neighbours get at least as many of each resource as the tribe's list has, counting what's already there (Hoodrick's 2 game come to 2.5 on average, Luxidoor's 8 fill all 8). Each missing one goes on a random neighbour, whatever was on it except a resource the list still needs, changing its terrain to fit (game, measured: Kickoo's fish replace land resources as often as not).
 
 **Ruins** (count from the size table), placed last together with starfish:
 
@@ -718,7 +729,7 @@ The pre-terrain row gives the density coefficient.
 - Ocean ruins must be at least 2 tiles from any village.
 - The water limit per map type is in the table above.
 
-**Starfish:** about 1 per 25 water tiles, on shallow water or ocean, if there's room. Never next to another starfish, a lighthouse or a city.
+**Starfish:** the map type's wetness (section 18's table; Drylands 0, Continents and Pangea 0.5) × the map's tiles ÷ 25, rounded up (game: the generator's own count): 3 on 14×14 Lakes, 7 on Water World. Each try is a random water tile, kept if it's empty and not next to a village or another starfish; there are as many tries as water tiles. A starfish can land on a water corner, and the corner's lighthouse then takes the tile (game, measured: starfish are next to corners as often as anywhere, and there's one fewer than the count on 10–15% of maps).
 
 ### Defaults until verified
 
@@ -727,15 +738,9 @@ The details below aren't public. The engine uses these defaults for now. They'll
 | Unknown                                          | Default                                                                                                                                                                                       |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | How the fairest map is picked                    | The real game makes up to 50 candidates and scores them by territories around the capitals (its `MapFairnessCalculations`; how exactly isn't read). Until that's matched: generate 10 candidate maps. Score each capital by the resources within 2 tiles of it plus the villages within 4 tiles. Keep the map with the smallest gap between the best and worst capital. |
-| Climate regions                                  | Each capital grows its region outward one tile per round, all capitals at once, with ties broken at random, until every tile has a region.                                                    |
-| Capping resource modifiers                       | Per tile, each resource's chance is (its rate ÷ the terrain's share) × the tribe modifier. If a terrain's chances add up to more than 1, scale them down to add up to 1, so no tile is empty. |
-| Kickoo's water modifier                          | No effect, apart from the 2 fish water tiles at its capital on Drylands.                                                                                                                      |
 | Who gets the meeting bonus                       | Only the player who meets the other tribe. The other tribe meets them when it sees one of theirs, or receives their peace offer or embassy.                                                   |
 | Archipelago water ruins                          | At most a third, like Lakes and Pangea.                                                                                                                                                       |
-| Where starting resources go                      | Random tiles next to the capital, with the terrain changed to fit the resource if needed (e.g. fish needs water).                                                                             |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10.                                                                                                                                                         |
-| How lakes are shaped                             | Grown from random seeds away from other water, 4 to 12 tiles at a time along straight neighbours, until the target share is reached. Redone if a capital can't reach 2 villages over land.    |
-| Fish on ocean                                    | 50% on ocean next to a village, 25% two tiles away.                                                                                                                                           |
 | Ocean ruins "at least 2 tiles from any village"  | At least 3 tiles away (2 tiles between).                                                                                                                                                      |
 
 Sources: <https://polytopia.fandom.com/wiki/Map_Generation> (full page), <https://youtu.be/fJ562xzAIVs>, <https://github.com/HenBOMB/Polyfish>, <https://github.com/QuasiStellar/Polytopia-Map-Generator>, <https://github.com/usemsedge/PolytopiaBoardRenderer>
@@ -750,7 +755,7 @@ Sources: <https://polytopia.fandom.com/wiki/Game_Modes>, <https://github.com/ben
 
 ## 20. Out of scope
 
-- Special tribes: Aquarion, ∑∫ỹriȱŋ, Polaris, Cymanti. That rules out their units, techs, terrain (ice, flooded, algae) and skills, and also Landfill.
+- Special tribes: Aquarion, ∑∫ỹriȱŋ, Polaris, Cymanti. That rules out their units, techs, terrain (ice, flooded, algae) and skills, and also Landfill. Their map features are generated even so where every map has them (AquaCrop, section 4), so the engine's maps match the real game's and are ready for them.
 - Perfection and Glory modes. Score is still tracked, because the star bonus for meeting a tribe uses it.
 - How the built-in AI decides what to do, and its difficulty settings. We use the Normal/human capital income.
 - Graphics, sound, multiplayer networking.
@@ -844,12 +849,14 @@ Each item, with the section it's from:
 
 **Tribes, map and endgame**
 
-- [ ] Where starting resources are placed (§17; low priority)
+- [x] Where starting resources are placed (§17; low priority)
+  - The capital's 8 neighbours, topped up to the tribe's list (measured against real maps, §18)
   - Tribe modifiers and starting resources: settled by the data file
   - Default: random tiles next to the capital (section 18)
 - [x] Map-generation terrain percentages (§18)
   - Wiki Map Generation page
-- [ ] Map generation: climate-region method, how the fairest map is picked, how resource modifiers are capped, Kickoo's water modifier (§18)
+- [ ] Map generation: how the fairest map is picked (§18)
+  - Climate regions, resource modifiers and water modifiers are settled by measuring real maps (§18); the fairness score is the real `MapFairnessCalculations`, not yet matched
   - Defaults are in §18 "Defaults until verified". These get settled by comparing against real maps.
 - [ ] Map generation: the limit on water ruins for Archipelago (§18)
 - [x] Giant push directions when a Giant spawns on an occupied city (§7)

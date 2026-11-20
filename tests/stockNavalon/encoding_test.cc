@@ -94,7 +94,7 @@ Game scrambleHidden(const Game &game, int viewer) {
 
 TEST_CASE("encoding sizes follow the spec") {
     EncodingConfig config;
-    CHECK(planeCount(config) == 105);
+    CHECK(planeCount(config) == 106);
     CHECK(globalCount(config) == 149);
     CHECK(actionCount(config) == 26410);
     CHECK(EncodingSlots::PER_TILE == 218);
@@ -230,7 +230,7 @@ TEST_CASE("features land where they should") {
     CHECK(plane(e, unitOwner + 1, 5, 3) == 1);
     CHECK(plane(e, unitOwner + 2 + RIDER, 5, 3) == 1);
     // the threats come just before the two shore, two reach and lethal planes
-    const int threat = planeCount(config) - 8;
+    const int threat = planeCount(config) - 9;
     // it can move 2 and attack 1 further, but not 4 away
     CHECK(plane(e, threat, 2, 3) == doctest::Approx(0.25));
     CHECK(plane(e, threat, 5, 3) == 0);
@@ -410,6 +410,10 @@ TEST_CASE("belief targets only cover what the player can't see") {
             game.apply(bot.choose(game));
             for (int player = 0; player < 2; player++) {
                 int q = 1 - player;
+                // a dead opponent has nothing left to learn about
+                if (!game.players[q].alive) {
+                    continue;
+                }
                 encodeTargets(game, player, config, targets.data(), masks.data());
                 PlayerView view = makeView(game, player);
                 auto t = [&](const std::string &name, int i) {
@@ -746,7 +750,7 @@ TEST_CASE("the shore shows which unexplored tiles beside shallow water are land"
     CHECK(view.tiles[game.index(4, 3)].knownLand == -1);
     EncodingConfig config{.mapSize = 12};
     Encoded e = encode(game, 0, config);
-    const int n = config.mapSize, shore = planeCount(config) - 5;
+    const int n = config.mapSize, shore = planeCount(config) - 6;
     auto plane = [&](int p, int x, int y) { return e.planes[(p * n + y) * n + x]; };
     CHECK(plane(shore, 5, 3) == 1);
     CHECK(plane(shore + 1, 4, 2) == 1);
@@ -762,7 +766,7 @@ TEST_CASE("reach: where units can step, and the player's cities in danger") {
     int enemy = addUnit(game, 1, UnitTypes::RIDER, 3, 1);
     int own = addUnit(game, 0, UnitTypes::WARRIOR, 1, 2);
     EncodingConfig config;
-    const int n = config.mapSize, reach = planeCount(config) - 3,
+    const int n = config.mapSize, reach = planeCount(config) - 4,
               G = globalCount(config) - 6;
     auto plane = [&](const Encoded &e, int p, int x, int y) {
         return e.planes[(p * n + y) * n + x];
@@ -801,7 +805,7 @@ TEST_CASE("reach: a road step, then one more with the half step left, for either
     addUnit(game, 1, UnitTypes::WARRIOR, 4, 5);
     addUnit(game, 0, UnitTypes::WARRIOR, 1, 3);
     EncodingConfig config;
-    const int n = config.mapSize, reach = planeCount(config) - 3;
+    const int n = config.mapSize, reach = planeCount(config) - 4;
     auto plane = [&](const Encoded &e, int p, int x, int y) {
         return e.planes[(p * n + y) * n + x];
     };
@@ -824,7 +828,7 @@ TEST_CASE("lethal: how close the player's units are to dying, and cities held by
     addUnit(game, 1, UnitTypes::SWORDSMAN, 2, 1);
     addUnit(game, 1, UnitTypes::SWORDSMAN, 2, 2);
     EncodingConfig config;
-    const int n = config.mapSize, lethal = planeCount(config) - 1, G = globalCount(config) - 4;
+    const int n = config.mapSize, lethal = planeCount(config) - 2, G = globalCount(config) - 4;
     auto at = [&](const Encoded &e, int x, int y) { return e.planes[(lethal * n + y) * n + x]; };
     // a full-HP warrior survives one swordsman but not two
     Encoded e = encode(game, 0, config);

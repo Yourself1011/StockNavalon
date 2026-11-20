@@ -23,10 +23,14 @@ enum ResourceType {
     METAL,
     FISH,
     STARFISH,
+    // Aquarion's water crop (Aquaculture, Aqua Farm). Every map with water
+    // has it, whatever the tribes; regular tribes can't use it, but it takes
+    // the tile, so no fish there
+    AQUACROP,
     RESOURCE_TYPE_SIZE
 };
 
 // map file and display characters; NONE has none
 const std::array<char, RESOURCE_TYPE_SIZE> resourceChars = {' ', 'f', 'c', 'g',
-                                                            'm', 'h', 's'};
+                                                            'm', 'h', 's', 'a'};
 } // namespace ResourceTypes

@@ -72,6 +72,29 @@ def test_weights_saved_before_the_shore_planes_load_and_play_the_same():
     assert torch.equal(a["policy"], b["policy"]) and torch.equal(a["value"], b["value"])
 
 
+def test_weights_saved_before_aquacrop_load_and_play_the_same():
+    # encoding version 16: one more input plane (last), and one more
+    # resource in the unexplored head, whose old weights are dropped
+    from stocknavalon.model import load_weights
+    enc = pe.Encoding()
+    torch.manual_seed(2)
+    old = sn.Network(enc, channels=16, blocks=2).eval()
+    with torch.no_grad():
+        old.stem.weight[:, -1:] = 0
+    saved = old.state_dict()
+    saved["stem.weight"] = saved["stem.weight"][:, :-1].clone()
+    for key in ("unexplored.weight", "unexplored.bias"):
+        saved[key] = saved[key][:-1].clone()
+    model = sn.Network(enc, channels=16, blocks=2).eval()
+    assert sorted(load_weights(model, saved)) == ["stem.weight", "unexplored.bias",
+                                                  "unexplored.weight"]
+    planes = torch.randn(2, enc.plane_count, 11, 11)
+    globals_ = torch.randn(2, enc.global_count)
+    with torch.no_grad():
+        a, b = old(planes, globals_), model(planes, globals_)
+    assert torch.equal(a["policy"], b["policy"]) and torch.equal(a["value"], b["value"])
+
+
 def test_losses_are_finite_and_fall_on_a_fixed_batch(buffer):
     torch.manual_seed(0)
     enc = pe.Encoding()

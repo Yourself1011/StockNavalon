@@ -4,6 +4,7 @@
 #include "mapgen.h"
 #include "tribeInference.h"
 #include "view.h"
+#include <optional>
 #include <sstream>
 
 using namespace TribeTypes;
@@ -142,14 +143,37 @@ TEST_CASE("the opponent's first turn shows what their units could reach") {
     // A turn-0 change of +25: a Warrior that can't climb sees nothing new
     // from 1 tile out of the explored 5x5, and 5 stars can't buy +25, but a
     // Rider reaches 2 tiles out, and Climbing sees 2 tiles from a mountain.
+    // The first map with that start: an unmet opponent whose starting score
+    // the five tribes below share, and a mountain in its explored 5x5. Found
+    // by search, so a change to the map generator doesn't break the test.
     std::vector<Tribe> lineup = {IMPERIUS, OUMAJI};
-    Game game(generateMap({.size = 11,
-                           .type = MapTypes::LAKES,
-                           .tribes = lineup,
-                           .seed = 1}),
-              lineup, {.seed = 1});
+    TribeSet sharing = tribes({IMPERIUS, BARDUR, KICKOO, OUMAJI, XINXI});
+    std::optional<Game> found;
+    for (std::uint64_t seed = 0; seed < 200 && !found; seed++) {
+        Game game(generateMap({.size = 11,
+                               .type = MapTypes::LAKES,
+                               .tribes = lineup,
+                               .seed = seed}),
+                  lineup, {.seed = seed});
+        PlayerView v = makeView(game, 0);
+        if (v.tribes[1] ||
+            (tribesWithStartingScore(v.scores[1]) & sharing) != sharing) {
+            continue;
+        }
+        int capital = game.cities[game.players[1].capital].tile;
+        bool mountain = false;
+        for (int t = 0; t < game.size * game.size; t++) {
+            mountain |= game.tiles[t].terrain == TerrainTypes::MOUNTAIN &&
+                        std::max(std::abs(game.tileX(t) - game.tileX(capital)),
+                                 std::abs(game.tileY(t) - game.tileY(capital))) <= 2;
+        }
+        if (mountain) {
+            found = game;
+        }
+    }
+    REQUIRE(found);
+    const Game &game = *found;
     PlayerView view = makeView(game, 0);
-    REQUIRE_FALSE(view.tribes[1]);
     int start = view.scores[1];
     auto after = [&](int change) {
         PlayerView v = view;
@@ -157,8 +181,6 @@ TEST_CASE("the opponent's first turn shows what their units could reach") {
         v.effectsInChanges.push_back(0);
         return v;
     };
-    TribeSet sharing = tribes({IMPERIUS, BARDUR, KICKOO, OUMAJI, XINXI});
-    REQUIRE((tribesWithStartingScore(start) & sharing) == sharing);
 
     PlayerView far = after(25);
     CHECK_FALSE(scoreChangesFit(far, 1, IMPERIUS));

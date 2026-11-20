@@ -35,6 +35,8 @@ class ResourceType(enum.IntEnum):
 
     STARFISH = 6
 
+    AQUACROP = 7
+
 class ImprovementType(enum.IntEnum):
     NONE = 0
 

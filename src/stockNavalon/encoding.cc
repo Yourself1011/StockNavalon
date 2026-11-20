@@ -45,7 +45,10 @@ struct Layout {
     // could deal next turn, over its HP, capped at 1 (it dies if they all
     // attack it)
     int lethal() const { return reach() + 2; }
-    int count() const { return lethal() + 1; }
+    // AquaCrop, added after the resources above were laid out (last, so
+    // networks from before load with zero weights for it)
+    int aquacrop() const { return lethal() + 1; }
+    int count() const { return aquacrop() + 1; }
 };
 
 void checkFits(const Game &game, const EncodingConfig &config) {
@@ -319,7 +322,10 @@ void encodeState(const Game &game, int player, const EncodingConfig &config,
         at(Layout::EXPLORED, t) = fullInformation ? game.explored(player, t) : 1;
         at(Layout::TERRAIN + tile.terrain, t) = 1;
         if (tile.resource != ResourceTypes::NONE) {
-            at(Layout::RESOURCE + tile.resource - ResourceTypes::FRUIT, t) = 1;
+            at(tile.resource == ResourceTypes::AQUACROP
+                   ? layout.aquacrop()
+                   : Layout::RESOURCE + tile.resource - ResourceTypes::FRUIT,
+               t) = 1;
         }
         at(Layout::ROAD, t) = tile.road;
         if (tile.building >= ImprovementTypes::VILLAGE &&

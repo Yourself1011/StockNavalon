@@ -61,6 +61,8 @@ cmake --build --preset release
 .venv/bin/python src/oracle/mapstats.py --type lakes --size 14 --maps 1000
 ```
 
+`--by-tribe` instead compares rates inside each tribe's climate region, since every tribe has its own terrain and resource modifiers: terrain shares of the land, each resource's rate per terrain next to a settlement and two away, and the starting resources next to the capital, with a z-score each (3,000 maps take about 40 seconds).
+
 Ours is the build tree's module (`build/release/python`, or `POLYENGINE_BUILD_PACKAGE`), not the installed one, so it measures the engine as built. `--save game/maps.jsonl` keeps the real maps (in `game/`, since they come from the game). About 15 seconds for 1,000 maps of each. Results so far are in [`notes/integration.md`](../notes/integration.md) section 5.
 
 ## How it works

@@ -98,7 +98,7 @@ const std::array<std::string_view, TerrainTypes::TERRAIN_TYPE_SIZE> terrain = {
     "  "sv, "🌲"sv, "🗻"sv, "🟦"sv, "🌊"sv};
 
 const std::array<std::string_view, ResourceTypes::RESOURCE_TYPE_SIZE>
-    resources = {""sv, "🍒"sv, "🌾"sv, "🦌"sv, "💎"sv, "🐟"sv, "⭐"sv};
+    resources = {""sv, "🍒"sv, "🌾"sv, "🦌"sv, "💎"sv, "🐟"sv, "⭐"sv, "🌿"sv};
 
 // indexed by ImprovementType; actions are never on a tile
 const std::array<std::string_view, ImprovementTypes::IMPROVEMENT_TYPE_SIZE>

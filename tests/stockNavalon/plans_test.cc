@@ -105,7 +105,8 @@ TEST_CASE("a bridge rush on continents: the bridge's tech, the fewest bridges, t
     }
     MESSAGE("joined in " << joined << " of 8 games with " << bridges
                          << " bridges; the free side built " << freeBridges);
-    CHECK(joined >= 6);
+    // 25 of 32 games on these maps: 8 games give 5 to 7
+    CHECK(joined >= 5);
     // continents need about one crossing: no more than two a game on average
     CHECK(bridges <= 16);
 }

@@ -129,21 +129,22 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
   | Type | Water | Pre-terrain villages |
   | --- | --- | --- |
   | Drylands | none, apart from starting fish | none |
-  | Lakes | 25-30% | 0.3 |
-  | Pangea | 45-55% | none |
-  | Continents | 45-55% | none |
-  | Archipelago | 60-80% | 0.3 |
-  | Water World | 90-100% | 0.1 |
+  | Lakes | 25.5-28.1% | 0.3 |
+  | Pangea | 50% | none |
+  | Continents | 36.2-41.3% | none |
+  | Archipelago | 61.2-64.3% | 0.3 |
+  | Water World | 84.7-85.7% | 0.1 |
 
 - **Capitals in quadrants** (Drylands, Lakes, Archipelago, Water World): each coordinate 2 in from the domain's sides (`capitalDomainMargin`), weighted towards the middle by a triangle (1 2 1, 1 2 2 1, ...), the margin shrinking where a domain is too small; at least 2 from the map edge. **Suburbs** (Lakes, Archipelago): 1 or 2 per capital, 3 tiles from it, round-robin between capitals.
 - **Ocean** is water with no land among its 4 straight neighbours. **Lighthouses** go on the corner's terrain, land made field. **Villages** stay off the edge ring and 3 apart, with no other edge rule.
-- **Capitals from villages** (Pangea, Continents) are never under 2 from the edge: a candidate map with no such village left is dropped and `generateMap` tries another seed (up to 50 per candidate wanted).
-- **Lakes:** lakes grow from random seeds away from other water, 4 to 12 tiles at a time along straight neighbours, until the target share. If a capital can't reach 2 villages over land, the water is redone (up to 30 times).
-- **Archipelago:** each village and capital gets its tile and straight neighbours as land. Land then grows from the coast, each step taking whichever of 3 random coast tiles has the least land around it, so it reaches out in fingers.
-- **Water World:** a plus shape of land under each capital, and the village tile plus 0 to 2 neighbours under each village.
-- **Pangea:** land grows from the centre, each step taking whichever of 4 random coast tiles is nearest the centre. Villages fill it under the post-terrain rules. The capitals are picked one at a time, as far from the others as possible, then preferring the coast.
-- **Continents:** about 60 land tiles per landmass, at least 30, but at least one per player. Seeds are placed as far apart as possible, and grow in turns up to 200 tiles each; a tile never joins a landmass when another landmass touches it. Each landmass gets a village first, then villages fill up. The capitals go on different landmasses first, then as far apart as possible, then by the coast.
+- **Capitals from villages** (Pangea, Continents) are villages exactly 2 from the edge, each as far from the capitals before it as possible. Villages there fill that ring first, and avoid a coordinate 3 from its nearer edge. A candidate map with no such village left is dropped and `generateMap` tries another seed (up to 50 per candidate wanted).
+- **Lakes, Archipelago, Water World:** water from noise as GAME.md section 18 describes (`shapeFromNoise`): a uniform value per tile, the lifted ones `wetness + (1 - wetness) × value`, smoothed `smoothing` times over each 3x3 with `edgeNoise` outside the map, then the lowest values among the tiles that aren't settlements (or, on Lakes, the outer ring) become water up to a share drawn in the type's range. Which tiles are lifted is per type (`TypeDefaults`). On Lakes, if a capital can't reach 2 villages over land, the water is redone (up to 30 times).
+- **Pangea:** land grows from the centre, each step taking whichever of 4 random coast tiles is nearest the centre, to exactly half the map.
+- **Continents:** one landmass per player, or one fewer or more (`continentFewer`, `continentMore`). Seeds go as far apart as possible on the noise of `landNoise` (one pass, the outside counting as land), and grow in turns into the unclaimed neighbour with the best noise plus `continentCompactness` per neighbour already theirs, never a tile another landmass touches, to the water share. Each landmass gets a village first, then villages fill up.
 - **Tiny island villages** (Continents, Pangea, Water World) go on open water with no land around, and never become capitals.
-- **Starting resources** go next to the capital, off the map edge. They take a tile whose terrain already fits first (an empty one, then one whose resource gets replaced), and only then change a tile's terrain. Water next to another landmass never becomes land.
-- **Climate regions** grow out from the capitals one ring per round (Voronoi-like in Chebyshev distance), with each claim waiting a round 20% of the time (`climateIrregularity`), so borders come out irregular, like the real game's. Map files can mark them with `^N`; without markers, each tile gets its nearest capital's climate.
+- **Resources** (`resourceRates`): every resource for the terrain tries at its chance times the tribe's modifier and one of the successes is picked, AquaCrop included on water. Two from a settlement, the same draw `outerShare` (0.32) of the time.
+- **AquaCrop** (`ResourceTypes::AQUACROP`) is visible to everyone, since the tech it needs isn't in the engine, and nothing uses it; building on its tile is allowed as on any resource tile (GAME.md section 4, VERIFY).
+- **Starfish:** `ceil(wetness × size² / 25)`, by random tries over the water tiles (one per water tile); one landing on a water corner is lost to the lighthouse.
+- **Starting resources** top the capital's neighbours up to the tribe's list, on random neighbours off the map edge, never one holding a resource the list still needs, changing terrain to fit. Water next to another landmass never becomes land.
+- **Climate regions** grow from the capitals in turns, each claiming one random unclaimed tile next to it per turn (8 neighbours), until every tile has one: equal sizes, irregular borders. Map files can mark them with `^N`; without markers, each tile gets its nearest capital's climate.
 - **Ruins** avoid resources and corners. **Starfish** never go next to a village, a lighthouse or another starfish.

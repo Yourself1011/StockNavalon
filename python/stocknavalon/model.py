@@ -158,10 +158,16 @@ WIDER_INPUTS = ("globals.weight", "stem.weight")
 
 def load_weights(model: nn.Module, weights: dict) -> list[str]:
     """Loads saved weights, allowing only the heads in NEWER_HEADS to be
-    missing and the layers in WIDER_INPUTS to have fewer inputs. Returns the
-    keys not loaded as they are: missing, or widened."""
+    missing or a different shape (the unexplored head gained AquaCrop,
+    encoding version 16; those weights are dropped and relearned) and the
+    layers in WIDER_INPUTS to have fewer inputs. Returns the keys not loaded
+    as they are: missing, reshaped, or widened."""
     weights = dict(weights)
     current = model.state_dict()
+    for key in list(weights):
+        if (key.startswith(NEWER_HEADS) and key in current
+                and weights[key].shape != current[key].shape):
+            del weights[key]
     widened = []
     for key in WIDER_INPUTS:
         saved, now = weights.get(key), current[key]

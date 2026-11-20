@@ -26,6 +26,14 @@ enum Tribe {
 } // namespace TribeTypes
 
 using ResourceModifiers = std::array<double, ResourceTypes::RESOURCE_TYPE_SIZE>;
+// every resource at 1
+constexpr ResourceModifiers noResourceModifiers() {
+    ResourceModifiers out{};
+    for (double &m : out) {
+        m = 1;
+    }
+    return out;
+}
 
 // GAME.md section 17
 struct TribeData {
@@ -39,7 +47,7 @@ struct TribeData {
     // map generation: multiply the base chances inside the tribe's climate
     // region. The water modifier has no effect (GAME.md section 18).
     double mountainModifier = 1, forestModifier = 1, waterModifier = 1;
-    ResourceModifiers resourceModifiers = {1, 1, 1, 1, 1, 1, 1};
+    ResourceModifiers resourceModifiers = noResourceModifiers();
     // added next to the capital after the other resources
     std::vector<ResourceTypes::ResourceType> startingResources;
 };

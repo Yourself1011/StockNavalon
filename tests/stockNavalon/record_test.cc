@@ -752,7 +752,7 @@ TEST_CASE("tree reuse saves evaluations, and games still replay") {
         config.maxTurns = 6;
         config.fogShare = fog;
         config.treeReuse = reuse;
-        SelfPlaySession session(config, 4, 4, 13);
+        SelfPlaySession session(config, 4, 16, 13);
         Counting network;
         std::vector<Evaluation> results;
         while (!session.done()) {
@@ -780,8 +780,8 @@ TEST_CASE("tree reuse saves evaluations, and games still replay") {
         double without = play(false, fog), with = play(true, fog);
         MESSAGE("evaluations per move with fog " << fog << ": " << without << " without reuse, "
                                                    << with << " with");
-        // about 10% fewer, but a handful of games is noisy: the maps alone
-        // move it between 7% and 14%
+        // 10-15% fewer over 16 games; 4 games were too few to tell (7% to
+        // 14% on different maps)
         CHECK(with < without * 0.95);
     }
 }
