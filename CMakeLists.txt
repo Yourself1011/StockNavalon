@@ -108,6 +108,14 @@ add_executable(search_vs_random examples/search_vs_random.cc)
 target_link_libraries(search_vs_random PRIVATE stocknavalon)
 polyengine_warnings(search_vs_random)
 
+# The oracle: the real game's rules from the Steam build (docs/oracle.md).
+# Separate from the engine, and macOS only, where the build it loads runs.
+if(APPLE)
+    file(GLOB ORACLE_SOURCES CONFIGURE_DEPENDS src/oracle/*.cc)
+    add_executable(oracle ${ORACLE_SOURCES})
+    polyengine_warnings(oracle)
+endif()
+
 # Tests, run with ctest. Both run from the repo root, where the fixed map
 # file is.
 enable_testing()

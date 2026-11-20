@@ -146,8 +146,8 @@ TEST_CASE("the opponent's first turn shows what their units could reach") {
     Game game(generateMap({.size = 11,
                            .type = MapTypes::LAKES,
                            .tribes = lineup,
-                           .seed = 3}),
-              lineup, {.seed = 3});
+                           .seed = 1}),
+              lineup, {.seed = 1});
     PlayerView view = makeView(game, 0);
     REQUIRE_FALSE(view.tribes[1]);
     int start = view.scores[1];

@@ -57,6 +57,9 @@ TEST_CASE("a bridge rush on continents: the bridge's tech, the fewest bridges, t
         int seat = forcedSeat(r);
         Game game = r.start();
         int techTurn = -1;
+        // capitals can start on one landmass, as in the real game, and then
+        // the plan has nothing to do
+        bool joinedAtStart = planDone(Plan::BRIDGE_RUSH, game);
         bool done = false;
         for (const RecordedMove &m : r.moves) {
             const Command &c = m.command;
@@ -93,8 +96,10 @@ TEST_CASE("a bridge rush on continents: the bridge's tech, the fewest bridges, t
             }
         }
         // the bridge's tech (two techs from the start) early
-        CHECK(techTurn >= 0);
-        CHECK(techTurn <= 6);
+        if (!joinedAtStart) {
+            CHECK(techTurn >= 0);
+            CHECK(techTurn <= 6);
+        }
         joined += done;
         CHECK(r.replaysLegally());
     }

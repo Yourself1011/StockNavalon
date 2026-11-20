@@ -24,11 +24,15 @@ struct MapGenSettings {
     // pre-terrain villages: Lakes and Archipelago 0.3, Water World 0.1,
     // otherwise none
     double preTerrainDensity = -1;
-    // Lakes and Archipelago only
-    int suburbsPerCapital = 2;
-    // suburbs go this far from their capital
-    int minSuburbDistance = 3, maxSuburbDistance = 4;
-    // capitals stay at least this far from the map edge (0 is the edge)
+    // suburbs per capital, Lakes and Archipelago only (game: the map
+    // generator's settings)
+    int minSuburbs = 1, maxSuburbs = 2;
+    // suburbs go this far from their capital (game: measured)
+    int minSuburbDistance = 3, maxSuburbDistance = 3;
+    // capitals are at least this far in from their domain's sides (game:
+    // measured), and at least capitalEdgeDistance from the map edge (0 is
+    // the edge)
+    int capitalDomainMargin = 2;
     int capitalEdgeDistance = 2;
     // villages and capitals stay at least this far apart
     int settlementSpacing = 3;
@@ -60,7 +64,7 @@ std::vector<ResourceRate> resourceRates(TerrainTypes::TerrainType terrain,
 // whether a map can have this resource on this terrain (NONE fits anything)
 bool resourceFitsTerrain(ResourceTypes::ResourceType resource,
                          TerrainTypes::TerrainType terrain);
-// corners are always a field with a lighthouse
+// corners always have a lighthouse: on field, or on the water already there
 bool isCornerTile(int x, int y, int size);
 // ruins: never on shallow water, at least this far from a village or capital
 // on land and on ocean, and at least RUIN_SPACING from another ruin

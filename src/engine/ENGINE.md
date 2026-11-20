@@ -135,7 +135,9 @@ Ignored on purpose: the Stay command. It's in the command list but never legal.
   | Archipelago | 60-80% | 0.3 |
   | Water World | 90-100% | 0.1 |
 
-- **Capitals in quadrants** (Drylands, Lakes, Archipelago, Water World): a random spot in their domain, a tile in from its sides and at least 2 from the map edge. **Suburbs** (Lakes, Archipelago) go 3 to 4 tiles from their capital, round-robin between capitals.
+- **Capitals in quadrants** (Drylands, Lakes, Archipelago, Water World): each coordinate 2 in from the domain's sides (`capitalDomainMargin`), weighted towards the middle by a triangle (1 2 1, 1 2 2 1, ...), the margin shrinking where a domain is too small; at least 2 from the map edge. **Suburbs** (Lakes, Archipelago): 1 or 2 per capital, 3 tiles from it, round-robin between capitals.
+- **Ocean** is water with no land among its 4 straight neighbours. **Lighthouses** go on the corner's terrain, land made field. **Villages** stay off the edge ring and 3 apart, with no other edge rule.
+- **Capitals from villages** (Pangea, Continents) are never under 2 from the edge: a candidate map with no such village left is dropped and `generateMap` tries another seed (up to 50 per candidate wanted).
 - **Lakes:** lakes grow from random seeds away from other water, 4 to 12 tiles at a time along straight neighbours, until the target share. If a capital can't reach 2 villages over land, the water is redone (up to 30 times).
 - **Archipelago:** each village and capital gets its tile and straight neighbours as land. Land then grows from the coast, each step taking whichever of 3 random coast tiles has the least land around it, so it reaches out in fingers.
 - **Water World:** a plus shape of land under each capital, and the village tile plus 0 to 2 neighbours under each village.

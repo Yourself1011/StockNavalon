@@ -4,6 +4,7 @@ stockNavalon is a Polytopia bot: AlphaZero-style search with a neural network, p
 
 - `src/engine/`: polyengine, the game. It doesn't depend on any bot.
 - `src/stockNavalon/`: the bot's C++ code, built on the engine: encoding, tribe inference, determinization, the search, game records and self-play.
+- `src/oracle/`: the oracle, the real game's own rules loaded from the Steam build, to check the engine against ([`docs/oracle.md`](docs/oracle.md)). The game's files it uses go in `game/`, which is gitignored.
 - `python/stocknavalon/`: the network and training loop (PyTorch).
 - `notes/`: working notes for development: the to-do list, designs not built yet, and what training runs showed.
 - `tests/engine/`, `tests/stockNavalon/`: their tests, in one doctest binary; `tests/python/`: the Python package's.
@@ -39,6 +40,7 @@ Each builds:
 - `play_stocknavalon`: the same CLI, against stockNavalon
 - `run_tests`: the C++ tests
 - `random_game`, `one_ply_search` and `search_vs_random`: the examples
+- `oracle` (macOS): the real game's rules, once `src/oracle/setup.sh` has pinned a copy of the game ([`docs/oracle.md`](docs/oracle.md))
 - the Python module (into `build/<preset>/python`), when the venv has nanobind
 
 The configure step (`cmake --preset ...`) only needs rerunning when the build setup changes. New source files are picked up on the next build.
@@ -153,9 +155,10 @@ A run bootstraps from score-evaluator games, then runs self-play and training at
 - [`docs/stockNavalon.md`](docs/stockNavalon.md): how stockNavalon, the bot, works (network, search, determinization, self-play, training)
 - [`docs/tribeInference.md`](docs/tribeInference.md): the spec for working out an unmet opponent's possible tribes exactly from their opening score changes
 - [`docs/encoding.md`](docs/encoding.md): the spec for encoding states and commands as arrays for the network
+- [`docs/oracle.md`](docs/oracle.md): the oracle, the real game's rules from the Steam build: setup, requests, how it works
 - [`docs/cpp.md`](docs/cpp.md): using the engine as a C++ library (linking, commands, fog, `LegalMoves` for search, threads), with compiled examples in `examples/`
 - [`docs/python.md`](docs/python.md): the `polyengine` Python package (setup, commands, full API reference, speed)
 - [`src/engine/GAME.md`](src/engine/GAME.md): the rules spec
 - [`src/engine/ENGINE.md`](src/engine/ENGINE.md): how the engine implements it, and the assumptions made
 
-Working notes, for development rather than reference: [`notes/todo.md`](notes/todo.md) (the checklist), [`notes/design.md`](notes/design.md) (designs not built yet, and why), [`notes/runs.md`](notes/runs.md) (what training runs showed).
+Working notes, for development rather than reference: [`notes/todo.md`](notes/todo.md) (the checklist), [`notes/design.md`](notes/design.md) (designs not built yet, and why), [`notes/runs.md`](notes/runs.md) (what training runs showed), [`notes/integration.md`](notes/integration.md) (checking the engine against the real game).

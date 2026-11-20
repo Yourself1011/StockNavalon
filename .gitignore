@@ -73,3 +73,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 runs/
+
+# The real game: copied binaries, extracted data and decompiled output (oracle/README.md). Never committed
+game/

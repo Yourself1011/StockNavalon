@@ -123,8 +123,8 @@ Sources: <https://polytopia.io/2025-balance-pass/>, <https://polytopia.fandom.co
 | Field         | Fruit, Crop    |                                                           |
 | Forest        | Game           | Entering it ends movement (section 10)                    |
 | Mountain      | Metal          | Needs Climbing to enter. Units on a mountain see 2 tiles. |
-| Shallow water | Fish, Starfish | Water next to land                                        |
-| Ocean         | Starfish       | Water not next to land. Ruins can appear here.            |
+| Shallow water | Fish, Starfish | Water with land among its 4 straight neighbours (game)    |
+| Ocean         | Starfish       | Any other water (game). Ruins can appear here.            |
 
 - Whales and Whale Hunting were removed in 2.8; Starfish replaced them.
 - **Hidden resources:** every resource is on the map from the start. A resource is only shown to a player once the tech that uses it is researchable or owned (game). For example, crops appear once Farming can be bought, which happens after Organization.
@@ -595,9 +595,7 @@ We only need maps that look like real ones (similar statistics), not exact seed-
   - Never on water.
   - Never on the map edge.
   - At least 3 tiles apart, i.e. 2 tiles between them, so that their 3×3 borders never overlap. Border Growth can make borders overlap later.
-- **Post-terrain villages** also can't be on the 2nd tile from the edge or on the **4th** tile from the edge. So counting from 1 at the edge, they can only be on the 3rd tile or the 5th and beyond.
-  - This "4th tile" rule only applies to post-terrain villages, not capitals or suburbs.
-  - It leaves visible bands with no villages, most of all on Drylands, where every village is post-terrain.
+- **No bands near the edge** (game): the wiki says post-terrain villages avoid the 2nd and 4th tiles from the edge, but on real Drylands maps, where every village is post-terrain, 48% of villages are on the 2nd tile and 11% on the 4th. Only the edge itself is ruled out.
 - **Post-terrain placement** picks a random tile among all tiles where a village is still allowed, places a village, then recomputes the allowed tiles. It repeats until no tile is allowed, so the map ends up with as many villages as fit.
 - A village placed on forest turns that tile into field.
 
@@ -616,10 +614,10 @@ The pre-terrain row gives the density coefficient.
 
 **Shared steps:**
 
-- **Capitals in quadrants:** the map is split into equal domains: 4 for 1–4 players, 9 for 5–9, 16 for 10–16. Each capital goes in an unoccupied domain, chosen with weighted randomness.
-- **Suburbs:** two villages per capital, at least 2 tiles from it, as space allows (video). They also follow the spacing rules above. On larger maps each capital usually gets both. Because they're placed before terrain, they're usually a couple of tiles away.
+- **Capitals in quadrants:** the map is split into equal domains: 4 for 1–4 players, 9 for 5–9, 16 for 10–16. Each capital goes in an unoccupied domain, chosen with weighted randomness. Within its domain each coordinate is at least 2 in from the domain's sides and leans to the middle (game, measured): on 14×14 (7-wide domains) 2, 3 or 4 in, about 1:2:1; wider domains spread further, still peaked in the middle. So on 14×14 capitals are 2–3 tiles from the map edge 94% of the time.
+- **Suburbs:** 1 or 2 villages per capital (the generator's settings), 3 tiles from it (game, measured: half of all real Lakes villages are exactly 3 from the nearest capital, 5% are 4). They also follow the spacing rules above.
 - **Pre-terrain villages:** `(floor(width / 3)² − capitals − suburbs) × density`.
-- **Lighthouses:** one in each of the 4 corners.
+- **Lighthouses:** one in each of the 4 corners, on the corner's own terrain (game): land becomes field, water stays water or ocean. On Pangea every corner is ocean; on Archipelago and Continents about half are water.
 
 **Order per map type** (from the video's worked examples):
 
@@ -676,7 +674,7 @@ The pre-terrain row gives the density coefficient.
     1. landmasses made from noise. Their number depends on player count, wetness and map size. Each is 30–200 tiles, at least 1 tile from the others, and about half the map is water; e.g. 2 players on 14×14 gives about 50 land tiles each. One-tile strips of shallow water ("rivers") are common.
     2. villages placed one at a time on each continent, at least one per continent where possible
     3. tiny island villages
-    4. one village per player becomes a capital, on different landmasses where possible
+    4. one village per player becomes a capital, on different landmasses where possible. Capitals are never closer than 2 tiles to the map edge, and are usually exactly 2 from it (game, measured; Pangea too). Both capitals share one landmass on 30–40% of real 2-player maps.
     5. mountains and forests by tribe
     6. lighthouses
     7. resources
@@ -728,7 +726,7 @@ The details below aren't public. The engine uses these defaults for now. They'll
 
 | Unknown                                          | Default                                                                                                                                                                                       |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| How the fairest map is picked                    | Generate 10 candidate maps. Score each capital by the resources within 2 tiles of it plus the villages within 4 tiles. Keep the map with the smallest gap between the best and worst capital. |
+| How the fairest map is picked                    | The real game makes up to 50 candidates and scores them by territories around the capitals (its `MapFairnessCalculations`; how exactly isn't read). Until that's matched: generate 10 candidate maps. Score each capital by the resources within 2 tiles of it plus the villages within 4 tiles. Keep the map with the smallest gap between the best and worst capital. |
 | Climate regions                                  | Each capital grows its region outward one tile per round, all capitals at once, with ties broken at random, until every tile has a region.                                                    |
 | Capping resource modifiers                       | Per tile, each resource's chance is (its rate ÷ the terrain's share) × the tribe modifier. If a terrain's chances add up to more than 1, scale them down to add up to 1, so no tile is empty. |
 | Kickoo's water modifier                          | No effect, apart from the 2 fish water tiles at its capital on Drylands.                                                                                                                      |
@@ -736,9 +734,7 @@ The details below aren't public. The engine uses these defaults for now. They'll
 | Archipelago water ruins                          | At most a third, like Lakes and Pangea.                                                                                                                                                       |
 | Where starting resources go                      | Random tiles next to the capital, with the terrain changed to fit the resource if needed (e.g. fish needs water).                                                                             |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10.                                                                                                                                                         |
-| Where a capital goes in its domain               | A random tile at least a tile in from the domain's sides and 2 from the map edge.                                                                                                             |
 | How lakes are shaped                             | Grown from random seeds away from other water, 4 to 12 tiles at a time along straight neighbours, until the target share is reached. Redone if a capital can't reach 2 villages over land.    |
-| How far suburbs are                              | 3 to 4 tiles from their capital, placed round-robin between capitals.                                                                                                                         |
 | Fish on ocean                                    | 50% on ocean next to a village, 25% two tiles away.                                                                                                                                           |
 | Ocean ruins "at least 2 tiles from any village"  | At least 3 tiles away (2 tiles between).                                                                                                                                                      |
 

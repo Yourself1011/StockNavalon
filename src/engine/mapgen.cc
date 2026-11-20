@@ -40,6 +40,11 @@ class Rng {
     }
 };
 
+// a candidate map that can't be finished; generateMap tries another seed
+struct FailedCandidate : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 // a map type's defaults for the settings left negative
 struct TypeDefaults {
     double minWater, maxWater, preTerrainDensity;
@@ -161,14 +166,10 @@ class Generator {
         return best;
     }
 
-    // every village and capital: on land, off the edge, spaced apart.
-    // Post-terrain villages also avoid the 2nd and 4th tiles from the edge.
-    bool villageAllowed(int t, bool postTerrain) const {
-        int edge = edgeDistance(t);
-        if (!land(t) || edge == 0 || nearestSettlement(t) < s.settlementSpacing) {
-            return false;
-        }
-        return !postTerrain || (edge != 1 && edge != 3);
+    // every village and capital: on land, off the edge, spaced apart
+    bool villageAllowed(int t) const {
+        return land(t) && edgeDistance(t) > 0 &&
+               nearestSettlement(t) >= s.settlementSpacing;
     }
     void addVillage(int t) {
         villages.push_back(t);
@@ -209,39 +210,63 @@ void Generator::placeCapitals() {
     }
     rng.shuffle(domains);
 
+    // Each coordinate capitalDomainMargin in from the domain's sides,
+    // weighted towards its middle: 1 2 1 over three places, 1 2 2 1 over
+    // four (game: 14x14 gives 2, 3 or 4 into a 7-wide domain at 1:2:1). The
+    // margin shrinks where the domain is too small for it.
+    auto triangle = [](int c, int lo, int hi) { return std::min(c - lo, hi - c) + 1; };
     for (int i = 0; i < players; i++) {
         int dx = domains[i] % k, dy = domains[i] / k;
         int x0 = dx * n / k, x1 = (dx + 1) * n / k;
         int y0 = dy * n / k, y1 = (dy + 1) * n / k;
-        // keep a tile of margin inside the domain where possible
-        for (int margin = 1; margin >= 0; margin--) {
-            std::vector<int> options = tilesWhere([&](int t) {
-                return x(t) >= x0 + margin && x(t) < x1 - margin &&
-                       y(t) >= y0 + margin && y(t) < y1 - margin &&
-                       edgeDistance(t) >= s.capitalEdgeDistance &&
-                       nearestSettlement(t) >= s.settlementSpacing;
-            });
-            if (!options.empty()) {
-                int t = rng.pick(options);
-                capitals.push_back(t);
-                settlement[t] = 1;
-                break;
-            }
-            if (margin == 0) {
+        for (int margin = s.capitalDomainMargin;; margin--) {
+            if (margin < 0) {
                 throw std::runtime_error("No room for a capital");
             }
+            int xlo = x0 + margin, xhi = x1 - 1 - margin;
+            int ylo = y0 + margin, yhi = y1 - 1 - margin;
+            std::vector<int> options, weights;
+            int total = 0;
+            for (int t = 0; t < n * n; t++) {
+                if (x(t) >= xlo && x(t) <= xhi && y(t) >= ylo && y(t) <= yhi &&
+                    edgeDistance(t) >= s.capitalEdgeDistance &&
+                    nearestSettlement(t) >= s.settlementSpacing) {
+                    options.push_back(t);
+                    weights.push_back(triangle(x(t), xlo, xhi) *
+                                      triangle(y(t), ylo, yhi));
+                    total += weights.back();
+                }
+            }
+            if (options.empty()) {
+                continue;
+            }
+            int r = rng.below(total), j = 0;
+            while ((r -= weights[j]) >= 0) {
+                j++;
+            }
+            capitals.push_back(options[j]);
+            settlement[options[j]] = 1;
+            break;
         }
     }
 }
 
 void Generator::placeSuburbs() {
-    // round-robin, so no capital takes the others' space
-    for (int round = 0; round < s.suburbsPerCapital; round++) {
-        for (int capital : capitals) {
+    // each capital wants minSuburbs to maxSuburbs; round-robin, so no
+    // capital takes the others' space
+    std::vector<int> wanted;
+    for (std::size_t i = 0; i < capitals.size(); i++) {
+        wanted.push_back(s.minSuburbs + rng.below(s.maxSuburbs - s.minSuburbs + 1));
+    }
+    for (int round = 0; round < s.maxSuburbs; round++) {
+        for (std::size_t i = 0; i < capitals.size(); i++) {
+            if (round >= wanted[i]) {
+                continue;
+            }
             std::vector<int> options = tilesWhere([&](int t) {
-                int d = dist(t, capital);
+                int d = dist(t, capitals[i]);
                 return d >= s.minSuburbDistance && d <= s.maxSuburbDistance &&
-                       villageAllowed(t, false);
+                       villageAllowed(t);
             });
             if (!options.empty()) {
                 addVillage(rng.pick(options));
@@ -258,7 +283,7 @@ void Generator::placePreTerrainVillages() {
         std::lround(std::max(0, base) * preTerrainDensity));
     for (int i = 0; i < count; i++) {
         std::vector<int> options =
-            tilesWhere([&](int t) { return villageAllowed(t, false); });
+            tilesWhere([&](int t) { return villageAllowed(t); });
         if (options.empty()) {
             return;
         }
@@ -344,13 +369,14 @@ bool Generator::placeWater() {
 }
 
 void Generator::classifyWater() {
-    // water next to land is shallow, the rest ocean
+    // water with land among its straight neighbours is shallow, the rest
+    // ocean (game)
     for (int t = 0; t < n * n; t++) {
         if (land(t)) {
             continue;
         }
         bool coast = false;
-        forEachNeighbour(t, [&](int nb) { coast |= land(nb); });
+        forEachStraight(t, [&](int nb) { coast |= land(nb); });
         tiles[t].terrain = coast ? WATER : OCEAN;
     }
 }
@@ -358,7 +384,7 @@ void Generator::classifyWater() {
 void Generator::placePostTerrainVillages() {
     while (true) {
         std::vector<int> options =
-            tilesWhere([&](int t) { return villageAllowed(t, true); });
+            tilesWhere([&](int t) { return villageAllowed(t); });
         if (options.empty()) {
             return;
         }
@@ -785,13 +811,8 @@ void Generator::placeContinentVillages() {
     int masses = 1 + *std::max_element(landmass.begin(), landmass.end());
     for (int mass = 0; mass < masses; mass++) {
         std::vector<int> options = tilesWhere([&](int t) {
-            return landmass[t] == mass && villageAllowed(t, true);
+            return landmass[t] == mass && villageAllowed(t);
         });
-        if (options.empty()) {
-            options = tilesWhere([&](int t) {
-                return landmass[t] == mass && villageAllowed(t, false);
-            });
-        }
         if (!options.empty()) {
             addVillage(rng.pick(options));
         }
@@ -839,16 +860,9 @@ void Generator::pickCapitalsFromVillages() {
                 pool.push_back(v);
             }
         }
+        // capitals are never nearer the edge (game: measured)
         if (pool.empty()) {
-            for (int v : villages) {
-                if (std::find(tinyIslands.begin(), tinyIslands.end(), v) ==
-                    tinyIslands.end()) {
-                    pool.push_back(v);
-                }
-            }
-        }
-        if (pool.empty()) {
-            throw std::runtime_error("No village left to make a capital");
+            throw FailedCandidate("No village left to make a capital");
         }
         std::vector<int> best;
         std::tuple<int, int, int> bestKey{-1, -1, -1};
@@ -929,9 +943,13 @@ MapData Generator::run() {
     }
     growClimateRegions();
     placeTerrain();
+    // a lighthouse in each corner, on whatever is there: water stays water,
+    // land becomes field (game)
     for (int t = 0; t < n * n; t++) {
         if (corner(t)) {
-            tiles[t].terrain = FIELD;
+            if (land(t)) {
+                tiles[t].terrain = FIELD;
+            }
             tiles[t].building = ImprovementTypes::LIGHTHOUSE;
         }
     }
@@ -1070,9 +1088,19 @@ MapData generateMap(const MapGenSettings &settings) {
     MapData best;
     int bestGap = -1;
     Rng seeds(settings.seed);
-    for (int i = 0; i < std::max(1, settings.candidates); i++) {
+    int wanted = std::max(1, settings.candidates), made = 0;
+    for (int attempt = 0; made < wanted; attempt++) {
         Generator generator(settings, seeds.next());
-        MapData map = generator.run();
+        MapData map;
+        try {
+            map = generator.run();
+        } catch (const FailedCandidate &) {
+            if (attempt >= 50 * wanted) {
+                throw;
+            }
+            continue;
+        }
+        made++;
         int gap = generator.fairnessGap();
         if (bestGap < 0 || gap < bestGap) {
             best = std::move(map);

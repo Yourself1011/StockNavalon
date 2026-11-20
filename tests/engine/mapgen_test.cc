@@ -78,11 +78,15 @@ void checkMap(const MapData &map, int players) {
             edgeDistance(map, t) == 0) {
             CHECK(isLand(map, t));
         }
-        // shallow water touches land, ocean doesn't
+        // shallow water has land among its straight neighbours, ocean
+        // doesn't
         if (!isLand(map, t)) {
             water++;
             bool coast = false;
-            forNeighbours(map, t, [&](int u) { coast |= isLand(map, u); });
+            forNeighbours(map, t, [&](int u) {
+                bool straight = u % n == t % n || u / n == t / n;
+                coast |= straight && isLand(map, u);
+            });
             CHECK(coast == (tile.terrain == TerrainTypes::WATER));
         }
         // resources only within 2 tiles of a village
