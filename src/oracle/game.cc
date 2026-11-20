@@ -55,6 +55,59 @@ template <typename T> T getField(Object *o, const char *name) {
     return *reinterpret_cast<T *>(fieldAddress(o, name));
 }
 
+// a method by name on the object's class or a parent
+const Method *methodOf(Class *klass, const char *name, int params) {
+    for (Class *c = klass; c != nullptr; c = class_get_parent(c)) {
+        if (const Method *m = class_get_method_from_name(c, name, params)) {
+            return m;
+        }
+    }
+    throw std::runtime_error(std::string("no method ") + name);
+}
+Object *call(Object *o, const char *name, int params, void **args) {
+    return invoke(methodOf(object_get_class(o), name, params), o, args);
+}
+Object *callStatic(Class *klass, const char *name, int params, void **args) {
+    return invoke(findMethod(klass, name, params), nullptr, args);
+}
+// a new object through the constructor with this many parameters
+Object *constructWith(Class *klass, int params, void **args) {
+    Object *o = object_new(klass);
+    invoke(findMethod(klass, ".ctor", params), o, args);
+    return o;
+}
+// a List<T>'s or array's elements: for a reference type the objects, for a
+// value type the address of each element's data
+std::vector<void *> elements(Object *collection) {
+    std::vector<void *> out;
+    if (collection == nullptr) {
+        return out;
+    }
+    Object *array = collection;
+    int count = 0;
+    Class *klass = object_get_class(collection);
+    if (std::string(class_get_name(klass)) == "List`1") {
+        array = *reinterpret_cast<Object **>(reinterpret_cast<char *>(collection) +
+                                             field_get_offset(class_get_field_from_name(klass, "_items")));
+        count = *reinterpret_cast<int *>(reinterpret_cast<char *>(collection) +
+                                         field_get_offset(class_get_field_from_name(klass, "_size")));
+    } else {
+        count = static_cast<int>(array_length(reinterpret_cast<Array *>(array)));
+    }
+    Class *arrayClass = object_get_class(array);
+    Class *element = class_get_element_class(arrayClass);
+    bool value = class_is_valuetype(element);
+    // (not il2cpp_class_array_element_size, which is wrong for some structs)
+    uint32_t align = 0;
+    int size = value ? class_value_size(element, &align) : static_cast<int>(sizeof(void *));
+    char *data = reinterpret_cast<char *>(array) + 0x20;
+    for (int i = 0; i < count; i++) {
+        char *at = data + static_cast<size_t>(i) * size;
+        out.push_back(value ? static_cast<void *>(at) : *reinterpret_cast<Object **>(at));
+    }
+    return out;
+}
+
 int unboxInt(Object *o) { return *static_cast<int *>(object_unbox(o)); }
 
 // a static method's int result
@@ -200,6 +253,154 @@ Object *createLocalGame(const LocalGame &game) {
 
     void *args[] = {&version, settings, own, playerList(ais)};
     return invoke(findMethod(utils, "CreateLocalGame", 4), nullptr, args);
+}
+
+} // namespace oracle
+
+namespace oracle {
+
+Object *startMatch(Object *state) {
+    for (void *p : elements(getField<Object *>(state, "<PlayerStates>k__BackingField"))) {
+        Object *player = static_cast<Object *>(p);
+        if (getField<uint8_t>(player, "<Id>k__BackingField") == 255) {
+            continue;  // nature
+        }
+        setField<bool>(player, "<AutoPlay>k__BackingField", false);
+        setField<int>(player, "handicap", 1);
+    }
+    void *stateArg[] = {state};
+    Object *manager = constructWith(logicClass("", "ActionManager"), 1, stateArg);
+    uint8_t first = 1;
+    void *playerArg[] = {&first};
+    std::string error =
+        execute(manager, constructWith(logicClass("", "StartMatchCommand"), 1, playerArg));
+    if (!error.empty()) {
+        throw std::runtime_error("StartMatchCommand: " + error);
+    }
+    return manager;
+}
+
+std::vector<Object *> legalCommands(Object *state) {
+    std::vector<Object *> candidates;
+    auto add = [&](Object *list) {
+        for (void *c : elements(list)) {
+            candidates.push_back(static_cast<Object *>(c));
+        }
+    };
+    uint8_t id = *static_cast<uint8_t *>(object_unbox(call(state, "get_CurrentPlayer", 0, nullptr)));
+    Object *player = nullptr;
+    void *find[] = {&id, &player};
+    call(state, "TryGetPlayer", 2, find);
+    if (player == nullptr) {
+        return {};
+    }
+    Class *utils = logicClass("", "CommandUtils");
+    Class *units = logicClass("", "UnitDataExtensions");
+    Class *moveClass = logicClass("", "MoveCommand"), *attackClass = logicClass("", "AttackCommand");
+    Object *map = getField<Object *>(state, "<Map>k__BackingField");
+    bool no = false;
+    for (void *t : elements(getField<Object *>(map, "tiles"))) {
+        Object *tile = static_cast<Object *>(t);
+        void *perTile[] = {state, player, tile, &no};
+        add(callStatic(utils, "GetUnitActions", 4, perTile));
+        add(callStatic(utils, "GetTrainableUnits", 4, perTile));
+        add(callStatic(utils, "GetBuildableImprovements", 4, perTile));
+        add(callStatic(utils, "GetImprovementAbilities", 4, perTile));
+        Object *unit = getField<Object *>(tile, "<unit>k__BackingField");
+        if (unit == nullptr || getField<uint8_t>(unit, "owner") != id) {
+            continue;
+        }
+        void *unitArgs[] = {unit, state};
+        int movement = unboxInt(callStatic(units, "GetMovement", 2, unitArgs));
+        void *moveArgs[] = {unit, state, &movement};
+        for (void *to : elements(callStatic(units, "GetMovementOptions", 3, moveArgs))) {
+            void *args[] = {&id, unit, to};
+            candidates.push_back(constructWith(moveClass, 3, args));
+        }
+        int range = unboxInt(callStatic(units, "GetRange", 2, unitArgs));
+        void *attackArgs[] = {unit, state, &range, &no};
+        for (void *to : elements(callStatic(units, "GetAttackOptions", 4, attackArgs))) {
+            void *args[] = {&id, unit, to};
+            candidates.push_back(constructWith(attackClass, 3, args));
+        }
+    }
+    // research: every tech of the player's tribe
+    Object *data = call(state, "get_GameLogicData", 0, nullptr);
+    int tribe = getField<int>(player, "tribe");
+    void *tribeArg[] = {&tribe};
+    Class *research = logicClass("", "ResearchCommand");
+    for (void *tech : elements(invoke(methodOf(object_get_class(data), "GetAllTechForTribe", 1),
+                                      data, tribeArg))) {
+        int type = unboxInt(call(static_cast<Object *>(tech), "get_type", 0, nullptr));
+        void *args[] = {&id, &type};
+        candidates.push_back(constructWith(research, 2, args));
+    }
+    // diplomacy with each other player
+    for (void *p : elements(getField<Object *>(state, "<PlayerStates>k__BackingField"))) {
+        uint8_t other = getField<uint8_t>(static_cast<Object *>(p), "<Id>k__BackingField");
+        if (other == id || other == 255) {
+            continue;
+        }
+        void *args[] = {state, player, &other, &no};
+        add(callStatic(utils, "GetDiplomacyCommandsForOpponent", 4, args));
+    }
+    // a city that levelled up waits for its reward
+    struct Trigger {
+        uint8_t player, opponent;
+        int type;
+        int x, y;
+    } trigger{};
+    void *triggerArgs[] = {&id, &trigger};
+    bool pending = *static_cast<bool *>(object_unbox(call(state, "TryGetPendingCommandTrigger", 2, triggerArgs)));
+    if (pending && trigger.type == 1) {
+        int coords[2] = {trigger.x, trigger.y};
+        void *tileArgs[] = {map, coords};
+        Object *tile = callStatic(logicClass("", "MapDataExtensions"), "GetTile", 2, tileArgs);
+        Object *improvement = getField<Object *>(tile, "improvement");
+        int city = 1;
+        void *cityArg[] = {&city};
+        Object *cityData = invoke(methodOf(object_get_class(data), "GetImprovementData", 1), data, cityArg);
+        Class *rewardClass = logicClass("", "CityRewardCommand");
+        // the rewards for the levels around the city's: IsValid keeps the
+        // ones that match it
+        int level = getField<uint16_t>(improvement, "level");
+        for (int l = level - 1; l <= level + 1; l++) {
+            void *rewardArgs[] = {cityData, &l};
+            for (void *reward : elements(callStatic(logicClass("", "ImprovementDataExtensions"),
+                                                    "GetCityRewardsForLevel", 2, rewardArgs))) {
+                void *args[] = {&id, reward, coords};
+                candidates.push_back(constructWith(rewardClass, 3, args));
+            }
+        }
+    }
+    // a peace offer waits for an answer: accept or decline
+    if (pending && trigger.type == 2) {
+        Class *responseClass = logicClass("", "PeaceRequestResponseCommand");
+        for (bool accepted : {true, false}) {
+            uint8_t opponent = trigger.opponent;
+            void *args[] = {&id, &opponent, &accepted};
+            candidates.push_back(constructWith(responseClass, 3, args));
+        }
+    }
+    void *endArg[] = {&id};
+    candidates.push_back(constructWith(logicClass("", "EndTurnCommand"), 1, endArg));
+
+    std::vector<Object *> legal;
+    for (Object *command : candidates) {
+        String *error = nullptr;
+        void *args[] = {state, &error};
+        if (*static_cast<bool *>(object_unbox(call(command, "IsValid", 2, args)))) {
+            legal.push_back(command);
+        }
+    }
+    return legal;
+}
+
+std::string execute(Object *actionManager, Object *command) {
+    String *error = nullptr;
+    void *args[] = {command, &error};
+    bool ok = *static_cast<bool *>(object_unbox(call(actionManager, "ExecuteCommand", 2, args)));
+    return ok ? "" : (error ? toString(error) : "rejected");
 }
 
 } // namespace oracle

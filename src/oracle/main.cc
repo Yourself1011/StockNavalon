@@ -15,19 +15,33 @@ namespace {
 
 using namespace il2cpp;
 
-// games by id, each held by a GC handle so the runtime doesn't collect it
-std::map<int, GCHandle> games;
+// A game, its ActionManager once started, and the last legal list asked
+// for, each held by GC handles so the runtime doesn't collect them
+struct Held {
+    GCHandle state = nullptr, manager = nullptr;
+    std::vector<GCHandle> legal;
+};
+std::map<int, Held> games;
 int nextGame = 0;
 
-Object *game(std::istream &words) {
+void release(std::vector<GCHandle> &handles) {
+    for (GCHandle h : handles) {
+        gchandle_free(h);
+    }
+    handles.clear();
+}
+
+Held &held(std::istream &words) {
     int id = -1;
     words >> id;
     auto found = games.find(id);
     if (found == games.end()) {
         throw std::runtime_error("no game " + std::to_string(id));
     }
-    return gchandle_get_target(found->second);
+    return found->second;
 }
+
+Object *game(std::istream &words) { return gchandle_get_target(held(words).state); }
 
 std::string word(std::istream &words) {
     std::string w;
@@ -60,7 +74,7 @@ std::string handle(const std::string &line) {
         // the id is used up even if the game fails, so the k-th new is
         // always game k
         int id = nextGame++;
-        games[id] = gchandle_new(oracle::createLocalGame(g), false);
+        games[id].state = gchandle_new(oracle::createLocalGame(g), false);
         return "{\"game\":" + std::to_string(id) + "}";
     }
     if (request == "state") {
@@ -114,12 +128,49 @@ std::string handle(const std::string &line) {
         }
         return out + "]";
     }
+    if (request == "start") {
+        // every seat a person, the match started
+        Held &g = held(words);
+        g.manager = gchandle_new(oracle::startMatch(gchandle_get_target(g.state)), false);
+        return "{}";
+    }
+    if (request == "legal") {
+        // the current player's legal commands, numbered for apply
+        Held &g = held(words);
+        release(g.legal);
+        std::string out = "[";
+        for (Object *command : oracle::legalCommands(gchandle_get_target(g.state))) {
+            out += (g.legal.empty() ? "" : ",") + oracle::dump(command);
+            g.legal.push_back(gchandle_new(command, false));
+        }
+        return out + "]";
+    }
+    if (request == "apply") {
+        // the k-th command of the last legal list
+        Held &g = held(words);
+        int k = -1;
+        words >> k;
+        if (g.manager == nullptr) {
+            throw std::runtime_error("the match isn't started");
+        }
+        if (k < 0 || k >= static_cast<int>(g.legal.size())) {
+            throw std::runtime_error("no legal command " + std::to_string(k));
+        }
+        Object *command = gchandle_get_target(g.legal[k]);
+        release(g.legal);
+        std::string error = oracle::execute(gchandle_get_target(g.manager), command);
+        return error.empty() ? "{}" : "{\"rejected\":\"" + error + "\"}";
+    }
     if (request == "free") {
         int id = -1;
         words >> id;
         auto found = games.find(id);
         if (found != games.end()) {
-            gchandle_free(found->second);
+            release(found->second.legal);
+            gchandle_free(found->second.state);
+            if (found->second.manager != nullptr) {
+                gchandle_free(found->second.manager);
+            }
             games.erase(found);
         }
         return "{}";
@@ -161,10 +212,15 @@ int main(int argc, char **argv) {
         if (line.empty()) {
             continue;
         }
+        // no garbage collection during a request: objects it builds are held
+        // in our own memory, which the collector doesn't scan; between
+        // requests everything kept is held by GC handles
+        gc_disable();
         try {
             std::cout << handle(line) << std::endl;
         } catch (const std::exception &e) {
             std::cout << "{\"error\":" << quoted(e.what()) << "}" << std::endl;
         }
+        gc_enable();
     }
 }

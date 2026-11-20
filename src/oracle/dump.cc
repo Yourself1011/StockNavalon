@@ -55,6 +55,18 @@ bool skipped(Class *klass) {
     return false;
 }
 
+// The size of an array's elements. For value types the element type's own
+// size: il2cpp_class_array_element_size gives 8 for the entry structs of
+// generic dictionaries, which are bigger.
+int elementSize(Class *arrayClass) {
+    Class *element = class_get_element_class(arrayClass);
+    if (!class_is_valuetype(element)) {
+        return static_cast<int>(sizeof(void *));
+    }
+    uint32_t align = 0;
+    return class_value_size(element, &align);
+}
+
 struct Field {
     std::string name;
     size_t offset;
@@ -170,7 +182,7 @@ class Dumper {
         }
         Class *element = class_get_element_class(klass);
         const Type *type = class_get_type(element);
-        int size = class_array_element_size(klass);
+        int size = elementSize(klass);
         char *data = reinterpret_cast<char *>(arr) + ARRAY_DATA;
         out += '[';
         for (int i = 0; i < n; i++) {
@@ -191,7 +203,7 @@ class Dumper {
         if (arr != nullptr) {
             Class *arrClass = object_get_class(arr);
             Class *entry = class_get_element_class(arrClass);
-            int size = class_array_element_size(arrClass);
+            int size = elementSize(arrClass);
             const Field &next = fieldNamed(entry, "next");
             const Field &key = fieldNamed(entry, dictionary ? "key" : "value");
             char *data = reinterpret_cast<char *>(arr) + ARRAY_DATA;

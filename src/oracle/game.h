@@ -32,4 +32,19 @@ struct LocalGame {
 };
 il2cpp::Object *createLocalGame(const LocalGame &game);
 
+// Makes every player a person (no AI plays any seat, the human handicap) and
+// starts the match as the app does, with a StartMatchCommand. Returns the
+// game's ActionManager, which executes its commands from then on.
+il2cpp::Object *startMatch(il2cpp::Object *state);
+
+// The current player's legal commands, as the client would offer them: the
+// game's own generators (CommandUtils per tile, each unit's movement and
+// attack options, research, diplomacy, a pending city reward or peace
+// offer's answer, end turn),
+// each kept only if its IsValid accepts it.
+std::vector<il2cpp::Object *> legalCommands(il2cpp::Object *state);
+
+// Executes a command; returns "" or the game's error.
+std::string execute(il2cpp::Object *actionManager, il2cpp::Object *command);
+
 } // namespace oracle

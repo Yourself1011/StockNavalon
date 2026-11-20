@@ -76,6 +76,8 @@ using GCHandle = void *;
     X(array_new, Array *, (Class *, uintptr_t))                                \
     X(thread_attach, Thread *, (Domain *))                                     \
     X(format_exception, void, (const Object *, char *, int))                   \
+    X(gc_disable, void, ())                                                    \
+    X(gc_enable, void, ())                                                     \
     X(gchandle_new, GCHandle, (Object *, bool))                                \
     X(gchandle_get_target, Object *, (GCHandle))                               \
     X(gchandle_free, void, (GCHandle))

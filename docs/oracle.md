@@ -43,6 +43,9 @@ One request a line on stdin, one JSON answer a line on stdout. The first line ou
 | `mapsettings <id>` | the `MapGeneratorSettings` its map was made with (wetness, richness, city densities, ...) |
 | `fairness <id>` | `{"inequality": x}`: the map generator's own fairness score for the game (`MapFairnessCalculations.GetInequality`), the best player's territory score over the worst's |
 | `turfs <id>` | the territories that score comes from (`CreateTurfs`): per player, every tile it claims with its cost from the capital |
+| `start <id>` | `{}`: every seat made a person (no AI plays, the human handicap) and the match started with a `StartMatchCommand`, as the app does |
+| `legal <id>` | the current player's legal commands as a list of command objects (`MoveCommand`, `BuildCommand`, ...), numbered by position |
+| `apply <id> <k>` | `{}`, or `{"rejected": error}`: the k-th command of the last `legal` list, executed by the game's `ActionManager` |
 | `free <id>` | `{}`, and the game is gone |
 
 ```bash
@@ -66,6 +69,19 @@ cmake --build --preset release
 `--by-tribe` instead compares rates inside each tribe's climate region, since every tribe has its own terrain and resource modifiers: terrain shares of the land, each resource's rate per terrain next to a settlement and two away, and the starting resources next to the capital, with a z-score each (3,000 maps take about 40 seconds).
 
 Ours is the build tree's module (`build/release/python`, or `POLYENGINE_BUILD_PACKAGE`), not the installed one, so it measures the engine as built. `--size N --players P` for other sizes and player counts. The real generator itself fails on some large maps with several players (an exception, or the oracle dies); those games are left out and the count printed, the oracle running in batches of 25 so one crash loses only its batch. `--save game/maps.jsonl` keeps the real maps (in `game/`, since they come from the game). About 15 seconds for 1,000 maps of each. Results so far are in [`notes/integration.md`](../notes/integration.md) section 5.
+
+## Playing a game
+
+`start`, then `legal` and `apply` in turn. The legal list is built the way the client offers commands (`legalCommands` in `game.cc`), each kept only if its own `IsValid` accepts it:
+
+- per tile, `CommandUtils`: unit actions (capture, recover, heal, promote, upgrade, disband, examine ruins, ...), buildable improvements, improvement abilities, trainable units;
+- per unit of the player, `UnitDataExtensions`: a `MoveCommand` per movement option and an `AttackCommand` per attack option;
+- a `ResearchCommand` per tech of the player's tribe;
+- `CommandUtils.GetDiplomacyCommandsForOpponent` per other player;
+- a pending trigger's answers: a `CityRewardCommand` per reward when a city levelled up, a `PeaceRequestResponseCommand` (accept or decline) for a peace offer; while one is pending, nothing else is valid;
+- an `EndTurnCommand`.
+
+Random play runs about 300–500 commands a second (a `legal` and an `apply` each). Garbage collection is paused during each request, since objects a request builds are held in the oracle's own memory, which the collector doesn't scan; between requests everything kept is held by GC handles.
 
 ## How it works
 
