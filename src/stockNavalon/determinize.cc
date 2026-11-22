@@ -174,6 +174,9 @@ void canonicalize(Game &g) {
     for (Player &p : g.players) {
         p.capital = renumber(p.capital);
     }
+    for (auto &[city, step] : g.populationQueue) {
+        city = renumber(city);
+    }
     g.units = std::move(units);
     g.cities = std::move(cities);
     for (std::size_t i = 0; i < g.units.size(); i++) {
@@ -193,6 +196,8 @@ std::optional<Game> sample(const Game &real, int player,
                            std::uint64_t seed, Detail detail) {
     std::mt19937_64 rng(seed);
     Game g = real;
+    // outcomes fixed for a mirrored game are the real game's, not a sample's
+    g.forced = {};
     const int q = 1 - player;
     const int tiles = g.size * g.size;
     const OpponentBeliefs &b = beliefs.players.at(q);
@@ -340,6 +345,14 @@ std::optional<Game> sample(const Game &real, int player,
         for (int &c : moving) {
             c = renumber(c);
         }
+        // population held back by a level-up: a dropped city's goes with it
+        std::vector<std::pair<int, int>> queue;
+        for (auto [city, step] : g.populationQueue) {
+            if (renumber(city) >= 0) {
+                queue.emplace_back(renumber(city), step);
+            }
+        }
+        g.populationQueue = std::move(queue);
         g.cities = std::move(cities);
     }
 
@@ -841,6 +854,22 @@ std::optional<Game> sample(const Game &real, int player,
 
 } // namespace
 
+// Enemies in fog exert zone of control, so the player's own move options
+// show where some of them are: a sample has to leave them as they are.
+bool sameOwnMoves(const Game &real, const Game &sample, int player) {
+    for (std::size_t u = 0; u < real.units.size(); u++) {
+        const Unit &unit = real.units[u];
+        if (!unit.alive || unit.owner != player || !unit.canMove) {
+            continue;
+        }
+        if (real.moveTargets(static_cast<int>(u)) !=
+            sample.moveTargets(sample.tiles[unit.tile].unit)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::optional<Game> determinize(const Game &real, int player,
                                 const Beliefs &beliefs, std::uint64_t seed,
                                 Detail detail, int maxTries,
@@ -856,7 +885,7 @@ std::optional<Game> determinize(const Game &real, int player,
         }
         std::optional<Game> g =
             sample(real, player, view, beliefs, seeds(), detail);
-        if (g) {
+        if (g && sameOwnMoves(real, *g, player)) {
             return g;
         }
         if (stats) {

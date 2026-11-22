@@ -42,13 +42,16 @@ constexpr size_t HEADER = 0x10;
 // an array's elements start after the header, bounds and length
 constexpr size_t ARRAY_DATA = 0x20;
 
-// Classes never dumped: the rules data (huge, and the same for every game)
-// and delegates.
+// Classes never dumped: the rules data (huge, and the same for every game),
+// delegates, and the AI's memory (AIState, OpinionManager: they refer to
+// other players' states, which would be dumped there and only referred to in
+// the game's own list)
 bool skipped(Class *klass) {
     for (Class *c = klass; c != nullptr; c = class_get_parent(c)) {
         std::string_view name = class_get_name(c);
         if (name == "GameLogicData" || name == "AvatarData" ||
-            name == "MulticastDelegate") {
+            name == "MulticastDelegate" || name == "AIState" ||
+            name == "OpinionManager") {
             return true;
         }
     }

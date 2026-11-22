@@ -544,6 +544,22 @@ void train(OpState s, TurnInfo info, const Context &ctx, int from,
         trained.unitScore += Rules::unitScore(data.cost);
         train(trained, info, ctx, u, next);
     }
+    // A Raft upgraded to a better boat scores the boat's cost too. Which
+    // rafts they have isn't tracked, so any upgrade their techs allow counts
+    // (only ever more permissive). Upgrades come after training, so each
+    // combination is tried once.
+    for (UnitType boat : {UnitTypes::SCOUT, UnitTypes::RAMMER, UnitTypes::BOMBER}) {
+        const UnitData &data = unitInfo(boat);
+        int price = data.cost - unitInfo(Rules::UPGRADABLE_BOAT).cost;
+        if (boat < from - UNIT_TYPE_SIZE || !owns(s, data.tech) || price > s.stars) {
+            continue;
+        }
+        OpState upgraded = s;
+        upgraded.stars -= price;
+        // the boat's cost over the Raft's, which is what the upgrade costs
+        upgraded.unitScore += Rules::unitScore(price);
+        train(upgraded, info, ctx, UNIT_TYPE_SIZE + boat, next);
+    }
 }
 
 struct Improvement {
@@ -565,12 +581,14 @@ void improve(OpState s, TurnInfo info, const Context &ctx,
         // An embassy in each other player's capital, at most. An action that
         // pays stars back uses up its tile (a forest), and bringing one back
         // costs more than it returns, so at most one per tile they own.
-        if (o.cost > s.stars || (o.embassy && s.embassies >= ctx.others) ||
+        // an embassy costs more for each one they have
+        int cost = o.embassy ? Rules::embassyCost(s.embassies) : o.cost;
+        if (cost > s.stars || (o.embassy && s.embassies >= ctx.others) ||
             (o.stars > 0 && info.refunds >= s.territory)) {
             continue;
         }
         OpState built = s;
-        built.stars += o.stars - o.cost;
+        built.stars += o.stars - cost;
         built.embassies += o.embassy;
         built.port |= o.port;
         TurnInfo after = info;
@@ -842,8 +860,8 @@ void events(OpState s, TurnInfo info, const Context &ctx, const Next &next) {
                         ruins(land, pushed, left - 1);
                         OpState sea = base;
                         sea.ruinRammers++;
-                        sea.unitScore += Rules::unitScore(
-                            unitInfo(Rules::RUIN_SEA_PASSENGER).cost);
+                        sea.unitScore +=
+                            unitScoreOf(Rules::RUIN_SEA_BOAT, Rules::RUIN_SEA_PASSENGER);
                         ruins(sea, pushed, left - 1);
                         break;
                     }
@@ -914,7 +932,8 @@ std::vector<Improvement> improvements(const OpState &s) {
         }
     }
     if (owns(s, Rules::EMBASSY_TECH)) {
-        options.push_back({Rules::EMBASSY_COST, 0, 0, false, true});
+        // the cost is set by how many they have (improve)
+        options.push_back({0, 0, 0, false, true});
     }
     return options;
 }
@@ -1283,7 +1302,7 @@ int searchModelScore(const Game &game, int player) {
     s.techs = game.players[player].techs;
     for (const Unit &unit : game.units) {
         if (unit.alive && unit.scoreOwner == player) {
-            s.unitScore += Rules::unitScore(unitInfo(unit.passenger).cost);
+            s.unitScore += unitScoreOf(unit.type, unit.passenger);
         }
     }
     for (const City &city : game.cities) {
@@ -1307,7 +1326,9 @@ int searchModelScore(const Game &game, int player) {
             s.monuments++;
         }
     }
-    return knownScore(s, game.turn) + Rules::TERRITORY_SCORE * s.territory +
+    // temples count the player's own turns
+    return knownScore(s, Rules::templeTurn(game.turn, game.currentPlayer, player)) +
+           Rules::TERRITORY_SCORE * s.territory +
            Rules::EXPLORED_SCORE * s.explored;
 }
 
@@ -1342,7 +1363,7 @@ bool scoreChangesFit(const PlayerView &view, int opponent,
             playerScore = std::max(playerScore, r.score);
         }
     }
-    int meetingStars = Rules::meetingBonus(playerScore);
+    int meetingStars = Rules::meetingBonus(playerScore, view.player == 0);
 
     // a few hundred MB at most: a frontier can hold thousands of states
     thread_local FrontierCache cache;

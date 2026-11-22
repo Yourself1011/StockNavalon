@@ -156,7 +156,8 @@ std::vector<char> enemyReach(const PlayerView &view,
         return f;
     };
     searchMoves(size, unit.tile,
-                {.movement = data.movement, .creep = creep, .ignoreZoc = ignoreZoc}, facts,
+                {.movement = data.movement, .creep = creep, .ignoreZoc = ignoreZoc,
+                 .roads = !creep}, facts,
                 [&](int, int to, int, const StepFacts &f) {
                     if (f.free) {
                         reached[to] = 1;
@@ -273,7 +274,7 @@ int explainedScore(const PlayerView &view, int player) {
     }
     for (const PlayerView::UnitView &unit : view.units) {
         if (unit.owner == player) {
-            total += Rules::unitScore(unitInfo(unit.passenger).cost);
+            total += unitScoreOf(unit.type, unit.passenger);
         }
     }
     for (const PlayerView::TileView &tile : view.tiles) {
@@ -282,8 +283,9 @@ int explainedScore(const PlayerView &view, int player) {
         }
         total += Rules::TERRITORY_SCORE;
         if (isTemple(tile.building)) {
-            total += Rules::templeScore(
-                templeLevelAt(tile, view.turn, publishedTurn));
+            total += Rules::templeScore(templeLevelAt(
+                tile, Rules::templeTurn(view.turn, view.currentPlayer, player),
+                Rules::templeTurn(publishedTurn, player, player)));
         } else if (isMonument(tile.building)) {
             total += Rules::MONUMENT_SCORE;
         }

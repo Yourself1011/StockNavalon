@@ -60,6 +60,9 @@ struct Player {
     bool attackedThisTurn = false;
     // the turns this player's units or cities were attacked, oldest first
     std::vector<int> attackedOnTurns;
+    // the last turn this player attacked each player (-100 for never), for
+    // whether the two are at war (Game::atWar)
+    std::vector<int> lastAttackTurn;
     // this player's units taken by conversion (Mind Benders): type and
     // passenger, oldest first
     std::vector<std::pair<UnitTypes::UnitType, UnitTypes::UnitType>> convertedAway;
@@ -68,6 +71,12 @@ struct Player {
     // peace request from them waiting for an answer, an embassy in their
     // capital
     std::uint32_t peace = 0, peaceRequests = 0, embassies = 0;
+    // this turn's income is still to be paid (INCOME_AFTER_CHOICES)
+    bool incomeDue = false;
+    // the players that broke peace with this one, which it can't attack
+    // until its next turn ends (PEACE_COOLDOWN); since GAME_COOLDOWN, the
+    // one that broke it too, until its own turn ends
+    std::uint32_t coolDown = 0;
 
     bool hasMet(int player) const { return met >> player & 1; }
     bool hasTech(TechTypes::TechType tech) const { return techs.test(tech); }

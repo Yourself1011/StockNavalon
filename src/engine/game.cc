@@ -27,6 +27,7 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
                        (i < settings.headStart.size() ? settings.headStart[i] : 0);
         player.techs.set(TechTypes::BASIC);
         player.techs.set(tribe.startTech);
+        player.lastAttackTurn.assign(tribes.size(), -100);
     }
     firstOccupied.assign(players.size() * size * size, -1);
     startedWithRoads = std::any_of(tiles.begin(), tiles.end(),
@@ -65,6 +66,7 @@ Game::Game(const MapData &map, const std::vector<TribeTypes::Tribe> &tribes,
     }
 
     updateAllConnections();
+    connectionsDue = 0;
     scoreEffects.assign(2 * players.size() * players.size(), 0);
     // everyone sees the starting scores
     for (std::size_t i = 0; i < players.size(); i++) {
@@ -158,6 +160,22 @@ int Game::marketIncome(int tile) const {
 
 int Game::cityIncome(int city) const {
     const City &c = cities[city];
+    if (c.robbed) {
+        return 0;  // infiltrated (GAME_INFILTRATION)
+    }
+    if (settings.follows(RuleVersions::GAME_INCOME)) {
+        // anyone else's unit on it stops it (game)
+        const Unit *unit = unitAt(c.tile);
+        if (unit && unit->owner != c.owner) {
+            return 0;
+        }
+        bool home = c.capitalOf == c.owner;
+        int stars = Rules::cityIncome(c.level, home, c.workshop, c.parks, capitalIncome(c.owner));
+        if (home) {
+            stars += hostedEmbassyIncome(c.owner);
+        }
+        return std::max(0, stars + std::min(0, c.population));
+    }
     if (besieged(city)) {
         return 0;
     }
@@ -180,7 +198,25 @@ int Game::income(int player) const {
             total += cityIncome(static_cast<int>(i));
         }
     }
-    return total + embassyIncome(player);
+    if (!settings.follows(RuleVersions::GAME_INCOME)) {
+        return total + embassyIncome(player);
+    }
+    // markets on the player's land, each on its own
+    for (int t = 0; t < size * size; t++) {
+        if (tiles[t].building == ImprovementTypes::MARKET && tileOwner(t) == player) {
+            total += marketIncome(t);
+        }
+    }
+    // its embassies, each paid at its host's capital while the host holds
+    // it and no one else's unit is on it (game)
+    for (const City &c : cities) {
+        const Unit *unit = unitAt(c.tile);
+        if (c.capitalOf >= 0 && c.capitalOf == c.owner && c.owner != player &&
+            !(unit && unit->owner != c.owner)) {
+            total += embassyPays(player, c.owner);
+        }
+    }
+    return total;
 }
 
 int Game::randomInt(int n) {
@@ -196,13 +232,21 @@ int Game::randomInt(int n) {
 
 void Game::startTurn() {
     Player &player = players[currentPlayer];
-    // the starting stars are the first turn's stars
+    // the starting stars are the first turn's stars; since
+    // INCOME_AFTER_CHOICES, the income comes at the end of the command, once
+    // nothing waits for an answer (payIncomeIfDue)
     if (turn > 0) {
-        player.stars += income(currentPlayer);
+        if (settings.follows(RuleVersions::INCOME_AFTER_CHOICES)) {
+            player.incomeDue = true;
+        } else {
+            player.stars += income(currentPlayer);
+        }
     }
+
     for (Unit &unit : units) {
         if (unit.alive && unit.owner == currentPlayer) {
             unit.canMove = unit.canAttack = unit.canAct = true;
+            unit.attacked = false;
         }
     }
 }
@@ -215,9 +259,20 @@ void Game::endTurn() {
     Player &player = players[currentPlayer];
     if (player.hasTech(Rules::PACIFIST_TECH)) {
         player.peacefulTurns =
-            player.attackedThisTurn ? 0 : player.peacefulTurns + 1;
+            player.attackedThisTurn && !settings.follows(RuleVersions::PACIFIST_RESET_AT_ATTACK)
+                ? 0
+                : player.peacefulTurns + 1;
     }
     player.attackedThisTurn = false;
+    // a cooldown after someone broke peace with the player lasts its next
+    // turn (game)
+    player.coolDown = 0;
+    // its robbed cities recover (game: EndTurnAction)
+    for (City &c : cities) {
+        if (c.owner == currentPlayer) {
+            c.robbed = false;
+        }
+    }
 
     // units that could still use an ability recover automatically
     for (Unit &unit : units) {
@@ -256,6 +311,21 @@ int Game::pendingRewardCity() const {
     return -1;
 }
 
+int Game::pendingPeaceOffer() const {
+    if (!settings.peaceTreaties || !settings.follows(RuleVersions::PEACE_ANSWER_FIRST)) {
+        return -1;
+    }
+    const Player &me = players[currentPlayer];
+    for (std::size_t i = 0; i < players.size(); i++) {
+        int other = static_cast<int>(i);
+        if (players[i].alive && me.hasMet(other) && (me.peaceRequests >> other & 1) &&
+            !atPeace(currentPlayer, other)) {
+            return other;
+        }
+    }
+    return -1;
+}
+
 void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkStars) const {
     const Unit &unit = units[unitIdx];
     const Player &player = players[unit.owner];
@@ -271,6 +341,11 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkSta
         for (int to : disembarks) {
             out.push_back({DISEMBARK, from, to});
         }
+    }
+    // a boat on a bridge can step out onto it there and then, moved or not
+    if (unit.isNaval() && unit.passenger != unit.type && isBridge(from) &&
+        settings.follows(RuleVersions::DISEMBARK_ON_BRIDGE)) {
+        out.push_back({DISEMBARK, from, from});
     }
     if (unit.canAttack) {
         for (int to : attackTargets(unitIdx)) {
@@ -291,13 +366,22 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkSta
             out.push_back({HEALOTHERS, from});
         }
     }
-    if (unit.kills >= Rules::VETERAN_KILLS && !unit.veteran && !unit.has(Abilities::STATIC)) {
+    bool byPassenger = unit.isNaval() && settings.follows(RuleVersions::BOATS_PROMOTE_PASSENGER);
+    bool fixed = byPassenger ? unitInfo(unit.passenger).abilities.test(Abilities::STATIC)
+                             : unit.has(Abilities::STATIC);
+    if (unit.kills >= Rules::VETERAN_KILLS && !unit.veteran && !fixed) {
         out.push_back({PROMOTE, from});
     }
-    if (player.hasTech(Rules::DISBAND_TECH)) {
+    // only a unit that hasn't moved or attacked this turn
+    if (player.hasTech(Rules::DISBAND_TECH) &&
+        (!settings.follows(RuleVersions::DISBAND_UNMOVED) || (unit.canMove && unit.canAttack))) {
         out.push_back({DISBAND, from});
     }
-    if (unit.type == Rules::UPGRADABLE_BOAT && tileOwner(from) == unit.owner) {
+    int owner = tileOwner(from);
+    bool home = owner == unit.owner ||
+                (owner >= 0 && settings.follows(RuleVersions::UPGRADE_IN_ALLIED_BORDERS) &&
+                 atPeace(unit.owner, owner));
+    if (unit.type == Rules::UPGRADABLE_BOAT && home) {
         for (UnitTypes::UnitType boat :
              {UnitTypes::SCOUT, UnitTypes::RAMMER, UnitTypes::BOMBER}) {
             int price = std::max(0, unitInfo(boat).cost - unit.data().cost);
@@ -311,7 +395,9 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkSta
         bool village = tile.building == ImprovementTypes::VILLAGE;
         // an ally's city can't be captured
         bool enemyCity = tile.building == ImprovementTypes::CITY &&
-                         hostile(unit.owner, tileOwner(from));
+                         hostile(unit.owner, tileOwner(from)) &&
+                         !(settings.follows(RuleVersions::GAME_COOLDOWN) &&
+                           (player.coolDown >> tileOwner(from) & 1));
         if (village || enemyCity) {
             out.push_back({CAPTURE, from});
         }
@@ -320,8 +406,13 @@ void Game::addUnitCommands(int unitIdx, std::vector<Command> &out, bool checkSta
     if (unit.canAct && tile.building == ImprovementTypes::RUIN) {
         out.push_back({EXAMINERUINS, from});
     }
+    // not under a building or bridge (BUILDINGS_KEEP_RESOURCES), and by a
+    // boat that hasn't used its turn (HARVEST_NEEDS_ACTION: the game's
+    // "manual" improvement)
     if (unit.isNaval() && tile.resource == ResourceTypes::STARFISH &&
-        player.hasTech(Rules::STARFISH_TECH)) {
+        tile.building == ImprovementTypes::NONE && !tile.road &&
+        player.hasTech(Rules::STARFISH_TECH) &&
+        (unit.canAct || !settings.follows(RuleVersions::HARVEST_NEEDS_ACTION))) {
         out.push_back({HARVEST, from});
     }
 }
@@ -418,6 +509,14 @@ std::vector<Command> Game::legalCommands() const {
         }
         return out;
     }
+    // so does a peace offer, one at a time
+    int proposer = pendingPeaceOffer();
+    if (proposer >= 0) {
+        // arg: the proposer times 2, plus 1 to accept
+        out.push_back({PEACEREQUESTRESPONSE, -1, -1, proposer * 2 + 1});
+        out.push_back({PEACEREQUESTRESPONSE, -1, -1, proposer * 2});
+        return out;
+    }
 
     addResearchCommands(out);
     addDiplomacyCommands(out);
@@ -450,7 +549,7 @@ bool Game::isLegal(const Command &command) const {
     std::vector<Command> candidates;
     bool validTile =
         command.from >= 0 && command.from < static_cast<int>(tiles.size());
-    if (pendingRewardCity() >= 0 || command.type == CITYREWARD) {
+    if (pendingRewardCity() >= 0 || command.type == CITYREWARD || pendingPeaceOffer() >= 0) {
         candidates = legalCommands();
     } else if (command.type == ENDTURN) {
         return true;
@@ -487,9 +586,42 @@ void Game::apply(const Command &command) {
 }
 
 void Game::applyUnchecked(const Command &command) {
+    int actor = command.from >= 0 ? tiles[command.from].unit : -1;
     applyCommand(command);
+    if (actor >= 0 && settings.follows(RuleVersions::ACTIONS_SET_ATTACKED)) {
+        switch (command.type) {
+        case RECOVER:
+        case HEALOTHERS:
+        case STAY:
+        case CAPTURE:
+        case EXAMINERUINS:
+            units[actor].attacked = true;
+            break;
+        default:
+            break;
+        }
+    }
+    if (connectionsDue) {
+        std::uint32_t due = connectionsDue;
+        connectionsDue = 0;
+        updateAllConnections(due);
+    }
     if (!gameOver()) {
-        checkMeetings();
+        // the game looks over everything explored only at a turn's start;
+        // within the turn, a tribe is met as a tile showing it is explored
+        // (MEET_ON_EXPLORE, in reveal)
+        if (!settings.follows(RuleVersions::MEET_ON_EXPLORE) || command.type == ENDTURN) {
+            checkMeetings();
+        } else {
+            revealMetCapitals();
+        }
+        // a turn's income, once a reward or peace offer waiting at its
+        // start is answered (game: the turn's start waits for them)
+        Player &player = players[currentPlayer];
+        if (player.incomeDue && pendingRewardCity() < 0 && pendingPeaceOffer() < 0) {
+            player.incomeDue = false;
+            player.stars += income(currentPlayer);
+        }
         updateTasks();
     }
 }
@@ -503,7 +635,14 @@ void Game::applyCommand(const Command &command) {
         moveUnit(unit, command.to);
         break;
     case DISEMBARK:
-        disembark(unit, command.to);
+        if (command.to == command.from) {
+            // on a bridge: the unit leaves its boat where it is
+            Unit &u = units[unit];
+            u.type = u.passenger;
+            u.canMove = u.canAttack = u.canAct = false;
+        } else {
+            disembark(unit, command.to);
+        }
         break;
     case ATTACK:
         attack(unit, command.to);
@@ -532,21 +671,19 @@ void Game::applyCommand(const Command &command) {
         u.hp = u.maxHp;
         break;
     }
-    case DISBAND: {
-        Unit &u = units[unit];
-        int cost = unitInfo(u.passenger).cost;
-        if (u.isNaval()) {
-            cost += u.data().cost;
-        }
-        player.stars += Rules::disbandRefund(cost);
+    case DISBAND:
+        player.stars += disbandRefund(units[unit]);
         killUnit(unit);
         break;
-    }
     case UPGRADE: {
         Unit &u = units[unit];
         auto boat = static_cast<UnitTypes::UnitType>(command.arg);
         player.stars -= std::max(0, unitInfo(boat).cost - u.data().cost);
         u.type = boat;
+        if (settings.follows(RuleVersions::UPGRADE_DASHES) && !u.canMove && !u.attacked &&
+            u.has(Abilities::DASH)) {
+            u.canAttack = true;
+        }
         revealForUnit(unit);
         break;
     }
@@ -560,6 +697,9 @@ void Game::applyCommand(const Command &command) {
     case HARVEST:
         player.stars += Rules::STARFISH_STARS;
         tiles[command.from].resource = ResourceTypes::NONE;
+        if (settings.follows(RuleVersions::HARVEST_ENDS_TURN)) {
+            units[unit].canMove = units[unit].canAttack = units[unit].canAct = false;
+        }
         break;
     case CAPTURE:
         capture(unit);
@@ -587,6 +727,11 @@ void Game::applyCommand(const Command &command) {
         break;
     case ENDTURN:
         endTurn();
+        break;
+    case STAY:
+        // the unit is done for the turn (game: StayCommand sets moved and
+        // attacked); the game's bots play it, players never get it
+        units[unit].canMove = units[unit].canAttack = units[unit].canAct = false;
         break;
     case RESIGN:
         eliminate(currentPlayer);

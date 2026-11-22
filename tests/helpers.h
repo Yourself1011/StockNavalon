@@ -99,6 +99,11 @@ inline void clearUnits(Game &game) {
 // the state's internal bookkeeping agrees with itself; REQUIREs, so call
 // it from a test case
 inline void checkInvariants(const Game &game) {
+    // population held back by a level-up names real cities
+    for (auto [city, step] : game.populationQueue) {
+        REQUIRE(city >= 0);
+        REQUIRE(city < static_cast<int>(game.cities.size()));
+    }
     for (std::size_t t = 0; t < game.tiles.size(); t++) {
         int unit = game.tiles[t].unit;
         if (unit >= 0) {

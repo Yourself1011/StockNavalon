@@ -40,6 +40,9 @@ struct City {
     int pendingRewards = 0;
     int parks = 0;
     bool workshop = false, wall = false, borderGrown = false;
+    // infiltrated: no income, nor another infiltration, until its owner's
+    // turn ends (GAME_INFILTRATION; the game's ImprovementEffect robbed)
+    bool robbed = false;
 
     bool operator==(const City &) const = default;
 };

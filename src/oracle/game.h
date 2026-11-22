@@ -32,13 +32,21 @@ struct LocalGame {
 };
 il2cpp::Object *createLocalGame(const LocalGame &game);
 
-// Makes every player a person (no AI plays any seat, the human handicap) and
-// starts the match as the app does, with a StartMatchCommand. Returns the
-// game's ActionManager, which executes its commands from then on.
-il2cpp::Object *startMatch(il2cpp::Object *state);
+// Makes every player a person (no AI plays any seat by itself) and starts
+// the match as the app does, with a StartMatchCommand. Every seat gets the
+// human handicap, unless keepHandicaps: then the AI seats keep their
+// difficulty's (for playing against the AI with aiMove). Returns the game's
+// ActionManager, which executes its commands from then on.
+il2cpp::Object *startMatch(il2cpp::Object *state, bool keepHandicaps = false);
+
+// The command the game's AI would play next for the current player, as the
+// game plays a bot's turn: a pending trigger's answer
+// (CommandTriggerUtils.TryGetTriggerCommand), else AI.GetMove at the game's
+// difficulty. Not executed.
+il2cpp::Object *aiMove(il2cpp::Object *state);
 
 // The current player's legal commands, as the client would offer them: the
-// game's own generators (CommandUtils per tile, each unit's movement and
+// game's own generators (CommandUtils per explored tile, each unit's movement and
 // attack options, research, diplomacy, a pending city reward or peace
 // offer's answer, end turn),
 // each kept only if its IsValid accepts it.
@@ -46,5 +54,15 @@ std::vector<il2cpp::Object *> legalCommands(il2cpp::Object *state);
 
 // Executes a command; returns "" or the game's error.
 std::string execute(il2cpp::Object *actionManager, il2cpp::Object *command);
+
+// For setting up a scenario: one of the game's own actions (a class such as
+// "BuildAction" or "IncreaseCurrencyAction"), made by its constructor with
+// that many parameters from the arguments as text (an enum value by name,
+// coordinates as "x,y", numbers, booleans as 1 or 0), queued as a command's
+// actions are and run to the end.
+std::string runAction(il2cpp::Object *state, il2cpp::Object *actionManager,
+                      const std::string &name, const std::vector<std::string> &args);
+// Sets an integer, byte, short, bool or enum field of an object directly.
+void setInt(il2cpp::Object *target, const std::string &field, int value);
 
 } // namespace oracle

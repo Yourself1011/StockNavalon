@@ -111,7 +111,9 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
         text = all.str();
     }
     std::size_t end = text.find('\n');
-    REQUIRE(text.compare(end - 31, 31, " 1 1 0 0 0 1 0 0 0 0 -1 rules 4") == 0);
+    const std::string rules = " rules " + std::to_string(RuleVersions::LATEST);
+    const std::string header = " 1 1 0 0 0 1 0 0 0 0 -1" + rules;
+    REQUIRE(text.compare(end - header.size(), header.size(), header) == 0);
     // the formats before: no version (the flags it has say version 2), and
     // the third and fourth fixes as flags
     for (auto [tail, version] : std::vector<std::pair<std::string, int>>{
@@ -122,7 +124,7 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
              {" 1 1", RuleVersions::EMBARK_STOMP}}) {
         CAPTURE(tail);
         std::string older = text;
-        older.replace(end - 8, 8, tail);
+        older.replace(end - rules.size(), rules.size(), tail);
         {
             std::ofstream out(path, std::ios::trunc);
             out << older;

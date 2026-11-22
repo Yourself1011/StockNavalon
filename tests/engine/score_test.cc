@@ -153,10 +153,14 @@ TEST_CASE("ruin rewards and their conditions") {
     }
     SUBCASE("population in the capital") {
         game.giveRuinReward(unit, G::RUIN_POPULATION);
-        CHECK(game.cities[game.players[0].capital].level == 2);
-        CHECK(game.cities[game.players[0].capital].population == 1);
+        int capital = game.players[0].capital;
+        CHECK(game.cities[capital].level == 2);
+        // the third point waits on the level-up's reward (POPULATION_STACK)
+        CHECK(game.cities[capital].population == 0);
+        game.apply({CommandTypes::CITYREWARD, game.cities[capital].tile, -1, CityRewards::WORKSHOP});
+        CHECK(game.cities[capital].population == 1);
     }
-    SUBCASE("a veteran Swordsman on the ruin, not counting toward the cap") {
+    SUBCASE("a veteran Swordsman on the ruin, of the city whose land it's on: none here (game)") {
         int capital = game.players[0].capital;
         int count = game.unitCount(capital);
         game.giveRuinReward(unit, G::RUIN_UNIT);
@@ -165,14 +169,19 @@ TEST_CASE("ruin rewards and their conditions") {
         CHECK(swordsman->type == UnitTypes::SWORDSMAN);
         CHECK(swordsman->veteran);
         CHECK(swordsman->hp == 200);
-        CHECK(swordsman->home == capital);
+        // unclaimed land: no city, so no cap
+        CHECK(swordsman->home == -1);
         CHECK(game.unitCount(capital) == count);
+        // on the capital's land it's the capital's, and counts toward its cap
+        game.tiles[game.index(5, 5)].territory = capital;
+        game.giveRuinReward(game.tiles[game.index(5, 5)].unit, G::RUIN_UNIT);
+        CHECK(game.units[game.tiles[game.index(5, 5)].unit].home == capital);
+        CHECK(game.unitCount(capital) == count + 1);
         // the examiner never moved, so it's pushed toward the centre
         CHECK(game.units[unit].tile == game.index(6, 6));
     }
-    SUBCASE("the examiner is pushed onward the way it was moving") {
-        game.units[unit].lastDx = -1;
-        game.units[unit].lastDy = 0;
+    SUBCASE("the examiner is pushed the way it faces") {
+        game.units[unit].facing = 1;  // west
         game.giveRuinReward(unit, G::RUIN_UNIT);
         CHECK(game.units[unit].tile == game.index(4, 5));
     }
@@ -185,8 +194,9 @@ TEST_CASE("ruin rewards and their conditions") {
         CHECK(rammer->type == UnitTypes::RAMMER);
         CHECK(rammer->passenger == UnitTypes::WARRIOR);
         CHECK(rammer->hp == 150);
-        // the raft is pushed onto water, toward the centre
-        CHECK(game.units[boat].tile == game.index(6, 3));
+        // the raft is pushed onto water, the way it faces: from (7, 2) the
+        // centre (6, 6) is nearest due +y
+        CHECK(game.units[boat].tile == game.index(7, 3));
     }
 }
 
@@ -305,4 +315,40 @@ TEST_CASE("a player knows where their units have stood, and when they were attac
                 game.units[warrior].tile});
     CHECK(makeView(game, 0).attackedOnTurns == std::vector<int>{0});
     CHECK(makeView(game, 1).attackedOnTurns.empty());
+}
+
+TEST_CASE("within a turn, a tribe is met only by exploring a tile that shows it (game)") {
+    Game game = makeFogGame(bigMap());
+    clearUnits(game);
+    // a tile player 0 has explored, with player 1's unit arriving on it
+    int t = game.index(5, 5);
+    game.reveal(0, t);
+    REQUIRE_FALSE(game.players[0].hasMet(1));
+    addUnit(game, 1, UnitTypes::WARRIOR, 5, 5);
+    int mover = addUnit(game, 0, UnitTypes::WARRIOR, 3, 5);
+    game.reveal(0, game.index(4, 5));
+    game.apply({CommandTypes::MOVE, game.index(3, 5), game.index(4, 5)});
+    CHECK_FALSE(game.players[0].hasMet(1));
+    // the next turn's start looks over everything explored
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    CHECK(game.players[0].hasMet(1));
+    (void)mover;
+}
+
+TEST_CASE("a converted unit's score goes to its new owner (game)") {
+    Game game = makeGame(bigMap());
+    clearUnits(game);
+    game.players[0].techs.set(TechTypes::PHILOSOPHY);
+    addUnit(game, 0, UnitTypes::MINDBENDER, 5, 5);
+    addUnit(game, 1, UnitTypes::WARRIOR, 6, 5);
+    int mine = game.score(0), theirs = game.score(1);
+    game.apply({CommandTypes::ATTACK, game.index(5, 5), game.index(6, 5)});
+    REQUIRE(game.unitAt(game.index(6, 5))->owner == 0);
+    int worth = Rules::unitScore(unitInfo(UnitTypes::WARRIOR).cost);
+    CHECK(game.score(0) == mine + worth);
+    CHECK(game.score(1) == theirs - worth);
+    // facing each other: the converter east, the converted west
+    CHECK(game.unitAt(game.index(5, 5))->facing == 5);
+    CHECK(game.unitAt(game.index(6, 5))->facing == 1);
 }

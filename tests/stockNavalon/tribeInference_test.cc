@@ -102,6 +102,8 @@ TEST_CASE("in a mirror match, your own climate proves nothing") {
     for (int t = 0; t < game.size * game.size; t++) {
         game.reveal(0, t);
     }
+    // (exploring their city meets them: this is about not having met them)
+    game.players[0].met = 0;
     // the whole map is Vengir climate, which fits a mirror match or not
     // having found their land yet
     CHECK(possibleTribes(makeView(game, 0), 1) == tribes({VENGIR, AIMO}));

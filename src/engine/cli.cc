@@ -318,7 +318,7 @@ void printTile(const Game &game, int tile, int viewer, bool everything) {
 
 } // namespace
 
-int runCli(int argc, char **argv, const BotMaker &makeBot) {
+int runCli(int argc, char **argv, const BotMaker &makeBot, const CliHooks &hooks) {
     // --ascii switches to the letter map, --reveal turns fog off, --seed and
     // --size set up a generated map, --bot N makes seat N a bot, --watch
     // shows a bots-only game turn by turn (--delay S: on its own, S seconds
@@ -385,15 +385,25 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
         tribes.assign(map.capitals.size(), TribeTypes::IMPERIUS);
     }
     Game game(map, tribes, {.seed = generate.seed, .peaceTreaties = treaties});
+    if (hooks.start) {
+        hooks.start(game);
+        tribes.assign(game.players.size(), TribeTypes::IMPERIUS);
+    }
+    for (int seat : hooks.outsideSeats) {
+        botSeats.push_back(seat);
+    }
     for (int seat : botSeats) {
         if (seat < 0 || seat >= static_cast<int>(tribes.size())) {
             std::cerr << "No seat " << seat << " for a bot\n";
             return 1;
         }
     }
-    std::vector<char> isBot(tribes.size(), 0);
+    std::vector<char> isBot(tribes.size(), 0), isOutside(tribes.size(), 0);
     for (int seat : botSeats) {
         isBot[seat] = 1;
+    }
+    for (int seat : hooks.outsideSeats) {
+        isOutside[seat] = 1;
     }
     bool allBots = std::all_of(isBot.begin(), isBot.end(),
                                [](char bot) { return bot; });
@@ -418,18 +428,27 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
                game.turn < BOT_GAME_TURNS) {
             int player = game.currentPlayer;
             Game before = game;
-            BotResult result = bot(game);
+            BotResult result = isOutside[player] ? hooks.outsideTurn(game) : bot(game);
             const std::vector<Command> &commands = result.commands;
-            std::cout << "Player " << player << " (bot) played "
+            std::cout << "Player " << player << (isOutside[player] ? "" : " (bot)") << " played "
                       << commands.size() << " commands\n";
             if (!result.note.empty()) {
                 std::cout << "  " << result.note << '\n';
             }
             if (reveal || allBots) {
-                // described as they were played
+                // described as they were played (replayed on a copy, which
+                // can't follow random outcomes fixed from elsewhere: then
+                // described where it stands)
+                bool following = true;
                 for (const Command &command : commands) {
                     std::cout << "  " << toString(before, command) << '\n';
-                    before.apply(command);
+                    if (following) {
+                        try {
+                            before.apply(command);
+                        } catch (const std::exception &) {
+                            following = false;
+                        }
+                    }
                 }
             }
             played = true;
@@ -503,6 +522,9 @@ int runCli(int argc, char **argv, const BotMaker &makeBot) {
                         continue;
                     }
                     command = legal[n];
+                }
+                if (hooks.beforeCommand) {
+                    hooks.beforeCommand(game, command);
                 }
                 game.apply(command);
                 runBots(nullptr);

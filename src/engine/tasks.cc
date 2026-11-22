@@ -47,19 +47,31 @@ void Game::updateTasks() {
 }
 
 void Game::creditKill(int unit) {
-    if (units[unit].alive) {
+    // a boat's kills don't count toward promotion, nor a Static unit's
+    bool counts = !settings.follows(RuleVersions::BOATS_GET_NO_KILLS) ||
+                  !(units[unit].has(Abilities::CARRY) || units[unit].has(Abilities::STATIC));
+    if (units[unit].alive && counts) {
         units[unit].kills++;
     }
     players[units[unit].owner].kills++;
 }
 
-void Game::onAttack(int attacker, int defender) {
+void Game::onAttack(int attacker, int defender, bool damaging) {
     players[attacker].attackedThisTurn = true;
+    if (settings.follows(RuleVersions::PACIFIST_RESET_AT_ATTACK) &&
+        (damaging || !settings.follows(RuleVersions::PACIFIST_NEEDS_DAMAGE))) {
+        players[attacker].peacefulTurns = 0;
+    }
     std::vector<int> &attacked = players[defender].attackedOnTurns;
     if (attacked.empty() || attacked.back() != turn) {
         attacked.push_back(turn);
     }
-    // attacking a tribe destroys the embassies between the two
+    if (static_cast<int>(players[attacker].lastAttackTurn.size()) > defender) {
+        players[attacker].lastAttackTurn[defender] = turn;
+    }
+    // attacking a tribe destroys the embassies between the two, and puts
+    // them at war for a while (EMBASSIES_AT_WAR), in which new ones pay
+    // nothing
     players[attacker].embassies &= ~(std::uint32_t{1} << defender);
     players[defender].embassies &= ~(std::uint32_t{1} << attacker);
 }

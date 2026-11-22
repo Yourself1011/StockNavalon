@@ -10,6 +10,16 @@ void attack(Game &game, int attacker, int x, int y) {
 }
 } // namespace
 
+TEST_CASE("damage in the game's integer arithmetic: a retaliation of 1.5 is 1.4999, so 1 (game)") {
+    // a veteran Archer on 13 of 15 against a Scout carrying a Defender on 13
+    // of 15, seen in a game against the real Crazy bot: 6 dealt, 1 back
+    Rules::Damage d = Rules::damage(20, 130, 150, 10, 130, 150, 1.0);
+    CHECK(d.dealt == 60);
+    CHECK(d.returned == 10);
+    // exactly, 1.5 rounds up
+    CHECK(Rules::damage(20, 130, 150, 10, 130, 150, 1.0, false).returned == 20);
+}
+
 TEST_CASE("full-health warriors deal 5 and take 5 back") {
     Game game = makeGame(fieldMap());
     clearUnits(game);
@@ -124,27 +134,86 @@ TEST_CASE("Escape lets a rider move after attacking, but not attack again") {
     CHECK_FALSE(game.units[a].canAttack);
 }
 
-TEST_CASE("Persist lets a knight attack again after a kill") {
+TEST_CASE("Persist lets a knight attack again after a kill, with another target in range") {
     Game game = makeGame(fieldMap());
     clearUnits(game);
     int k = addUnit(game, 0, KNIGHT, 3, 3);
     int d = addUnit(game, 1, WARRIOR, 4, 3);
     game.units[d].hp = 10;
+    int other = addUnit(game, 1, WARRIOR, 5, 3);
     attack(game, k, 4, 3);
     CHECK(game.units[k].canAttack);
+    // none left beside it: no more attacks (PERSIST_NEEDS_TARGET)
+    game.units[other].hp = 10;
+    attack(game, k, 5, 3);
+    CHECK_FALSE(game.units[k].canAttack);
 }
 
-TEST_CASE("splash does half the rounded damage, unrounded") {
+TEST_CASE("a melee unit that kills a unit on a port moves on and embarks only where it could embark") {
+    for (bool own : {true, false}) {
+        CAPTURE(own);
+        // a port at (2,2) in player 0's borders, or at (5,6) in player 1's
+        Game game = makeGame(fieldMap({"2 2 W", "5 6 W"}));
+        clearUnits(game);
+        game.players[0].techs.set(TechTypes::FISHING);
+        int px = own ? 2 : 5, py = own ? 2 : 6;
+        game.tiles[game.index(px, py)].building = ImprovementTypes::PORT;
+        int w = addUnit(game, 0, WARRIOR, px - 1, py);
+        int d = addUnit(game, 1, WARRIOR, px, py);
+        game.units[d].type = RAFT;
+        game.units[d].hp = 10;
+        attack(game, w, px, py);
+        CHECK_FALSE(game.units[d].alive);
+        CHECK((game.units[w].tile == game.index(px, py)) == own);
+        CHECK(game.units[w].isNaval() == own);
+    }
+}
+
+TEST_CASE("Persist counts the targets seen from the dead unit's tile before moving in, none if it embarks (game)") {
+    Game game = makeGame(fieldMap({"5 3 W"}));
+    clearUnits(game);
+    game.players[0].techs.set(TechTypes::FISHING);
+    game.tiles[game.index(5, 3)].building = ImprovementTypes::PORT;
+    game.tiles[game.index(5, 3)].territory = game.players[0].capital;
+    int k = addUnit(game, 0, KNIGHT, 4, 3);
+    int d = addUnit(game, 1, WARRIOR, 5, 3);
+    game.units[d].hp = 10;
+    addUnit(game, 1, WARRIOR, 6, 3);
+    attack(game, k, 5, 3);
+    // it embarked on the port: its turn is over, Persist or not
+    CHECK(game.units[k].isNaval());
+    CHECK_FALSE(game.units[k].canAttack);
+}
+
+TEST_CASE("a melee boat that kills a unit on land lets its passenger off there (game)") {
+    Game game = makeGame(fieldMap({"3 3 W"}));
+    clearUnits(game);
+    int boat = addUnit(game, 0, WARRIOR, 3, 3);
+    game.units[boat].type = RAMMER;
+    int d = addUnit(game, 1, WARRIOR, 4, 3);
+    game.units[d].hp = 10;
+    attack(game, boat, 4, 3);
+    CHECK(game.units[boat].tile == game.index(4, 3));
+    CHECK(game.units[boat].type == WARRIOR);
+    CHECK_FALSE(game.units[boat].canMove);
+    CHECK(game.tiles[game.index(3, 3)].unit < 0);
+}
+
+TEST_CASE("splash does half of an attack on each victim, floored") {
     Game game = makeGame(fieldMap({"2 4 W"}));
     clearUnits(game);
     int b = addUnit(game, 0, WARRIOR, 2, 4);
     game.units[b].type = BOMBER;
     int d = addUnit(game, 1, DEFENDER, 4, 4);
     int w = addUnit(game, 1, WARRIOR, 5, 4);
-    // 3 / 6 * 3 * 4.5 = 6.75, so 7 and 3.5 splash
+    // 3 / 6 * 3 * 4.5 = 6.75, so 7 to the Defender; an attack on the
+    // Warrior would deal 3 / 5 * 3 * 4.5 = 8.1, so 8, half of it 4
+    // (AREA_DAMAGE_FLOORED)
     attack(game, b, 4, 4);
     CHECK(game.units[d].hp == 80);
-    CHECK(game.units[w].hp == 65);
+    CHECK(game.units[w].hp == 60);
+    // the Bomber ends facing its last splash victim
+    CHECK(game.units[b].facing == Directions::nearest(3, 0));
 }
 
 TEST_CASE("Mind Bender converts instead of damaging") {
@@ -175,6 +244,14 @@ TEST_CASE("Mind Bender converts instead of damaging") {
     }
 }
 
+TEST_CASE("no infiltrating a city one's own unit stands on (game)") {
+    Game game = makeGame(fieldMap());
+    clearUnits(game);
+    int c = addUnit(game, 0, CLOAK, 5, 5);
+    addUnit(game, 0, WARRIOR, 6, 6);
+    CHECK(game.attackTargets(c).empty());
+}
+
 TEST_CASE("Cloak infiltrates an adjacent enemy city") {
     Game game = makeGame(fieldMap());
     clearUnits(game);
@@ -190,6 +267,65 @@ TEST_CASE("Cloak infiltrates an adjacent enemy city") {
     CHECK(dagger->type == DAGGER);
     CHECK(dagger->owner == 0);
     CHECK(game.besieged(game.cityAt(game.index(6, 6))));
+}
+
+TEST_CASE("infiltration as the game does it: rebellion stars, a robbed city, Daggers placed and the defender hit (game)") {
+    SUBCASE("an empty city: one Dagger pushed off by the next") {
+        Game game = makeGame(fieldMap());
+        clearUnits(game);
+        int city = game.cityAt(game.index(6, 6));
+        game.cities[city].level = 2;
+        int stars = game.players[0].stars;
+        int c = addUnit(game, 0, CLOAK, 5, 5);
+        attack(game, c, 6, 6);
+        // level 2 + the original capital's 1
+        CHECK(game.players[0].stars == stars + 3);
+        CHECK(game.cities[city].robbed);
+        CHECK(game.cityIncome(city) == 0);
+        const Unit *onCity = game.unitAt(game.index(6, 6));
+        REQUIRE(onCity);
+        CHECK(onCity->type == DAGGER);
+        int daggers = 0;
+        for (const Unit &u : game.units) {
+            daggers += u.alive && u.type == DAGGER;
+        }
+        CHECK(daggers == 2);
+        // a robbed city can't be infiltrated again until its owner's turn ends
+        int again = addUnit(game, 0, CLOAK, 7, 7);
+        CHECK(game.attackTargets(again).empty());
+        game.apply({CommandTypes::ENDTURN});
+        game.apply({CommandTypes::ENDTURN});
+        CHECK_FALSE(game.cities[city].robbed);
+    }
+    SUBCASE("a defended city: the defender is hit as by a fresh Cloak, the Daggers face the city") {
+        Game game = makeGame(fieldMap());
+        clearUnits(game);
+        int city = game.cityAt(game.index(6, 6));
+        game.cities[city].level = 2;
+        int defender = addUnit(game, 1, SWORDSMAN, 6, 6);
+        int c = addUnit(game, 0, CLOAK, 5, 5);
+        game.units[c].hp = 10;  // its own health doesn't matter
+        attack(game, c, 6, 6);
+        // 2 / (2 + 3) * 2 * 4.5 = 3.6, so 4
+        CHECK(game.units[defender].hp == 110);
+        for (const Unit &u : game.units) {
+            if (u.alive && u.type == DAGGER) {
+                CHECK(u.tile != game.index(6, 6));
+                CHECK(u.facing == Directions::nearest(6 - game.tileX(u.tile), 6 - game.tileY(u.tile)));
+            }
+        }
+    }
+}
+
+TEST_CASE("a boat whose passenger has 3 kills can be promoted (game)") {
+    Game game = makeGame(fieldMap({"3 3 W"}));
+    clearUnits(game);
+    int boat = addUnit(game, 0, WARRIOR, 3, 3);
+    game.units[boat].type = RAFT;
+    game.units[boat].kills = 3;
+    CHECK(hasCommand(game, {CommandTypes::PROMOTE, game.index(3, 3)}));
+    game.settings.rulesVersion = RuleVersions::BOATS_PROMOTE_PASSENGER - 1;
+    CHECK_FALSE(hasCommand(game, {CommandTypes::PROMOTE, game.index(3, 3)}));
 }
 
 TEST_CASE("veterans") {

@@ -180,6 +180,8 @@ TEST_CASE("hidden units") {
         CHECK(game.units[w].canMove);
         CHECK(game.units[w].canAttack);
         CHECK(game.attackTargets(w) == std::vector<int>{game.index(5, 5)});
+        // it turns toward it (BUMP_TURNS): west
+        CHECK(game.units[w].facing == Directions::nearest(-1, 0));
     }
 }
 
@@ -252,12 +254,16 @@ TEST_CASE("going from visible to hidden ends a Cloak's attack") {
     CHECK(hasCommand(game, {ATTACK, game.index(8, 9), game.index(9, 9)}));
 }
 
-TEST_CASE("no connection through unexplored roads") {
+TEST_CASE("connections go through unexplored roads (the game), not under older rules") {
     Game game = makeFogGame(
         bigMap({"3 2 F=", "4 2 F=", "5 2 F=", "6 2 F="}));
     int city = game.foundCity(game.index(7, 2), 0);
-    game.updateAllConnections();
     REQUIRE_FALSE(seen(game, 0, 5, 2));
+    game.updateAllConnections();
+    CHECK(game.cities[city].connectedFor == 0);
+
+    game.settings.rulesVersion = RuleVersions::GAME_CONNECTIONS - 1;
+    game.updateAllConnections();
     CHECK(game.cities[city].connectedFor == -1);
 
     game.reveal(0, game.index(5, 2));

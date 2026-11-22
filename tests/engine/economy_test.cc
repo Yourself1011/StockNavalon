@@ -183,6 +183,29 @@ TEST_CASE("windmills level with their farms; markets earn from them") {
     CHECK(game.marketIncome(game.index(0, 2)) == 1);
 }
 
+TEST_CASE("income as the game pays it: markets outside a starving city's clamp, any foreign unit stops a city (game)") {
+    Game game = makeGame(fieldMap());
+    clearUnits(game);
+    int capital = game.players[0].capital;
+    // a market of level 2 on the capital's land, the capital starving
+    int market = game.index(0, 2);
+    game.tiles[market].building = ImprovementTypes::MARKET;
+    game.tiles[game.index(0, 1)].building = ImprovementTypes::WINDMILL;
+    game.tiles[game.index(0, 1)].level = 2;
+    REQUIRE(game.marketIncome(market) == 2);
+    game.cities[capital].population = -10;
+    CHECK(game.income(0) == 2);
+    game.settings.rulesVersion = RuleVersions::GAME_INCOME - 1;
+    CHECK(game.income(0) == 0);
+    game.settings.rulesVersion = RuleVersions::LATEST;
+    game.cities[capital].population = 0;
+    // a peace partner's unit on the city stops it too
+    game.players[0].peace = game.players[1].peace = ~std::uint32_t{0};
+    addUnit(game, 1, UnitTypes::WARRIOR, 1, 1);
+    CHECK(game.cityIncome(capital) == 0);
+    CHECK(game.income(0) == 2);
+}
+
 TEST_CASE("clear, burn and grow forest") {
     Game game = makeGame(fieldMap({"0 0 Tg", "1 0 T", "2 0 F"}));
     Player &player = game.players[0];
@@ -225,6 +248,8 @@ TEST_CASE("starfish harvest") {
     game.apply(harvest);
     CHECK(game.players[0].stars == 13);
     CHECK(game.tiles[game.index(4, 4)].resource == ResourceTypes::NONE);
+    // it ends the boat's turn (game)
+    CHECK_FALSE(game.units[boat].canMove);
 }
 
 TEST_CASE("a bridge spans water between land on opposite sides") {
@@ -246,6 +271,15 @@ TEST_CASE("a bridge spans water between land on opposite sides") {
     channel.players[0].techs.set(ROADS);
     channel.players[0].stars = 20;
     CHECK(hasCommand(channel, {BUILD, channel.index(3, 4), -1, ImprovementTypes::BRIDGE}));
+}
+
+TEST_CASE("ruins can't be destroyed (game)") {
+    Game game = makeGame(fieldMap({"1 2 FR"}));
+    game.players[0].techs.set(TechTypes::CHIVALRY);
+    REQUIRE(game.tileOwner(game.index(1, 2)) == 0);
+    CHECK_FALSE(hasCommand(game, {CommandTypes::DESTROY, game.index(1, 2)}));
+    game.settings.rulesVersion = RuleVersions::NO_DESTROY_RUINS - 1;
+    CHECK(hasCommand(game, {CommandTypes::DESTROY, game.index(1, 2)}));
 }
 
 TEST_CASE("an enemy unit on a tile blocks building, harvesting and destroying there") {

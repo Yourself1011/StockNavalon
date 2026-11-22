@@ -107,6 +107,7 @@ TEST_CASE("embarking and disembarking") {
     clearUnits(game);
     int port = game.index(2, 2);
     game.tiles[port].building = ImprovementTypes::PORT;
+    game.players[0].techs.set(TechTypes::FISHING);
 
     int w = addUnit(game, 0, WARRIOR, 1, 2);
     game.units[w].kills = 2;
@@ -203,6 +204,7 @@ TEST_CASE("a Juggernaut stomps whenever it moves: embarking, at sea, and disemba
             embarkStomp ? RuleVersions::LATEST : RuleVersions::EMBARK_STOMP - 1;
         clearUnits(game);
         game.tiles[game.index(2, 2)].building = ImprovementTypes::PORT;
+        game.players[0].techs.set(TechTypes::FISHING);
         int giant = addUnit(game, 0, GIANT, 1, 2);
         int next = addUnit(game, 1, WARRIOR, 1, 3);
         int far = addUnit(game, 1, WARRIOR, 5, 5);
@@ -255,4 +257,125 @@ TEST_CASE("Raft upgrades inside your borders") {
     for (UnitTypes::UnitType boat : {UnitTypes::SCOUT, RAMMER, BOMBER}) {
         CHECK_FALSE(hasCommand(game, {CommandTypes::UPGRADE, game.index(2, 2), -1, boat}));
     }
+}
+
+TEST_CASE("units embark at a peace partner's port too, with Fishing (game)") {
+    Game game = makeGame(fieldMap({"5 6 W"}));
+    clearUnits(game);
+    game.tiles[game.index(5, 6)].building = ImprovementTypes::PORT;
+    game.players[0].peace = game.players[1].peace = ~std::uint32_t{0};
+    int w = addUnit(game, 0, WARRIOR, 4, 6);
+    CHECK_FALSE(canReach(game, w, 5, 6));
+    game.settings.rulesVersion = RuleVersions::EMBARK_NEEDS_PORT_TECH - 1;
+    CHECK(canReach(game, w, 5, 6));
+    game.settings.rulesVersion = RuleVersions::LATEST;
+    game.players[0].techs.set(TechTypes::FISHING);
+    CHECK(canReach(game, w, 5, 6));
+}
+
+TEST_CASE("a Raft that recovered gets no attack back by upgrading; one that moved onto a port does (game)") {
+    Game game = makeGame(fieldMap({"2 2 W", "2 1 W"}));
+    clearUnits(game);
+    game.tiles[game.index(2, 1)].building = ImprovementTypes::PORT;
+    int raft = addUnit(game, 0, WARRIOR, 2, 2);
+    game.units[raft].type = RAFT;
+    game.units[raft].hp = 50;
+    game.players[0].techs.set(TechTypes::SAILING);
+    game.players[0].stars = 10;
+    Game moved = game;
+    game.apply({CommandTypes::RECOVER, game.index(2, 2)});
+    game.apply({CommandTypes::UPGRADE, game.index(2, 2), -1, UnitTypes::SCOUT});
+    CHECK_FALSE(game.units[raft].canAttack);
+    moved.apply({CommandTypes::MOVE, moved.index(2, 2), moved.index(2, 1)});
+    moved.apply({CommandTypes::UPGRADE, moved.index(2, 1), -1, UnitTypes::SCOUT});
+    CHECK(moved.units[raft].canAttack);
+}
+
+TEST_CASE("a Raft that moved, upgraded to a Dash boat, can still attack (game)") {
+    Game game = makeGame(fieldMap({"2 2 W", "2 1 W"}));
+    clearUnits(game);
+    int raft = addUnit(game, 0, WARRIOR, 2, 2);
+    game.units[raft].type = RAFT;
+    game.players[0].techs.set(TechTypes::SAILING);
+    game.players[0].stars = 10;
+    game.apply({CommandTypes::MOVE, game.index(2, 2), game.index(2, 1)});
+    CHECK_FALSE(game.units[raft].canAttack);
+    game.apply({CommandTypes::UPGRADE, game.index(2, 1), -1, UnitTypes::SCOUT});
+    CHECK(game.units[raft].canAttack);
+
+    // embarking ends the turn, attacks too, upgrade or not (game)
+    Game port = makeGame(fieldMap({"2 2 W"}));
+    clearUnits(port);
+    port.tiles[port.index(2, 2)].building = ImprovementTypes::PORT;
+    port.players[0].techs.set(TechTypes::FISHING);
+    port.players[0].techs.set(TechTypes::SAILING);
+    port.players[0].stars = 10;
+    int w = addUnit(port, 0, WARRIOR, 1, 2);
+    port.apply({CommandTypes::MOVE, port.index(1, 2), port.index(2, 2)});
+    port.apply({CommandTypes::UPGRADE, port.index(2, 2), -1, UnitTypes::SCOUT});
+    CHECK_FALSE(port.units[w].canAttack);
+}
+
+TEST_CASE("a Raft upgrades in a peace partner's borders too (game)") {
+    Game game = makeGame(fieldMap({"5 6 W"}));
+    clearUnits(game);
+    int raft = addUnit(game, 0, WARRIOR, 5, 6);
+    game.units[raft].type = RAFT;
+    game.players[0].techs.set(TechTypes::RAMMING);
+    REQUIRE(game.tileOwner(game.index(5, 6)) == 1);
+    Command upgrade{CommandTypes::UPGRADE, game.index(5, 6), -1, RAMMER};
+    CHECK_FALSE(hasCommand(game, upgrade));
+    game.players[0].peace = game.players[1].peace = ~std::uint32_t{0};
+    CHECK(hasCommand(game, upgrade));
+}
+
+TEST_CASE("a Creep unit gets nothing from roads (game), unlike under older rules") {
+    Game game = makeGame(fieldMap({"2 3 F=", "3 3 F=", "4 3 F=", "5 3 F=", "6 3 F="}));
+    clearUnits(game);
+    // a Rider (movement 2) goes 4 road steps, a Cloak (movement 2) only 2
+    int rider = addUnit(game, 0, RIDER, 2, 3);
+    CHECK(canReach(game, rider, 6, 3));
+    game.units[rider].alive = false;
+    game.tiles[game.index(2, 3)].unit = -1;
+    int cloak = addUnit(game, 0, CLOAK, 2, 3);
+    CHECK(canReach(game, cloak, 4, 3));
+    CHECK_FALSE(canReach(game, cloak, 5, 3));
+    game.settings.rulesVersion = RuleVersions::CREEP_NO_ROADS - 1;
+    CHECK(canReach(game, cloak, 6, 3));
+}
+
+TEST_CASE("without Fishing, a bridge is entered along it or diagonally, not straight from its side (game)") {
+    // an east-west bridge at (3, 3): land west and east, water north and south
+    Game game = makeGame(fieldMap({"3 2 W", "3 3 W=", "3 4 W"}));
+    clearUnits(game);
+    int north = addUnit(game, 0, WARRIOR, 3, 1);
+    CHECK_FALSE(canReach(game, north, 3, 2));
+    int west = addUnit(game, 0, WARRIOR, 2, 3);
+    CHECK(canReach(game, west, 3, 3));
+    int diagonal = addUnit(game, 0, WARRIOR, 2, 2);
+    CHECK(canReach(game, diagonal, 3, 3));
+    // a warrior on water would be a boat, so for the side: (3, 2) is water,
+    // and no unit stands there; check the step itself
+    CHECK(game.bridgeSideStep(0, game.index(3, 2), game.index(3, 3)));
+    CHECK_FALSE(game.bridgeSideStep(0, game.index(2, 2), game.index(3, 3)));
+    game.players[0].techs.set(TechTypes::FISHING);
+    CHECK_FALSE(game.bridgeSideStep(0, game.index(3, 2), game.index(3, 3)));
+    game.players[0].techs.reset(TechTypes::FISHING);
+    game.settings.rulesVersion = RuleVersions::BRIDGE_SIDES - 1;
+    CHECK_FALSE(game.bridgeSideStep(0, game.index(3, 2), game.index(3, 3)));
+}
+
+TEST_CASE("a boat on a bridge can disembark where it is (game)") {
+    Game game = makeGame(fieldMap({"2 0 W", "2 1 W=", "2 2 W"}));
+    clearUnits(game);
+    int w = addUnit(game, 0, WARRIOR, 2, 1);
+    game.units[w].type = RAFT;
+    REQUIRE(hasCommand(game, {DISEMBARK, game.index(2, 1), game.index(2, 1)}));
+    game.apply({DISEMBARK, game.index(2, 1), game.index(2, 1)});
+    CHECK(game.units[w].type == WARRIOR);
+    CHECK(game.units[w].tile == game.index(2, 1));
+    game.settings.rulesVersion = RuleVersions::DISEMBARK_ON_BRIDGE - 1;
+    game.units[w].type = RAFT;
+    game.units[w].canMove = true;
+    CHECK_FALSE(hasCommand(game, {DISEMBARK, game.index(2, 1), game.index(2, 1)}));
 }

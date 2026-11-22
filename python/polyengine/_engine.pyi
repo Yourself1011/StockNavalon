@@ -192,6 +192,17 @@ class TechType(enum.IntEnum):
 
     SPIRITUALISM = 25
 
+class RuinReward(enum.IntEnum):
+    TECH = 0
+
+    STARS = 1
+
+    POPULATION = 2
+
+    EXPLORER = 3
+
+    UNIT = 4
+
 class Tribe(enum.IntEnum):
     XINXI = 0
 
@@ -453,6 +464,12 @@ class Unit:
     @property
     def can_act(self) -> bool: ...
 
+    @property
+    def facing(self) -> int:
+        """
+        The way it faces, as the game numbers directions: SW, W, NW, N, NE, E, SE, S (pushes go that way).
+        """
+
 class City:
     """A city, as the engine sees it."""
 
@@ -518,6 +535,14 @@ class Player:
 
     def has_met(self, player: int) -> bool: ...
 
+    def has_embassy_with(self, player: int) -> bool:
+        """Whether the player has an embassy in that player's capital."""
+
+    def cooling_down_with(self, other: int) -> bool:
+        """
+        Whether peace with them was broken and the player can't attack them yet.
+        """
+
 class MapData:
     """
     A map before the game starts: tiles and each player's capital tile, in seat order.
@@ -559,14 +584,19 @@ def start_inequality(map: MapData) -> float:
     """
 
 def generate_map(tribes: Sequence[Tribe], type: MapType = MapType.LAKES, size: int = 14, seed: int = 0, candidates: int = 50) -> MapData:
-    """Generates a map for the tribes, in seat order (GAME.md section 18)."""
+    """
+    Generates a map for the tribes, in seat order (GAME.md section 18): up to `candidates` of them, keeping the fairest.
+    """
 
 class Game:
     """
     The whole game state. Sees everything, including what's hidden by fog: bots should decide from make_view(game, player) and use the Game only to list and apply commands. Copies are independent.
     """
 
-    def __init__(self, map: MapData, tribes: Sequence[Tribe], seed: int = 0, win_condition: WinCondition = WinCondition.MIGHT) -> None: ...
+    def __init__(self, map: MapData, tribes: Sequence[Tribe], seed: int = 0, win_condition: WinCondition = WinCondition.MIGHT, capital_income: Sequence[int] = []) -> None:
+        """
+        capital_income: each seat's capital income bonus (the game's handicap: 1 for people, 4 for Crazy bots); empty for 1 each.
+        """
 
     def copy(self) -> Game:
         """An independent copy, for branching a search."""
@@ -628,6 +658,13 @@ class Game:
 
     def income(self, player: int) -> int: ...
 
+    def city_income(self, city: int) -> int:
+        """What the city (an index into cities) earns a turn."""
+
+    def at_peace(self, a: int, b: int) -> bool: ...
+
+    def embassy_income(self, player: int) -> int: ...
+
     def tech_cost(self, player: int, tech: TechType) -> int: ...
 
     def legal_commands(self) -> list[Command]:
@@ -643,6 +680,63 @@ class Game:
 
     def describe(self, command: Command) -> str:
         """The command in words, e.g. 'move (3,4) -> (4,5)'."""
+
+    def force_ruin(self, reward: RuinReward, tech: int = -1) -> None:
+        """
+        The next ruin gives this reward (and, for a tech, this tech) instead of a random one.
+        """
+
+    def force_explorer(self, tiles: Sequence[int]) -> None:
+        """The next Explorer reveals exactly these tiles instead of walking."""
+
+    def force_reveal(self, player: int, tiles: Sequence[int]) -> None:
+        """
+        Explores these tiles for the player, as the rest of an outcome fixed earlier (an Explorer the game finished later), and checks tasks again.
+        """
+
+    def set_stars(self, player: int, stars: int) -> None: ...
+
+    def give_tech(self, player: int, tech: TechType) -> None: ...
+
+    def spawn_unit(self, player: int, type: UnitType, tile: int) -> int:
+        """
+        A unit of no city, as if trained there: it can't act until a later turn.
+        """
+
+    def set_unit(self, unit: int, passenger: UnitType, hp: int) -> None:
+        """Sets what a boat carries and the unit's HP (x10)."""
+
+    def found_city(self, tile: int, owner: int) -> int:
+        """Makes the village there the player's city, as a capture does."""
+
+    def set_unit_ready(self, unit: int) -> None: ...
+
+    def set_met(self, player: int, other: int, met: bool) -> None: ...
+
+    def place_building(self, player: int, tile: int, type: ImprovementType) -> None:
+        """Builds as the player would, without paying."""
+
+    def add_population(self, city_tile: int, amount: int) -> None: ...
+
+    def set_unit_hp(self, tile: int, hp: int) -> None: ...
+
+    def set_tile(self, tile: int, terrain: TerrainType, resource: ResourceType) -> None: ...
+
+    def add_embassy(self, builder: int, host: int) -> None: ...
+
+    def set_city_level(self, city_tile: int, level: int) -> None: ...
+
+    def make_peace(self, a: int, b: int) -> None: ...
+
+    def force_converted_home(self, tile: int) -> None:
+        """
+        The next converted unit belongs to the city on this tile instead of a random one.
+        """
+
+    def force_daggers(self, daggers: Sequence[tuple[int, int]]) -> None:
+        """
+        The next infiltration's Daggers, as (tile, facing) each, instead of their random order.
+        """
 
 class PlayerView:
     """
@@ -1608,9 +1702,9 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
-def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = [], seat_plans: Sequence[str] = [], plan_turns: int = 20, plan_when_ahead: float = float('nan')) -> int:
+def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = [], seat_plans: Sequence[str] = [], plan_turns: int = 20, plan_when_ahead: float = float('nan'), start: object | None = None, before_command: object | None = None, outside_seats: Sequence[int] = [], outside_turn: object | None = None) -> int:
     """
-    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`); seat_plans their forced plans (plans.h: none, bridge, naval or convert) for plan_turns turns, from the start or (plan_when_ahead) once the seat's evaluation reaches it. With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. Returns the exit code.
+    The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`); seat_plans their forced plans (plans.h: none, bridge, naval or convert) for plan_turns turns, from the start or (plan_when_ahead) once the seat's evaluation reaches it. With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. For a game played alongside another (stocknavalon.play --crazy): start() returns the starting Game; before_command(game, command) is called before every command a person or a bot plays; outside_seats are played by outside_turn(game), which plays the turn on the game itself and returns its commands. Returns the exit code.
     """
 
 def search(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> tuple[list[Command], list[int], list[float], list[float], int, list[list[tuple[int, float]]]]:
@@ -1631,9 +1725,9 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
     Plays random games on generated maps. Returns (winner, turns) for each; winner is -1 if the turn limit came first.
     """
 
-ENCODING_VERSION: int = 15
+ENCODING_VERSION: int = 16
 
-RULES_VERSION: int = 4
+RULES_VERSION: int = 70
 
 MAP_TYPE_COUNT: int = 6
 
@@ -1647,9 +1741,9 @@ UNEXPLORED_TERRAIN: int = 0
 
 UNEXPLORED_RESOURCE: int = 5
 
-UNEXPLORED_FEATURE: int = 12
+UNEXPLORED_FEATURE: int = 13
 
-UNEXPLORED_LAYERS: int = 15
+UNEXPLORED_LAYERS: int = 16
 
 SIDE_SCORE_SOON: int = 0
 

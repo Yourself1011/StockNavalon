@@ -12,6 +12,7 @@
 #include "legalMoves.h"
 #include "plans.h"
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <random>
 #include <utility>
@@ -455,9 +456,13 @@ SearchResult search(const Game &game, const Beliefs &beliefs,
 // With `explain`, a few lines per decision appended to it: the command
 // played and the root's leading moves, with their priors, visits and values.
 // With a `plan`, before turn `planTurns` the player only chooses among the
-// commands it allows, as in self-play (SelfPlayConfig::sidePlans).
+// commands it allows, as in self-play (SelfPlayConfig::sidePlans). With
+// `beforeApply`, it's called with each command just before it's applied
+// (to play the same command in a game elsewhere first, such as the real
+// game's, which may fix its random outcome).
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                               const SearchConfig &config, std::mt19937_64 &rng,
                               bool networkBeliefs = false, float *lastValue = nullptr,
                               std::string *explain = nullptr, Plan plan = Plan::NONE,
-                              int planTurns = 0);
+                              int planTurns = 0,
+                              const std::function<void(Game &, const Command &)> &beforeApply = {});

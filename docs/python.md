@@ -128,13 +128,16 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | `index(x, y)`, `tile_x(t)`, `tile_y(t)`, `distance(a, b)`, `tile_owner(t)` | geometry |
 | `score(p)` (live), `published_score(p)` (what others see), `score_history`, `income(p)`, `tech_cost(p, tech)` | |
 | `legal_commands()`, `is_legal(c)`, `apply(c)`, `apply_unchecked(c)`, `describe(c)` | commands |
+| `force_ruin(reward, tech=-1)`, `force_explorer(tiles)`, `force_converted_home(tile)`, `force_reveal(player, tiles)` | fix the next random outcome instead of drawing it (`RuinReward`), to follow a game played elsewhere (`src/oracle/mirror.py`) |
+| `set_stars`, `give_tech`, `spawn_unit`, `place_building`, `add_population`, `set_unit_hp`, `set_tile`, `set_city_level`, `add_embassy`, `make_peace`, `set_met` | setting up a position (`src/oracle/scenarios.py`, tests) |
+| `city_income(city)`, `embassy_income(p)`, `at_peace(a, b)` | |
 
 The state classes are read-only:
 
 - **`Tile`:** `terrain`, `resource`, `building`, `level`, `road`, `unit` (an index into the internal unit list, or -1), `territory`, `climate` (a tribe as an int, -1 if none), `explored_by(p)`.
-- **`Unit`:** `type`, `passenger` (what a boat carries), `owner`, `tile`, `hp`, `max_hp`, `home`, `kills`, `veteran`, `alive`, `hidden`, `can_move`, `can_attack`, `can_act`.
+- **`Unit`:** `type`, `passenger` (what a boat carries), `owner`, `tile`, `hp`, `max_hp`, `home`, `kills`, `veteran`, `alive`, `hidden`, `can_move`, `can_attack`, `can_act`, `facing` (the game's directions SW, W, NW, N, NE, E, SE, S).
 - **`City`:** `tile`, `owner`, `level`, `population`, `capital_of`, `connected_for`, `pending_rewards`, `parks`, `workshop`, `wall`.
-- **`Player`:** `tribe`, `stars`, `capital`, `alive`, `kills`, `lighthouses_found`, `techs`, `tasks_done`, `monuments_built` (lists), `has_met(p)`.
+- **`Player`:** `tribe`, `stars`, `capital`, `alive`, `kills`, `lighthouses_found`, `techs`, `tasks_done`, `monuments_built` (lists), `has_met(p)`, `has_embassy_with(p)`, `cooling_down_with(p)` (p broke peace with them and can't be attacked yet).
 
 ### `make_view(game, player, everything=False)` → `PlayerView`
 

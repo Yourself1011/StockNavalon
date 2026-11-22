@@ -11,6 +11,14 @@ fog, after its turn:
 
     python -m stocknavalon.play runs/ninth lakes Imperius Bardur --size 11 --bot 0 --bot 1 --watch
 
+With --crazy SEAT, that seat is the real game's own Crazy bot, through the
+oracle (stocknavalon.crazy.CrazySeat): the game starts on the real game's
+map, every command goes to the real game first, and the rules are checked as
+it goes (the first difference is shown). Against the network, or a person:
+
+    python -m stocknavalon.play runs/ninth lakes Imperius Bardur --size 11 --bot 0 --crazy 1
+    python -m stocknavalon.play runs/ninth lakes Imperius Bardur --size 11 --crazy 1
+
 The first argument is a run directory (its best network) or a .pt file,
 such as a snapshot in checkpoints/. Everything after it goes to the CLI, apart
 from these options.
@@ -28,6 +36,7 @@ import torch
 
 import polyengine as pe
 
+from . import crazy
 from .model import Network, belief_outputs, load_weights, pick_device, tie_breaks
 from .settings import add_search_arguments, side_count, side_searches
 
@@ -73,6 +82,11 @@ def main():
     parser.add_argument("--plan-when-ahead", type=float,
                         help="start the plans once the seat's evaluation reaches this "
                              "(by default from the start)")
+    parser.add_argument("--crazy", type=int, metavar="SEAT",
+                        help="this seat is played by the real game's own Crazy bot "
+                             "(stocknavalon.crazy; needs the oracle built and the game "
+                             "set up), on the real game's map, in lockstep with ours "
+                             "and its rules checked on the way")
     parser.add_argument("--device", default=None)
     parser.add_argument("--network-beliefs", action=argparse.BooleanOptionalAction,
                         default=True,
@@ -110,14 +124,41 @@ def main():
     # the per-side flags (--turn-search, --replies, --backup): one value for
     # every bot, or one per seat (seat 0 first)
     seats = side_searches(args, side_count(args))
-    sys.exit(pe.run_cli(rest, encoding, evaluate, seats[0],
-                        network_beliefs=args.network_beliefs, explain=args.explain,
-                        seat_search=seats if len(seats) > 1 else [],
-                        seat_plans=args.plan * 2 if args.plan and len(args.plan) == 1
-                        else args.plan or [],
-                        plan_turns=args.plan_turns,
-                        plan_when_ahead=float("nan") if args.plan_when_ahead is None
-                        else args.plan_when_ahead))
+    hooks = {}
+    crazy_seat = None
+    if args.crazy is not None:
+        crazy_seat = start_crazy(args.crazy, rest)
+        hooks = dict(start=crazy_seat.start, before_command=crazy_seat.before_command,
+                     outside_seats=[args.crazy], outside_turn=crazy_seat.turn)
+    try:
+        code = pe.run_cli(rest, encoding, evaluate, seats[0],
+                          network_beliefs=args.network_beliefs, explain=args.explain,
+                          seat_search=seats if len(seats) > 1 else [],
+                          seat_plans=args.plan * 2 if args.plan and len(args.plan) == 1
+                          else args.plan or [],
+                          plan_turns=args.plan_turns,
+                          plan_when_ahead=float("nan") if args.plan_when_ahead is None
+                          else args.plan_when_ahead, **hooks)
+    finally:
+        if crazy_seat is not None:
+            crazy_seat.close()
+    sys.exit(code)
+
+
+def start_crazy(seat: int, rest: list[str]) -> crazy.CrazySeat:
+    """The Crazy seat for the CLI's arguments: the map type and tribes
+    (positional), --size and --seed."""
+    cli = argparse.ArgumentParser(add_help=False)
+    cli.add_argument("positional", nargs="*")
+    cli.add_argument("--size", type=int, default=14)
+    cli.add_argument("--seed", type=int, default=0)
+    known, _ = cli.parse_known_args(rest)
+    map_type = (known.positional or ["lakes"])[0].lower()
+    tribes = [t.lower() for t in known.positional[1:]] or ["imperius", "bardur"]
+    if len(tribes) != 2:
+        raise SystemExit("--crazy plays two-player games")
+    return crazy.CrazySeat(seat, tribes, known.seed,
+                           crazy.Settings(type=map_type, size=known.size))
 
 if __name__ == "__main__":
     main()

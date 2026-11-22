@@ -25,16 +25,19 @@ TEST_CASE("Wealth: 100 stars with Trade unlocks the Emperor's Tomb") {
     CHECK_FALSE(hasCommand(game, {BUILD, game.index(3, 3), -1,
                                   ImprovementTypes::ALTAROFPEACE}));
     game.apply(tomb);
-    // +3 population levels the capital up: worth 400, plus the city's growth
+    // +3 population levels the capital up: worth 400, plus the city's
+    // growth; the third point waits on the reward (POPULATION_STACK)
     CHECK(game.cities[capital].level == 2);
-    CHECK(game.score(0) == score + 400 + 50 + 5);
+    CHECK(game.score(0) == score + 400 + 50);
     CHECK(player.monumentsBuilt.test(WEALTH));
-    // once only, and it can't be destroyed
+    // once only; it can be destroyed (game), but not before the rule
     game.apply({CommandTypes::CITYREWARD, game.cities[capital].tile, -1,
                 CityRewards::WORKSHOP});
     CHECK_FALSE(hasCommand(game, {BUILD, game.index(1, 3), -1,
                                   ImprovementTypes::EMPERORSTOMB}));
     player.techs.set(TechTypes::CHIVALRY);
+    CHECK(game.canDestroy(0, game.index(3, 3)));
+    game.settings.rulesVersion = RuleVersions::DESTROY_MONUMENTS - 1;
     CHECK_FALSE(game.canDestroy(0, game.index(3, 3)));
 }
 
@@ -89,6 +92,19 @@ TEST_CASE("kills count for Killer, by attack or retaliation") {
     CHECK(game.units[a].kills == 1);
 }
 
+TEST_CASE("Pacifist: a conversion doesn't start the count over (game)") {
+    Game game = makeGame(bigMap());
+    clearUnits(game);
+    Player &player = game.players[0];
+    player.techs.set(TechTypes::MEDITATION);
+    player.peacefulTurns = 3;
+    addUnit(game, 0, UnitTypes::MINDBENDER, 5, 5);
+    addUnit(game, 1, UnitTypes::WARRIOR, 6, 5);
+    game.apply({CommandTypes::ATTACK, game.index(5, 5), game.index(6, 5)});
+    CHECK(game.unitAt(game.index(6, 5))->owner == 0);
+    CHECK(player.peacefulTurns == 3);
+}
+
 TEST_CASE("Pacifist: 5 turns without attacking after Meditation") {
     Game game = makeGame(bigMap());
     clearUnits(game);
@@ -102,12 +118,19 @@ TEST_CASE("Pacifist: 5 turns without attacking after Meditation") {
     }
     CHECK(player.peacefulTurns == 4);
 
-    // an attack starts the count over
+    // an attack starts the count over there and then; the turn's end still
+    // counts (game)
     game.apply({CommandTypes::ATTACK, game.index(5, 5), game.index(6, 5)});
-    game.apply({ENDTURN});
-    game.apply({ENDTURN});
     CHECK(player.peacefulTurns == 0);
-    for (int turn = 0; turn < 5; turn++) {
+    game.apply({ENDTURN});
+    game.apply({ENDTURN});
+    CHECK(player.peacefulTurns == 1);
+    for (int turn = 0; turn < 3; turn++) {
+        game.apply({ENDTURN});
+        game.apply({ENDTURN});
+    }
+    CHECK_FALSE(player.tasksDone.test(PACIFIST));
+    for (int turn = 0; turn < 1; turn++) {
         game.apply({ENDTURN});
         game.apply({ENDTURN});
     }

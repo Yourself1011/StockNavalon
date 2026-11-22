@@ -20,6 +20,8 @@ using namespace il2cpp;
 struct Held {
     GCHandle state = nullptr, manager = nullptr;
     std::vector<GCHandle> legal;
+    // the AI's last command (ai), for "apply <id> ai"
+    GCHandle ai = nullptr;
 };
 std::map<int, Held> games;
 int nextGame = 0;
@@ -129,10 +131,37 @@ std::string handle(const std::string &line) {
         return out + "]";
     }
     if (request == "start") {
-        // every seat a person, the match started
+        // every seat a person, the match started; "start <id> keep" keeps
+        // the AI seats' handicap, to play them with "ai"
         Held &g = held(words);
-        g.manager = gchandle_new(oracle::startMatch(gchandle_get_target(g.state)), false);
+        std::string keep;
+        words >> keep;
+        g.manager = gchandle_new(oracle::startMatch(gchandle_get_target(g.state), keep == "keep"), false);
         return "{}";
+    }
+    if (request == "ai") {
+        // the AI's next command for the current player, and its place in the
+        // last legal list (-1 if it isn't there)
+        Held &g = held(words);
+        Object *command = oracle::aiMove(gchandle_get_target(g.state));
+        if (g.ai != nullptr) {
+            gchandle_free(g.ai);
+            g.ai = nullptr;
+        }
+        if (command != nullptr) {
+            g.ai = gchandle_new(command, false);
+        }
+        if (command == nullptr) {
+            return "{\"command\":null,\"index\":-1}";
+        }
+        std::string dumped = oracle::dump(command);
+        int index = -1;
+        for (std::size_t k = 0; k < g.legal.size() && index < 0; k++) {
+            if (oracle::dump(gchandle_get_target(g.legal[k])) == dumped) {
+                index = static_cast<int>(k);
+            }
+        }
+        return "{\"command\":" + dumped + ",\"index\":" + std::to_string(index) + "}";
     }
     if (request == "legal") {
         // the current player's legal commands, numbered for apply
@@ -146,20 +175,69 @@ std::string handle(const std::string &line) {
         return out + "]";
     }
     if (request == "apply") {
-        // the k-th command of the last legal list
+        // the k-th command of the last legal list, or with "ai" the AI's last
+        // command (one the client never offers, such as a StayCommand)
         Held &g = held(words);
-        int k = -1;
-        words >> k;
+        std::string which;
+        words >> which;
         if (g.manager == nullptr) {
             throw std::runtime_error("the match isn't started");
         }
-        if (k < 0 || k >= static_cast<int>(g.legal.size())) {
-            throw std::runtime_error("no legal command " + std::to_string(k));
+        Object *command = nullptr;
+        if (which == "ai") {
+            if (g.ai == nullptr) {
+                throw std::runtime_error("no AI command to apply");
+            }
+            command = gchandle_get_target(g.ai);
+        } else {
+            int k = std::stoi(which);
+            if (k < 0 || k >= static_cast<int>(g.legal.size())) {
+                throw std::runtime_error("no legal command " + std::to_string(k));
+            }
+            command = gchandle_get_target(g.legal[k]);
         }
-        Object *command = gchandle_get_target(g.legal[k]);
         release(g.legal);
         std::string error = oracle::execute(gchandle_get_target(g.manager), command);
         return error.empty() ? "{}" : "{\"rejected\":\"" + error + "\"}";
+    }
+    if (request == "act") {
+        // a scenario's step: act <id> <ActionClass> <constructor arguments>
+        Held &g = held(words);
+        std::string name = word(words);
+        std::vector<std::string> args;
+        for (std::string a; words >> a;) {
+            args.push_back(a);
+        }
+        oracle::runAction(gchandle_get_target(g.state), gchandle_get_target(g.manager), name, args);
+        return "{}";
+    }
+    if (request == "set") {
+        // set <id> tile <x> <y> <field> <value>, set <id> unit <x> <y> ...,
+        // set <id> improvement <x> <y> ..., set <id> player <playerId> ...,
+        // set <id> game <field> <value>
+        Object *state = game(words);
+        std::string what = word(words);
+        Object *target = nullptr;
+        if (what == "game") {
+            target = state;
+        } else if (what == "player") {
+            uint8_t id = static_cast<uint8_t>(std::stoi(word(words)));
+            void *find[] = {&id, &target};
+            invoke(findMethod(object_get_class(state), "TryGetPlayer", 2), state, find);
+        } else {
+            int coords[2] = {std::stoi(word(words)), std::stoi(word(words))};
+            void *args[] = {member(state, "<Map>k__BackingField"), coords};
+            Object *tile = invoke(findMethod(findClass(image("GameLogicAssembly.dll"), "", "MapDataExtensions"),
+                                             "GetTile", 2), nullptr, args);
+            target = what == "tile" ? tile : what == "unit" ? member(tile, "<unit>k__BackingField")
+                                                           : member(tile, "improvement");
+        }
+        if (target == nullptr) {
+            throw std::runtime_error("nothing to set there");
+        }
+        std::string field = word(words);
+        oracle::setInt(target, field, std::stoi(word(words)));
+        return "{}";
     }
     if (request == "free") {
         int id = -1;
@@ -167,6 +245,9 @@ std::string handle(const std::string &line) {
         auto found = games.find(id);
         if (found != games.end()) {
             release(found->second.legal);
+            if (found->second.ai != nullptr) {
+                gchandle_free(found->second.ai);
+            }
             gchandle_free(found->second.state);
             if (found->second.manager != nullptr) {
                 gchandle_free(found->second.manager);

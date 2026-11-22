@@ -77,9 +77,43 @@ TEST_CASE("allies use each other's roads") {
     Game game = makeGame(bigMap({"5 9 F=", "6 9 F=", "7 9 F=", "8 9 F="}));
     clearUnits(game);
     int rider = addUnit(game, 0, RIDER, 5, 9);
+    // the capital is a road too; under rules from before moves stopped short
+    // of an ally's city, so the rider can get there
+    game.settings.rulesVersion = RuleVersions::NO_STOP_ON_PEACEFUL_CITIES - 1;
     CHECK_FALSE(canReach(game, rider, 9, 9));
     makePeace(game);
     CHECK(canReach(game, rider, 9, 9));
+}
+
+TEST_CASE("no move ends on an ally's city, or on the city of a player that broke peace with the "
+          "mover, while cooling down") {
+    Game game = makeGame(bigMap({"8 9 F", "8 8 F"}));
+    clearUnits(game);
+    int warrior = addUnit(game, 0, WARRIOR, 8, 8);
+    makePeace(game);
+    CHECK_FALSE(canReach(game, warrior, 9, 9));
+    game.apply({BREAKPEACE, -1, -1, 1});
+    game.units[warrior].canMove = true;
+    // the breaker's units are frozen; both sides cool down (GAME_COOLDOWN)
+    CHECK((game.players[0].coolDown >> 1 & 1) == 1);
+    CHECK((game.players[1].coolDown >> 0 & 1) == 1);
+    CHECK_FALSE(canReach(game, warrior, 9, 9));
+    // each lasts until its holder's turn ends: the breaker's this one, the
+    // other side's its next
+    game.apply({ENDTURN});
+    CHECK(game.players[0].coolDown == 0);
+    CHECK((game.players[1].coolDown >> 0 & 1) == 1);
+    game.apply({ENDTURN});
+    CHECK(game.players[1].coolDown == 0);
+    game.units[warrior].canMove = true;
+    CHECK(canReach(game, warrior, 9, 9));
+    // peace again replaces a cooldown
+    game.players[0].coolDown = game.players[1].coolDown = ~std::uint32_t{0};
+    game.players[1].peaceRequests |= 1;
+    game.currentPlayer = 1;
+    game.applyUnchecked({PEACEREQUESTRESPONSE, -1, -1, 1});
+    CHECK((game.players[0].coolDown >> 1 & 1) == 0);
+    CHECK((game.players[1].coolDown >> 0 & 1) == 0);
 }
 
 TEST_CASE("breaking peace freezes the breaker and disbands units in the "
@@ -110,8 +144,11 @@ TEST_CASE("embassies") {
     REQUIRE(hasCommand(game, {ESTABLISHEMBASSY, -1, -1, 1}));
 
     int before = game.income(0), hostBefore = game.income(1);
+    // the first embassy costs 4, each next 2 more (game)
+    CHECK(game.embassyCost(0) == 4);
     game.apply({ESTABLISHEMBASSY, -1, -1, 1});
-    CHECK(player.stars == 5);
+    CHECK(player.stars == 6);
+    CHECK(game.embassyCost(0) == 6);
     CHECK(player.hasEmbassyWith(1));
     CHECK_FALSE(hasCommand(game, {ESTABLISHEMBASSY, -1, -1, 1}));
     // +2 a turn for both
@@ -125,16 +162,30 @@ TEST_CASE("embassies") {
         CHECK(game.income(0) == before + 4);
         CHECK(game.income(1) == hostBefore + 4);
     }
-    SUBCASE("attacking the tribe destroys it") {
+    SUBCASE("attacking the tribe destroys it, and one built while at war pays nothing (game)") {
         clearUnits(game);
         addUnit(game, 0, WARRIOR, 5, 5);
         addUnit(game, 1, WARRIOR, 6, 5);
         game.reveal(0, game.index(6, 5));
+        int withEmbassy = game.income(0);
         game.apply({ATTACK, game.index(5, 5), game.index(6, 5)});
         CHECK_FALSE(player.hasEmbassyWith(1));
-    }
-    SUBCASE("the host can destroy it") {
+        CHECK(game.atWar(0, 1));
+        player.stars = 10;
+        game.apply({ESTABLISHEMBASSY, -1, -1, 1});
+        CHECK(game.income(0) == withEmbassy - 2);
         game.apply({ENDTURN});
+        game.apply({ENDTURN});
+        // the attacker's next turn: still at war, until it ends
+        CHECK(game.atWar(0, 1));
+        game.apply({ENDTURN});
+        CHECK_FALSE(game.atWar(0, 1));
+        CHECK(game.income(0) == withEmbassy);
+    }
+    SUBCASE("the host can't destroy it (the game has no way to), but could under older rules") {
+        game.apply({ENDTURN});
+        CHECK_FALSE(hasCommand(game, {DESTROYEMBASSY, -1, -1, 0}));
+        game.settings.rulesVersion = RuleVersions::NO_DESTROY_EMBASSY - 1;
         REQUIRE(hasCommand(game, {DESTROYEMBASSY, -1, -1, 0}));
         game.apply({DESTROYEMBASSY, -1, -1, 0});
         CHECK_FALSE(player.hasEmbassyWith(1));
@@ -165,7 +216,9 @@ TEST_CASE("a shared neutral road only gives new connections to the first "
           "player in seat order") {
     // player 1's city at (9, 5) reaches its capital over roads at (9, 6),
     // (9, 7) and (9, 8); (9, 7) is neutral
+    // (rules from before the game's connections, which have no such rule)
     Game game = makeGame(bigMap({"9 6 F=", "9 7 F=", "9 8 F="}));
+    game.settings.rulesVersion = RuleVersions::GAME_CONNECTIONS - 1;
     int city = game.foundCity(game.index(9, 5), 1);
 
     SUBCASE("unshared, it connects") {
@@ -257,9 +310,16 @@ TEST_CASE("an embassy or a peace offer reveals the sender to the other tribe") {
         REQUIRE_FALSE(game.players[1].hasMet(0));
         int stars = game.players[1].stars;
         game.apply({type, -1, -1, 1});
+        if (type == PEACETREATY) {
+            // an offer is read at the start of the receiver's turn (its
+            // first, so no income)
+            CHECK_FALSE(game.players[1].hasMet(0));
+            game.apply({ENDTURN});
+        }
         CHECK(game.players[1].hasMet(0));
-        // with the meeting stars
-        CHECK(game.players[1].stars == stars + Rules::meetingBonus(game.score(0)));
+        // with the meeting stars, two more for meeting the first player of two
+        CHECK(game.players[1].stars ==
+              stars + Rules::meetingBonus(game.score(0)) + Rules::MEETING_FIRST_PLAYER_BONUS);
         // and once only
         game.players[1].stars = stars;
         game.meet(1, 0);
@@ -273,4 +333,17 @@ TEST_CASE("an embassy or a peace offer reveals the sender to the other tribe") {
     game.players[0].met |= std::uint32_t{1} << 1;
     game.apply({ESTABLISHEMBASSY, -1, -1, 1});
     CHECK_FALSE(game.players[1].hasMet(0));
+}
+
+TEST_CASE("a unit heals inside an ally's borders as inside its own (game)") {
+    Game game = makeGame(bigMap());
+    clearUnits(game);
+    // (9, 8) is in player 1's borders
+    int w = addUnit(game, 0, WARRIOR, 9, 8);
+    REQUIRE(game.tileOwner(game.index(9, 8)) == 1);
+    CHECK(game.healAmount(game.units[w]) == Rules::HEAL_ELSEWHERE);
+    game.players[0].peace = game.players[1].peace = ~std::uint32_t{0};
+    CHECK(game.healAmount(game.units[w]) == Rules::HEAL_IN_TERRITORY);
+    game.settings.rulesVersion = RuleVersions::ALLIED_HEALING - 1;
+    CHECK(game.healAmount(game.units[w]) == Rules::HEAL_ELSEWHERE);
 }

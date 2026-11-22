@@ -46,7 +46,11 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
                 options.push_back(tech.type);
             }
         }
-        player.techs.set(options[randomInt(static_cast<int>(options.size()))]);
+        TechTypes::TechType tech =
+            forced.ruinTech >= 0 ? static_cast<TechTypes::TechType>(forced.ruinTech)
+                                 : options[randomInt(static_cast<int>(options.size()))];
+        forced.ruinTech = -1;
+        player.techs.set(tech);
         break;
     }
     case RUIN_STARS:
@@ -64,9 +68,14 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         int spot = unit.tile;
         bool water = onWater(tiles[spot]);
         pushUnit(unitIdx, unit.owner);
+        int home = unit.home;
+        if (settings.follows(RuleVersions::RUIN_UNIT_HOME_TILE)) {
+            int territory = tiles[spot].territory;
+            home = territory >= 0 && cities[territory].owner == unit.owner ? territory : -1;
+        }
         int idx = spawnUnit(unit.owner,
                             water ? Rules::RUIN_SEA_BOAT : Rules::RUIN_LAND_UNIT,
-                            spot, unit.home);
+                            spot, home);
         Unit &spawned = units[idx];
         // the Rammer carries a Warrior; either way the soldier is a veteran
         spawned.passenger =
@@ -74,7 +83,7 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         spawned.maxHp = unitInfo(spawned.passenger).maxHp + Rules::VETERAN_HP;
         spawned.hp = spawned.maxHp;
         spawned.veteran = true;
-        spawned.freeOfCap = true;
+        spawned.freeOfCap = !settings.follows(RuleVersions::RUIN_UNIT_COUNTS);
         break;
     }
     default:
@@ -84,10 +93,16 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
 
 void Game::examineRuins(int unitIdx) {
     std::vector<RuinReward> rewards = ruinRewards(unitIdx);
-    RuinReward reward = rewards[randomInt(static_cast<int>(rewards.size()))];
+    RuinReward reward = forced.ruinReward >= 0
+                            ? static_cast<RuinReward>(forced.ruinReward)
+                            : rewards[randomInt(static_cast<int>(rewards.size()))];
+    forced.ruinReward = -1;
     Unit &unit = units[unitIdx];
     tiles[unit.tile].building = ImprovementTypes::NONE;
     // before the reward: a pushed unit can be destroyed, freeing its slot
     unit.canMove = unit.canAttack = unit.canAct = false;
     giveRuinReward(unitIdx, reward);
+    if (settings.follows(RuleVersions::GAME_CONNECTIONS)) {
+        connectionsChanged();
+    }
 }

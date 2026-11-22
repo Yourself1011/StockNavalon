@@ -93,8 +93,8 @@ void LegalMoves::assemble(const Game &game) {
     if (game.gameOver()) {
         return;
     }
-    // a waiting level-up reward is the only legal choice
-    if (game.pendingRewardCity() >= 0) {
+    // a waiting level-up reward or peace offer is the only legal choice
+    if (game.pendingRewardCity() >= 0 || game.pendingPeaceOffer() >= 0) {
         list = game.legalCommands();
         return;
     }

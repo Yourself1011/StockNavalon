@@ -44,6 +44,7 @@ from .model import DTYPES, NEWER_HEADS, Network, load_weights, pick_device
 from .selfplay import PoolPlay, SelfPlay
 from .settings import add_search_arguments, search_config
 from .evaluate import gate_settled, gate_verdict, match
+from . import crazy
 from .fog import FogSchedule
 from .rating import run_ratings
 from .train import Trainer, heldout_losses, reanalyse
@@ -488,6 +489,17 @@ def parser() -> argparse.ArgumentParser:
                    help="once 90%% of a match's games are done the rest get 50 "
                         "more moves; past this many minutes they end at once "
                         "(scored by the lead)")
+    p.add_argument("--crazy-games", type=int, default=0,
+                   help="anchors also play this many games against the real game's "
+                        "Crazy bot (stocknavalon.crazy; needs the oracle built and "
+                        "the game set up, docs/oracle.md), checking the rules as they "
+                        "go; 0 for none")
+    p.add_argument("--crazy-parallel", type=int, default=4,
+                   help="games against Crazy at a time, an oracle each")
+    p.add_argument("--crazy-type", default="lakes", help="their map type")
+    p.add_argument("--crazy-size", type=int, default=11, help="their map size")
+    p.add_argument("--crazy-max-turns", type=int, default=60,
+                   help="their turn limit (the side ahead on score wins, undecided)")
     p.add_argument("--holdout-every", type=int, default=20,
                    help="one finished self-play game in this many is kept out "
                         "of training, for the held-out loss")
@@ -1423,7 +1435,34 @@ class EvaluationThread(threading.Thread):
             result = self._match(model, opponent, name, steps, self.args.eval_games)
             log(self.args.dir, {"event": "evaluation", "steps": steps,
                                 "against": name, **result})
+        if self.args.crazy_games > 0 and not self.stop.is_set():
+            self._run_crazy(model, steps)
         self._log_rating()
+
+    def _run_crazy(self, model, steps: int):
+        """The real game's Crazy bot, through the oracle: a rating against a
+        fixed outside opponent, and a rules check (each game stops at its
+        first difference from the real game, logged with the real state
+        saved in crazy/)."""
+        settings = crazy.Settings(type=self.args.crazy_type, size=self.args.crazy_size,
+                                  max_turns=self.args.crazy_max_turns,
+                                  save=os.path.join(self.args.dir, "crazy"))
+        if crazy.mirror is None or not os.path.exists(settings.oracle):
+            log(self.args.dir, {"event": "crazy skipped", "reason": f"no oracle at {settings.oracle}"})
+            return
+        try:
+            result = crazy.match(
+                model, self.device, search_config(self.args, simulations=self.args.eval_simulations),
+                self.args.crazy_games, settings, seed=steps, parallel=self.args.crazy_parallel,
+                network_beliefs=self.args.network_beliefs and self.fog_share() > 0,
+                gpu_lock=self.gpu_lock)
+        except Exception as e:  # the oracle's trouble shouldn't stop training
+            log(self.args.dir, {"event": "crazy failed", "steps": steps, "error": repr(e)})
+            return
+        differences = result.pop("differences")
+        log(self.args.dir, {"event": "evaluation", "steps": steps, "against": "crazy", **result})
+        for d in differences:
+            log(self.args.dir, {"event": "rules difference", "steps": steps, **d})
 
     def run(self):
         try:

@@ -20,6 +20,25 @@ bool Game::bridgeSpans(int tile) const {
     return (land(x, y - 1) && land(x, y + 1)) || (land(x - 1, y) && land(x + 1, y));
 }
 
+bool Game::bridgeSideStep(int player, int from, int to) const {
+    // only for a player whose techs don't open shallow water anyway
+    const Player &p = players[player];
+    if (!isBridge(to) || !settings.follows(RuleVersions::BRIDGE_SIDES) ||
+        p.hasTech(TechTypes::FISHING) || p.hasTech(TechTypes::SAILING)) {
+        return false;
+    }
+    int x = tileX(to), y = tileY(to);
+    auto land = [&](int nx, int ny) {
+        return inBounds(nx, ny) && !TerrainTypes::isWater(tiles[index(nx, ny)].terrain);
+    };
+    // the way it spans: north-south if it can, else east-west (game:
+    // GetPossibleBridgeDirection, any land an anchor)
+    bool northSouth = land(x, y - 1) && land(x, y + 1);
+    bool eastWest = !northSouth && land(x - 1, y) && land(x + 1, y);
+    int dx = x - tileX(from), dy = y - tileY(from);
+    return (eastWest && dx == 0) || (northSouth && dy == 0);
+}
+
 bool Game::canBuild(int player, int tile, ImprovementType type, bool checkStars) const {
     if (type < FARM || type >= IMPROVEMENT_TYPE_SIZE) {
         return false;
@@ -52,8 +71,12 @@ bool Game::canBuild(int player, int tile, ImprovementType type, bool checkStars)
     }
 
     if (type == ROAD) {
-        // a road can share its tile with a building, but not a map feature
-        if (t.road || isMapFeature(t.building)) {
+        // a road can share its tile with a building, a ruin or a lighthouse,
+        // but not a city or village
+        bool feature = settings.follows(RuleVersions::ROADS_ON_RUINS_AND_LIGHTHOUSES)
+                           ? t.building == CITY || t.building == VILLAGE
+                           : isMapFeature(t.building);
+        if (t.road || feature) {
             return false;
         }
     } else if (t.building != NONE || (t.road && TerrainTypes::isWater(t.terrain))) {
@@ -99,9 +122,15 @@ bool Game::canDestroy(int player, int tile) const {
     if (unit && hostile(player, unit->owner) && canSee(player, *unit)) {
         return false;
     }
-    // monuments can't be destroyed
-    return t.building == RUIN ||
-           (t.building >= FARM && t.building <= WATERTEMPLE);
+    if (isBridge(tile)) {
+        // not from under a unit (which the game does then isn't known)
+        return settings.follows(RuleVersions::DESTROY_BRIDGES) && !unit;
+    }
+    ImprovementType last = settings.follows(RuleVersions::DESTROY_MONUMENTS)
+                               ? TOWEROFWISDOM
+                               : WATERTEMPLE;
+    return (t.building == RUIN && !settings.follows(RuleVersions::NO_DESTROY_RUINS)) ||
+           (t.building >= FARM && t.building <= last);
 }
 
 void Game::refreshProducer(int tile) {
@@ -126,6 +155,19 @@ void Game::refreshProducersAround(int tile) {
             refreshProducer(n);
         }
     });
+}
+
+void Game::placeBuilding(int player, int tile, ImprovementType type) {
+    int current = currentPlayer;
+    currentPlayer = player;
+    players[player].stars += improvementInfo(type).cost;
+    build(tile, type);
+    currentPlayer = current;
+    if (connectionsDue) {
+        std::uint32_t due = connectionsDue;
+        connectionsDue = 0;
+        updateAllConnections(due);
+    }
 }
 
 void Game::build(int tile, ImprovementType type) {
@@ -158,7 +200,7 @@ void Game::build(int tile, ImprovementType type) {
     case BRIDGE:
         t.road = true;
         t.roadBuilder = currentPlayer;
-        updateAllConnections();
+        connectionsChanged();
         return;
     default:
         break;
@@ -169,22 +211,36 @@ void Game::build(int tile, ImprovementType type) {
         player.monumentsBuilt.set(TaskTypes::taskFor(type));
     }
     t.building = type;
-    t.resource = ResourceTypes::NONE;
+    if (!settings.follows(RuleVersions::BUILDINGS_KEEP_RESOURCES)) {
+        t.resource = ResourceTypes::NONE;
+    }
     t.level = 0;
     t.builtTurn = turn;
+    // the game connects a port before adding its population, and levels
+    // the producers around last
+    bool connectFirst = type == PORT && settings.follows(RuleVersions::POPULATION_STACK);
+    if (connectFirst) {
+        connectNow();
+    }
     if (isProducer(type)) {
         refreshProducer(tile);
     } else {
         addPopulation(t.territory, data.population);
     }
     refreshProducersAround(tile);
-    if (type == PORT) {
-        updateAllConnections();
+    if (type == PORT && !connectFirst) {
+        connectionsChanged();
     }
 }
 
 void Game::destroy(int tile) {
     Tile &t = tiles[tile];
+    if (isBridge(tile)) {
+        t.road = false;
+        t.roadBuilder = -1;
+        connectionsChanged();
+        return;
+    }
     ImprovementType type = t.building;
     const ImprovementData &data = improvementInfo(type);
     if (type != RUIN && t.territory >= 0) {
@@ -196,7 +252,8 @@ void Game::destroy(int tile) {
     t.building = NONE;
     t.level = 0;
     refreshProducersAround(tile);
-    if (type == PORT) {
-        updateAllConnections();
+    // the game recomputes connections after any destroy
+    if (type == PORT || settings.follows(RuleVersions::GAME_CONNECTIONS)) {
+        connectionsChanged();
     }
 }

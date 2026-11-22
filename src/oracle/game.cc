@@ -1,6 +1,8 @@
 #include "game.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -175,6 +177,87 @@ int start(const std::string &buildDir) {
     return gameVersion;
 }
 
+namespace {
+// an enum's value by name, ignoring case
+int enumOf(Class *klass, const std::string &name) {
+    void *iter = nullptr;
+    while (Field *f = class_get_fields(klass, &iter)) {
+        if ((field_get_flags(f) & 0x10) && lower(field_get_name(f)) == lower(name)) {
+            int v = 0;
+            field_static_get_value(f, &v);
+            return v;
+        }
+    }
+    throw std::runtime_error(std::string("no ") + class_get_name(klass) + " " + name);
+}
+} // namespace
+
+std::string runAction(Object *state, Object *manager, const std::string &name,
+                      const std::vector<std::string> &args) {
+    Class *klass = logicClass("", name);
+    int count = static_cast<int>(args.size());
+    const Method *ctor = findMethod(klass, ".ctor", count);
+    // each argument as its parameter's type wants it
+    std::vector<std::array<char, 16>> values(args.size());
+    std::vector<void *> pointers;
+    for (int i = 0; i < count; i++) {
+        const Type *type = method_get_param(ctor, i);
+        Class *param = class_from_type(type);
+        char *v = values[i].data();
+        std::string paramName = class_get_name(param);
+        if (class_is_enum(param)) {
+            *reinterpret_cast<int *>(v) = enumOf(param, args[i]);
+        } else if (paramName == "WorldCoordinates") {
+            int x = 0, y = 0;
+            if (std::sscanf(args[i].c_str(), "%d,%d", &x, &y) != 2) {
+                throw std::runtime_error("coordinates are x,y: " + args[i]);
+            }
+            reinterpret_cast<int *>(v)[0] = x;
+            reinterpret_cast<int *>(v)[1] = y;
+        } else if (paramName == "Byte") {
+            *reinterpret_cast<uint8_t *>(v) = static_cast<uint8_t>(std::stoi(args[i]));
+        } else if (paramName == "Boolean") {
+            *reinterpret_cast<bool *>(v) = args[i] == "1" || lower(args[i]) == "true";
+        } else if (paramName == "Int32" || paramName == "UInt32" || paramName == "Int16") {
+            *reinterpret_cast<int *>(v) = std::stoi(args[i]);
+        } else {
+            throw std::runtime_error("can't pass a " + paramName);
+        }
+        pointers.push_back(v);
+    }
+    Object *action = object_new(klass);
+    invoke(ctor, action, pointers.data());
+    // queued as a command's actions are, and run to the end
+    void *addArg[] = {action};
+    call(getField<Object *>(state, "<ActionStack>k__BackingField"), "Add", 1, addArg);
+    for (int i = 0; i < 1000; i++) {
+        call(manager, "ForceUpdate", 0, nullptr);
+        if (!*static_cast<bool *>(object_unbox(call(manager, "get_IsProcessing", 0, nullptr)))) {
+            break;
+        }
+    }
+    return "";
+}
+
+void setInt(Object *target, const std::string &field, int value) {
+    Field *f = class_get_field_from_name(object_get_class(target), field.c_str());
+    if (f == nullptr) {
+        throw std::runtime_error("no field " + field);
+    }
+    char *at = reinterpret_cast<char *>(target) + field_get_offset(f);
+    std::string type = class_get_name(class_from_type(field_get_type(f)));
+    Class *klass = class_from_type(field_get_type(f));
+    if (type == "Byte" || type == "Boolean") {
+        *reinterpret_cast<uint8_t *>(at) = static_cast<uint8_t>(value);
+    } else if (type == "UInt16" || type == "Int16") {
+        *reinterpret_cast<uint16_t *>(at) = static_cast<uint16_t>(value);
+    } else if (type == "Int32" || type == "UInt32" || class_is_enum(klass)) {
+        *reinterpret_cast<int *>(at) = value;
+    } else {
+        throw std::runtime_error("can't set a " + type);
+    }
+}
+
 int enumValue(const std::string &enumType, const std::string &name) {
     static std::map<std::string, std::map<std::string, int>> cache;
     auto [values, fresh] = cache.try_emplace(enumType);
@@ -259,14 +342,16 @@ Object *createLocalGame(const LocalGame &game) {
 
 namespace oracle {
 
-Object *startMatch(Object *state) {
+Object *startMatch(Object *state, bool keepHandicaps) {
     for (void *p : elements(getField<Object *>(state, "<PlayerStates>k__BackingField"))) {
         Object *player = static_cast<Object *>(p);
         if (getField<uint8_t>(player, "<Id>k__BackingField") == 255) {
             continue;  // nature
         }
         setField<bool>(player, "<AutoPlay>k__BackingField", false);
-        setField<int>(player, "handicap", 1);
+        if (!keepHandicaps) {
+            setField<int>(player, "handicap", 1);
+        }
     }
     void *stateArg[] = {state};
     Object *manager = constructWith(logicClass("", "ActionManager"), 1, stateArg);
@@ -278,6 +363,29 @@ Object *startMatch(Object *state) {
         throw std::runtime_error("StartMatchCommand: " + error);
     }
     return manager;
+}
+
+Object *aiMove(Object *state) {
+    uint8_t id = *static_cast<uint8_t *>(object_unbox(call(state, "get_CurrentPlayer", 0, nullptr)));
+    Object *player = nullptr;
+    void *find[] = {&id, &player};
+    call(state, "TryGetPlayer", 2, find);
+    if (player == nullptr) {
+        throw std::runtime_error("no current player");
+    }
+    // as the game plays a bot's turn (GameStateUtils.ExecuteCommands): a
+    // pending trigger's answer first (a city reward, a peace offer), else
+    // its best move
+    Object *trigger = nullptr;
+    void *triggerArgs[] = {state, &trigger};
+    if (*static_cast<bool *>(object_unbox(
+            callStatic(logicClass("", "CommandTriggerUtils"), "TryGetTriggerCommand", 2, triggerArgs))) &&
+        trigger != nullptr) {
+        return trigger;
+    }
+    int specific = 0;  // CommandType.None: whatever it likes best
+    void *args[] = {state, player, &specific};
+    return callStatic(logicClass("", "AI"), "GetMove", 3, args);
 }
 
 std::vector<Object *> legalCommands(Object *state) {
@@ -301,6 +409,12 @@ std::vector<Object *> legalCommands(Object *state) {
     bool no = false;
     for (void *t : elements(getField<Object *>(map, "tiles"))) {
         Object *tile = static_cast<Object *>(t);
+        // the client only acts on tiles the player has explored (the
+        // commands' own checks would allow a road in the fog)
+        void *explorer[] = {&id};
+        if (!*static_cast<bool *>(object_unbox(call(tile, "GetExplored", 1, explorer)))) {
+            continue;
+        }
         void *perTile[] = {state, player, tile, &no};
         add(callStatic(utils, "GetUnitActions", 4, perTile));
         add(callStatic(utils, "GetTrainableUnits", 4, perTile));
@@ -400,6 +514,10 @@ std::string execute(Object *actionManager, Object *command) {
     String *error = nullptr;
     void *args[] = {command, &error};
     bool ok = *static_cast<bool *>(object_unbox(call(actionManager, "ExecuteCommand", 2, args)));
+    // the actions a command queues may not all have run yet
+    for (int i = 0; i < 1000 && *static_cast<bool *>(object_unbox(call(actionManager, "get_IsProcessing", 0, nullptr))); i++) {
+        call(actionManager, "ForceUpdate", 0, nullptr);
+    }
     return ok ? "" : (error ? toString(error) : "rejected");
 }
 

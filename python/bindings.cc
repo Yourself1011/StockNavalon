@@ -227,6 +227,11 @@ void bindEnums(nb::module_ &m) {
         V(TechTypes, FORESTRY) V(TechTypes, MATHEMATICS) V(TechTypes, ARCHERY)
         V(TechTypes, SPIRITUALISM);
 
+    nb::enum_<Game::RuinReward>(m, "RuinReward", nb::is_arithmetic())
+        .value("TECH", Game::RUIN_TECH).value("STARS", Game::RUIN_STARS)
+        .value("POPULATION", Game::RUIN_POPULATION)
+        .value("EXPLORER", Game::RUIN_EXPLORER).value("UNIT", Game::RUIN_UNIT);
+
     nb::enum_<TribeTypes::Tribe>(m, "Tribe", nb::is_arithmetic())
         V(TribeTypes, XINXI) V(TribeTypes, IMPERIUS) V(TribeTypes, BARDUR)
         V(TribeTypes, OUMAJI) V(TribeTypes, KICKOO) V(TribeTypes, HOODRICK)
@@ -346,7 +351,8 @@ void bindState(nb::module_ &m) {
         .def_ro("hidden", &Unit::hidden)
         .def_ro("can_move", &Unit::canMove)
         .def_ro("can_attack", &Unit::canAttack)
-        .def_ro("can_act", &Unit::canAct);
+        .def_ro("can_act", &Unit::canAct)
+        .def_ro("facing", &Unit::facing, "The way it faces, as the game numbers directions: SW, W, NW, N, NE, E, SE, S (pushes go that way).");
 
     nb::class_<City>(m, "City", "A city, as the engine sees it.")
         .def_ro("tile", &City::tile)
@@ -374,7 +380,11 @@ void bindState(nb::module_ &m) {
                      [](const Player &p) { return setBits(p.tasksDone); })
         .def_prop_ro("monuments_built",
                      [](const Player &p) { return setBits(p.monumentsBuilt); })
-        .def("has_met", &Player::hasMet, "player"_a);
+        .def("has_met", &Player::hasMet, "player"_a)
+        .def("has_embassy_with", &Player::hasEmbassyWith, "player"_a,
+             "Whether the player has an embassy in that player's capital.")
+        .def("cooling_down_with", [](const Player &p, int other) { return (p.coolDown >> other & 1) != 0; },
+             "other"_a, "Whether peace with them was broken and the player can't attack them yet.");
 }
 
 void bindMaps(nb::module_ &m) {
@@ -433,12 +443,15 @@ void bindGame(nb::module_ &m) {
             "__init__",
             [](Game *g, const MapData &map,
                const std::vector<TribeTypes::Tribe> &tribes, std::uint64_t seed,
-               WinConditions::WinCondition winCondition) {
+               WinConditions::WinCondition winCondition, const std::vector<int> &capitalIncome) {
                 new (g) Game(map, tribes,
-                             {.winCondition = winCondition, .seed = seed});
+                             {.winCondition = winCondition, .seed = seed,
+                              .capitalIncome = capitalIncome});
             },
             "map"_a, "tribes"_a, "seed"_a = 0,
-            "win_condition"_a = WinConditions::MIGHT)
+            "win_condition"_a = WinConditions::MIGHT, "capital_income"_a = std::vector<int>{},
+            "capital_income: each seat's capital income bonus (the game's handicap: "
+            "1 for people, 4 for Crazy bots); empty for 1 each.")
         .def("copy", [](const Game &g) { return Game(g); },
              "An independent copy, for branching a search.")
         .def("__copy__", [](const Game &g) { return Game(g); })
@@ -479,6 +492,9 @@ void bindGame(nb::module_ &m) {
         .def_ro("score_history", &Game::scoreHistory,
                 "Every published score so far, oldest first.")
         .def("income", &Game::income, "player"_a)
+        .def("city_income", &Game::cityIncome, "city"_a, "What the city (an index into cities) earns a turn.")
+        .def("at_peace", &Game::atPeace, "a"_a, "b"_a)
+        .def("embassy_income", &Game::embassyIncome, "player"_a)
         .def("tech_cost", &Game::techCost, "player"_a, "tech"_a)
 
         .def("legal_commands", &Game::legalCommands,
@@ -490,7 +506,87 @@ void bindGame(nb::module_ &m) {
              "Applies a command taken from legal_commands(), without checking.")
         .def("describe", [](const Game &g, const Command &c) {
             return toString(g, c);
-        }, "command"_a, "The command in words, e.g. 'move (3,4) -> (4,5)'.");
+        }, "command"_a, "The command in words, e.g. 'move (3,4) -> (4,5)'.")
+        // random outcomes fixed by the caller, to follow a game played
+        // elsewhere (src/oracle/mirror.py)
+        .def("force_ruin", [](Game &g, Game::RuinReward reward, int tech) {
+            g.forced.ruinReward = reward;
+            g.forced.ruinTech = tech;
+        }, "reward"_a, "tech"_a = -1,
+           "The next ruin gives this reward (and, for a tech, this tech) instead of a random one.")
+        .def("force_explorer", [](Game &g, std::vector<int> tiles) {
+            g.forced.explored = std::move(tiles);
+        }, "tiles"_a, "The next Explorer reveals exactly these tiles instead of walking.")
+        .def("force_reveal", [](Game &g, int player, std::vector<int> tiles) {
+            for (int t : tiles) {
+                g.reveal(player, t);
+            }
+            // what the command that finished the walk would have checked
+            g.updateTasks();
+        }, "player"_a, "tiles"_a,
+           "Explores these tiles for the player, as the rest of an outcome fixed earlier (an Explorer the game finished later), and checks tasks again.")
+        // setting up a position (src/oracle/scenarios.py)
+        .def("set_stars", [](Game &g, int player, int stars) { g.players[player].stars = stars; },
+             "player"_a, "stars"_a)
+        .def("give_tech", [](Game &g, int player, TechTypes::TechType tech) {
+            g.players[player].techs.set(tech);
+        }, "player"_a, "tech"_a)
+        .def("spawn_unit", [](Game &g, int player, UnitTypes::UnitType type, int tile) {
+            int unit = g.spawnUnit(player, type, tile, -1);
+            Unit &u = g.units[unit];
+            u.canMove = u.canAttack = u.canAct = false;
+            return unit;
+        }, "player"_a, "type"_a, "tile"_a,
+           "A unit of no city, as if trained there: it can't act until a later turn.")
+        .def("set_unit", [](Game &g, int unit, UnitTypes::UnitType passenger, int hp) {
+            Unit &u = g.units[unit];
+            u.passenger = passenger;
+            u.maxHp = std::max(u.maxHp, unitInfo(passenger).maxHp);
+            u.hp = hp;
+        }, "unit"_a, "passenger"_a, "hp"_a, "Sets what a boat carries and the unit's HP (x10).")
+        .def("found_city", [](Game &g, int tile, int owner) {
+            int city = g.foundCity(tile, owner);
+            g.updateAllConnections();
+            return city;
+        }, "tile"_a, "owner"_a, "Makes the village there the player's city, as a capture does.")
+        .def("set_unit_ready", [](Game &g, int unit) {
+            Unit &u = g.units[unit];
+            u.canMove = u.canAttack = u.canAct = true;
+            u.attacked = false;
+        }, "unit"_a)
+        .def("set_met", [](Game &g, int player, int other, bool met) {
+            std::uint32_t bit = std::uint32_t{1} << other;
+            g.players[player].met = met ? g.players[player].met | bit : g.players[player].met & ~bit;
+        }, "player"_a, "other"_a, "met"_a)
+        .def("place_building", &Game::placeBuilding, "player"_a, "tile"_a, "type"_a,
+             "Builds as the player would, without paying.")
+        .def("add_population", [](Game &g, int tile, int amount) {
+            g.addPopulation(g.cityAt(tile), amount);
+        }, "city_tile"_a, "amount"_a)
+        .def("set_unit_hp", [](Game &g, int tile, int hp) { g.units[g.tiles[tile].unit].hp = hp; },
+             "tile"_a, "hp"_a)
+        .def("set_tile", [](Game &g, int tile, TerrainTypes::TerrainType terrain,
+                            ResourceTypes::ResourceType resource) {
+            g.tiles[tile].terrain = terrain;
+            g.tiles[tile].resource = resource;
+        }, "tile"_a, "terrain"_a, "resource"_a)
+        .def("add_embassy", [](Game &g, int builder, int host) {
+            g.players[builder].embassies |= std::uint32_t{1} << host;
+        }, "builder"_a, "host"_a)
+        .def("set_city_level", [](Game &g, int tile, int level) { g.cities[g.cityAt(tile)].level = level; },
+             "city_tile"_a, "level"_a)
+        .def("make_peace", [](Game &g, int a, int b) {
+            g.players[a].peace |= std::uint32_t{1} << b;
+            g.players[b].peace |= std::uint32_t{1} << a;
+            g.updateAllConnections();
+        }, "a"_a, "b"_a)
+        .def("force_converted_home", [](Game &g, int tile) {
+            g.forced.convertedHome = tile;
+        }, "tile"_a, "The next converted unit belongs to the city on this tile instead of a random one.")
+        .def("force_daggers", [](Game &g, std::vector<std::pair<int, int>> daggers) {
+            g.forced.daggers = std::move(daggers);
+        }, "daggers"_a,
+           "The next infiltration's Daggers, as (tile, facing) each, instead of their random order.");
 }
 
 void bindView(nb::module_ &m) {
@@ -1274,7 +1370,27 @@ void bindSearch(nb::module_ &m) {
         [](std::vector<std::string> args, const EncodingConfig &encoding,
            nb::callable evaluate, const SearchConfig &config, bool networkBeliefs,
            bool explain, const std::vector<std::optional<SearchConfig>> &seatSearch,
-           const std::vector<std::string> &seatPlans, int planTurns, double planWhenAhead) {
+           const std::vector<std::string> &seatPlans, int planTurns, double planWhenAhead,
+           nb::object start, nb::object beforeCommand, std::vector<int> outsideSeats,
+           nb::object outsideTurn) {
+            CliHooks hooks;
+            if (!start.is_none()) {
+                hooks.start = [start](Game &game) { game = nb::cast<Game>(start()); };
+            }
+            std::function<void(Game &, const Command &)> before;
+            if (!beforeCommand.is_none()) {
+                before = [beforeCommand](Game &game, const Command &command) {
+                    beforeCommand(nb::cast(&game, nb::rv_policy::reference), command);
+                };
+            }
+            hooks.beforeCommand = before;
+            hooks.outsideSeats = outsideSeats;
+            if (!outsideTurn.is_none()) {
+                hooks.outsideTurn = [outsideTurn](Game &game) {
+                    return BotResult{.commands = nb::cast<std::vector<Command>>(
+                                         outsideTurn(nb::cast(&game, nb::rv_policy::reference)))};
+                };
+            }
             std::vector<Plan> plans;
             for (const std::string &name : seatPlans) {
                 plans.push_back(planNamed(name));
@@ -1293,10 +1409,10 @@ void bindSearch(nb::module_ &m) {
             return runCli(static_cast<int>(argv.size()), argv.data(),
                           [config, seatSearch, evaluator, networkBeliefs, explain, plans,
                            planTurns, planWhenAhead, planStart,
-                           lastValue](std::uint64_t seed) -> BotTurn {
+                           lastValue, before](std::uint64_t seed) -> BotTurn {
                 auto rng = std::make_shared<std::mt19937_64>(seed);
                 return [config, seatSearch, evaluator, rng, networkBeliefs, explain, plans,
-                        planTurns, planWhenAhead, planStart, lastValue](Game &game) {
+                        planTurns, planWhenAhead, planStart, lastValue, before](Game &game) {
                     int player = game.currentPlayer;
                     // this seat's own search, if it has one
                     const SearchConfig &search =
@@ -1320,7 +1436,7 @@ void bindSearch(nb::module_ &m) {
                     BotResult result{.commands = playTurn(game, *evaluator, search, *rng,
                                                           networkBeliefs, &value,
                                                           explain ? &decisions : nullptr,
-                                                          plan, planUntil)};
+                                                          plan, planUntil, before)};
                     if (player < static_cast<int>(lastValue->size())) {
                         (*lastValue)[player] = value;
                     }
@@ -1354,13 +1470,15 @@ void bindSearch(nb::module_ &m) {
                     }
                     return result;
                 };
-            });
+            }, hooks);
         },
         "args"_a, "encoding"_a, "evaluate"_a, "search"_a, "network_beliefs"_a = true,
         "explain"_a = false,
         "seat_search"_a = std::vector<std::optional<SearchConfig>>{},
         "seat_plans"_a = std::vector<std::string>{}, "plan_turns"_a = 20,
-        "plan_when_ahead"_a = std::nan(""),
+        "plan_when_ahead"_a = std::nan(""), "start"_a = nb::none(),
+        "before_command"_a = nb::none(), "outside_seats"_a = std::vector<int>{},
+        "outside_turn"_a = nb::none(),
         "The engine's terminal game (README \"Run\"), with the seats given by "
         "--bot in `args` played by the search, its positions evaluated by "
         "evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, "
@@ -1373,7 +1491,11 @@ void bindSearch(nb::module_ &m) {
         "the start or (plan_when_ahead) once the seat's evaluation reaches it. With "
         "explain, each bot turn "
         "also lists its decisions: the command played and the search's "
-        "leading moves, with priors, visits and values. Returns the exit code.");
+        "leading moves, with priors, visits and values. For a game played alongside "
+        "another (stocknavalon.play --crazy): start() returns the starting Game; "
+        "before_command(game, command) is called before every command a person or "
+        "a bot plays; outside_seats are played by outside_turn(game), which plays the "
+        "turn on the game itself and returns its commands. Returns the exit code.");
     m.def(
         "search",
         [](const Game &game, const EncodingConfig &encoding, nb::callable evaluate,

@@ -55,6 +55,21 @@ void Game::reveal(int player, int tile) {
         return;
     }
     t.explored |= std::uint32_t{1} << player;
+    // the game recomputes connections after a command that explored a tile
+    if (settings.follows(RuleVersions::GAME_CONNECTIONS)) {
+        connectionsChanged(std::uint32_t{1} << player);
+    }
+    // exploring a tile with a tribe's city or a unit of theirs the player
+    // can see meets them (game: ExploreAction)
+    if (settings.follows(RuleVersions::MEET_ON_EXPLORE) && player == currentPlayer) {
+        if (t.unit >= 0 && canSee(player, units[t.unit])) {
+            meet(player, units[t.unit].owner);
+        }
+        int city = cities.empty() ? -1 : cityAt(tile);
+        if (city >= 0) {
+            meet(player, cities[city].owner);
+        }
+    }
 
     if (t.building == ImprovementTypes::LIGHTHOUSE) {
         Player &p = players[player];
@@ -86,6 +101,14 @@ void Game::revealTerritory(int city) {
 }
 
 void Game::runExplorer(int player, int start) {
+    if (forced.explored) {
+        std::vector<int> explored = std::move(*forced.explored);
+        forced.explored.reset();
+        for (int t : explored) {
+            reveal(player, t);
+        }
+        return;
+    }
     const Player &p = players[player];
     // the same terrain units can move on: Climbing for mountains, Fishing for
     // shallow water, Sailing for ocean

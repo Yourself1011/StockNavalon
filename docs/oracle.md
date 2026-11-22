@@ -43,9 +43,12 @@ One request a line on stdin, one JSON answer a line on stdout. The first line ou
 | `mapsettings <id>` | the `MapGeneratorSettings` its map was made with (wetness, richness, city densities, ...) |
 | `fairness <id>` | `{"inequality": x}`: the map generator's own fairness score for the game (`MapFairnessCalculations.GetInequality`), the best player's territory score over the worst's |
 | `turfs <id>` | the territories that score comes from (`CreateTurfs`): per player, every tile it claims with its cost from the capital |
-| `start <id>` | `{}`: every seat made a person (no AI plays, the human handicap) and the match started with a `StartMatchCommand`, as the app does |
+| `start <id> [keep]` | `{}`: every seat made a person (no AI plays by itself, the human handicap; with `keep` the AI seats keep their difficulty's handicap) and the match started with a `StartMatchCommand`, as the app does |
+| `ai <id>` | `{"command": ..., "index": k}`: the command the game's AI would play next for the current player, as the game plays a bot's turn (a pending reward's or peace offer's answer, `CommandTriggerUtils.TryGetTriggerCommand`, else `AI.GetMove` at the game's difficulty), not yet played; `index` is its place in the last `legal` list, or −1 (a `StayCommand`, which the client never offers) |
 | `legal <id>` | the current player's legal commands as a list of command objects (`MoveCommand`, `BuildCommand`, ...), numbered by position |
-| `apply <id> <k>` | `{}`, or `{"rejected": error}`: the k-th command of the last `legal` list, executed by the game's `ActionManager` |
+| `act <id> <ActionClass> <args>` | `{}`: one of the game's own actions (`BuildAction`, `TrainAction`, `IncreasePopulationAction`, ...) made by its constructor with that many arguments (enum values by name, coordinates as `x,y`, numbers, 1 or 0) and run to the end; for setting up scenarios |
+| `set <id> <what> ... <field> <value>` | `{}`: an integer, enum or bool field set directly: `game`, `player <playerId>`, `tile <x> <y>`, `unit <x> <y>`, `improvement <x> <y>` |
+| `apply <id> <k>` | `{}`, or `{"rejected": error}`: the k-th command of the last `legal` list (or with `ai`, the AI's last command), executed by the game's `ActionManager`, which is then run (`ForceUpdate`) until the actions the command queued are all done |
 | `free <id>` | `{}`, and the game is gone |
 
 ```bash
@@ -74,14 +77,40 @@ Ours is the build tree's module (`build/release/python`, or `POLYENGINE_BUILD_PA
 
 `start`, then `legal` and `apply` in turn. The legal list is built the way the client offers commands (`legalCommands` in `game.cc`), each kept only if its own `IsValid` accepts it:
 
-- per tile, `CommandUtils`: unit actions (capture, recover, heal, promote, upgrade, disband, examine ruins, ...), buildable improvements, improvement abilities, trainable units;
+- per tile the player has explored (the client acts on no others; the commands' own checks would allow, say, a road in the fog), `CommandUtils`: unit actions (capture, recover, heal, promote, upgrade, disband, examine ruins, ...), buildable improvements, improvement abilities, trainable units;
 - per unit of the player, `UnitDataExtensions`: a `MoveCommand` per movement option and an `AttackCommand` per attack option;
 - a `ResearchCommand` per tech of the player's tribe;
 - `CommandUtils.GetDiplomacyCommandsForOpponent` per other player;
 - a pending trigger's answers: a `CityRewardCommand` per reward when a city levelled up, a `PeaceRequestResponseCommand` (accept or decline) for a peace offer; while one is pending, nothing else is valid;
 - an `EndTurnCommand`.
 
+Nature (player 255) has a turn of its own after every player's, where its only command is ending it; income and other turn-start effects come after it.
+
+### Mirroring a game in polyengine
+
+```sh
+.venv/bin/python src/oracle/mirror.py --type lakes --size 11 --games 10 --history 5 --save /tmp/diffs
+```
+
+`mirror.py` plays the same game on both engines: polyengine starts from the real map, each step compares the real legal list (translated) with ours, plays a random one of them on both (ending nature's turns on the real side only), and compares the states: tiles, units, each player's stars, score, techs, explored tiles, the tribes it has met, its Pacifist count, its cooldowns after a broken peace and the embassies in its capital; units' facing too. Each game stops at its first difference, printed with the commands before it (`--history`); `--save` keeps the real state and legal list there (the real map isn't seeded, so a game can't be replayed). Names are translated where the two differ (`UNITS`, `IMPROVEMENTS`, `TECHS`). Random outcomes (a ruin's reward, an explorer's tiles, a converted unit's home) are read off the real game after it applies the command, and forced on ours (`Game.force_ruin`, `force_explorer`, `force_converted_home`). Differences only of timing are left out: the real game scores a city's new level, and counts the population past it, once its reward is picked; while a reward is pending it holds back the rest of the command (a reveal, an Explorer's walk: ours gets the Explorer's remaining tiles afterwards with `force_reveal`); it starts a turn (income, temple levels) once a peace offer waiting at the turn's start is answered; it marks Pacifist done a little after its count reaches 5. Findings are in [`notes/integration.md`](../notes/integration.md) section 4.
+
 Random play runs about 300–500 commands a second (a `legal` and an `apply` each). Garbage collection is paused during each request, since objects a request builds are held in the oracle's own memory, which the collector doesn't scan; between requests everything kept is held by GC handles.
+
+### Playing against the game's AI
+
+```sh
+cd python && ../.venv/bin/python -m stocknavalon.crazy ../runs/ninth --games 20 --size 11
+```
+
+`stocknavalon.crazy` plays a network against the game's own Crazy bot: `mirror.play` with `ai_seats` (the seats `ai` plays, with Crazy's handicap moved onto them, so the network can take either seat) and `pick` (the network's move, `pe.search` on our mirrored game, matched to the real legal list). Each step is compared as in a mirrored game, so these games check the rules too; a game stops at its first difference, which is reported and counts for neither side. A game still going at `--max-turns` goes to the side ahead on score. The AI plays whole turns in about a second; a game of 30–40 turns takes under a minute at 50 simulations. Training runs can play these as an anchor (`--crazy-games`, docs/stockNavalon.md), and `stocknavalon.play --crazy SEAT` puts Crazy in a seat of the terminal game, against a person or the network. Both go through `mirror.Lockstep`, the real game and ours kept in step (what `mirror.play` runs on too): the terminal game takes a starting game, a hook before every command (the real game plays it first, and its random outcome is fixed on ours) and seats played from outside (`run_cli`'s `start`, `before_command`, `outside_seats`, `outside_turn`). The AI's own memory (`AIState`, `OpinionManager`) is left out of the state's JSON.
+
+### Scenarios
+
+```sh
+.venv/bin/python src/oracle/scenarios.py all --games 15 --steps 300
+```
+
+`scenarios.py` runs mirrored games set up to exercise one rule: `starvation` (cities on negative population), `embassies` (embassies each way, peace, attacks), `pushes` (a super unit on an occupied capital with ports beside it), `fights` (units of both sides side by side), `stomps` (a Giant beside its own port, among units of both sides), `boats` (ports, sea techs, stars), `ports` (ports joining several cities, level-ups in between), `connections` (roads, bridges, ports, captures) `kills` (enemies on 1 HP beside a melee boat and land units: moving in, landing, Persist) and `portkills` (enemies on 1 HP on a port of each side, a Warrior beside each). Run them one scenario at a time with their own `--save` folder, since saved states are named by seed. After a first round, each changes the start the same way on both engines, the real one through its own actions and fields (`act`, `set`, which also make it the edited player's turn, since the game only runs the current player's actions), ours through `Game`'s set-up calls (`set_stars`, `give_tech`, `spawn_unit`, `place_building`, `add_population`, `add_embassy`, `make_peace`, ...); then it brings the edits' side effects into line (`Both.settle`: stars, meetings, exploration, score) and plays with a chooser that favours the rule's commands, comparing as `mirror.py` does.
 
 ## How it works
 

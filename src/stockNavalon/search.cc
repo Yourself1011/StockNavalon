@@ -1225,7 +1225,14 @@ void explainDecision(const Game &game, const SearchResult &result, const Command
 std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                               const SearchConfig &config, std::mt19937_64 &rng,
                               bool networkBeliefs, float *lastValue,
-                              std::string *explain, Plan plan, int planTurns) {
+                              std::string *explain, Plan plan, int planTurns,
+                              const std::function<void(Game &, const Command &)> &beforeApply) {
+    auto apply = [&](const Command &command) {
+        if (beforeApply) {
+            beforeApply(game, command);
+        }
+        game.apply(command);
+    };
     if (lastValue) {
         *lastValue = std::nanf("");
     }
@@ -1263,7 +1270,7 @@ std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
                 if (explain) {
                     *explain += toString(game, allowed[0]) + "  (the plan's only choice)\n";
                 }
-                game.apply(allowed[0]);
+                apply(allowed[0]);
                 played.push_back(allowed[0]);
                 continue;
             }
@@ -1294,11 +1301,11 @@ std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
         if (explain) {
             explainDecision(game, result, command, visits > 0 ? total / visits : 0, *explain);
         }
-        game.apply(command);
+        apply(command);
         played.push_back(command);
     }
     if (!game.gameOver() && game.currentPlayer == me) {
-        game.apply({CommandTypes::ENDTURN});
+        apply({CommandTypes::ENDTURN});
         played.push_back({CommandTypes::ENDTURN});
     }
     return played;

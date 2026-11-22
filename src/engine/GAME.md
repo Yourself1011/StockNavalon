@@ -33,14 +33,14 @@ Polytopia is a turn-based strategy game played on a square grid. Players gain st
     2. Every unit the player owns can act again: move, attack and use abilities.
     3. Temples gain levels on their own schedule (section 6).
 
-    This order is correct (game).
+    This order is correct (game). If a city reward or a peace offer is waiting at that point, the turn's start waits until it's answered: after a reward, the income is what it is with the reward (a Workshop included); after a peace offer, what it was before the answer, the peace not yet counting (an embassy at war still pays nothing) (game).
 
 - **During the turn:** any number of actions in any order, as long as the player can afford them.
 - **End turn:** the player ends their turn explicitly. Every unit that could still use an ability heals automatically, as if it had used Recover (section 12) (game).
 - **Capturing and examining ruins:** a unit can only capture a village or city, or examine a ruin, if it _started_ its turn on that tile. So each takes at least 2 turns.
 - **Actions that end a unit's turn** (bengreff): embarking, disembarking, capturing, examining a ruin, Recover, Heal Others.
 - **Units without their tech:** units can come from ruins, city rewards, the starting unit or conversion without the player owning their tech. They work normally (bengreff).
-- **Meeting a tribe** means seeing one of its units or one of its cities; a tile inside its borders alone doesn't count (game). Sending a tribe a peace offer or building an embassy in its capital also reveals you to them: they meet you then (game). The first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (wiki). This is why the engine has to track score (section 3).
+- **Meeting a tribe** means seeing one of its units or one of its cities; a tile inside its borders alone doesn't count (game). Only the player whose turn it is meets tribes: at the start of its turn, every tribe it can see on tiles it has explored, and during the turn, only as it explores a new tile showing one of its units or cities (game: StartTurnAction, ExploreAction). So a tribe that walks into your view is met by you at the start of your next turn, not when it arrives, and attacking a unit already in view doesn't meet its tribe. Building an embassy in a tribe's capital reveals you to them at once; a peace offer reveals you at the start of their next turn (game). The first time you meet another tribe you get `1 + 2 × ceil(their score / 1000)` stars, at most 11 (game: MeetAction). In a two-player game, meeting the player who moves first is worth 2 more, the second player's compensation (game). This is why the engine has to track score (section 3).
 
 Sources: <https://polytopia.fandom.com/wiki/Game_Modes>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md> (rules doc only)
 
@@ -53,7 +53,7 @@ The real game has one command per kind of action. The engine should use the same
 | Units            | Move, Attack (includes Mind Bender conversion and Infiltrate), Recover, Heal Others, Promote, Disband, Stay, Disembark, Upgrade (boat) |
 | Tiles and cities | Build (every improvement, including road, bridge, port and the forest actions), Destroy, Harvest (starfish), Capture, Examine Ruins    |
 | Economy          | Train, Research, City Reward (choose a level-up reward)                                                                                |
-| Diplomacy        | Peace Treaty (propose), Peace Request Response, Break Peace, Establish Embassy, Destroy Embassy                                        |
+| Diplomacy        | Peace Treaty (propose), Peace Request Response, Break Peace, Establish Embassy (Destroy Embassy is in the command set, but nothing in the game issues it: not an action) |
 | Turn and game    | End Turn, Resign                                                                                                                       |
 
 - Each command is identified by its type, a source tile, a target tile and one argument (unit type, improvement type, tech, city reward or opponent).
@@ -65,15 +65,15 @@ The real game has one command per kind of action. The engine should use the same
   - 7 for Xin-xi, Hoodrick, Quetzali and Yădakk
   - 6 for Oumaji
   - 2 for Luxidoor
-- **Income** is added at the start of each of the player's turns. It is the sum of:
+- **Income** is added at the start of each of the player's turns, tile by tile (game: `StartTurnAction`, `TileDataExtensions.CalculateWork`). It is the sum of:
   - each city's level in stars
-  - +1 for the capital, so a level-1 capital makes 2 (bengreff, from the code). The bonus is a per-player "handicap": humans and Normal bots get 1, Easy 0, Hard 2, Crazy 4. The engine uses 1 for every player unless a game sets it per player (`GameSettings::capitalIncome`, used for training handicap games).
+  - +1 for the original capital while its owner holds it, so a level-1 capital makes 2 (bengreff, from the code; game). The bonus is a per-player "handicap": humans and Normal bots get 1, Easy 0, Hard 2, Crazy 4. The engine uses 1 for every player unless a game sets it per player (`GameSettings::capitalIncome`, used for training handicap games).
   - +1 per Workshop and +1 per Park (section 7)
-  - Market income (section 6)
-  - embassy income (section 15)
+  - Market income (section 6), paid on the market's own tile: a starving or besieged city doesn't lower it (game)
+  - embassy income (section 15): the embassies others have in the player's land are paid with the original capital, inside its clamp below; the player's own embassies each pay while their host holds its own capital with no one else's unit on it (game)
 - There is no other base income.
-- A city with an enemy unit standing on it (under siege) produces no stars.
-- **Negative population:** each point of negative population lowers that city's income by 1, never below 0. It doesn't change how many units the city supports (wiki).
+- A city with any other player's unit standing on it (under siege, a peace partner's unit too) produces no stars (game).
+- **Negative population:** each point of negative population lowers that city's income by 1, never below 0. It doesn't change how many units the city supports (wiki; game: `max(0, w + min(xp, 0))`).
 - **One-time stars:**
   - Clear Forest: +1
   - Disband: half the unit's cost, rounded down
@@ -90,7 +90,7 @@ Score only decides the star bonus for meeting a tribe (section 2), but that bonu
 
 - **Units:** 5 points per star of the unit's cost. A super unit (Giant) is worth 50.
   - Boat upgrades add nothing.
-  - Converting a unit changes neither player's score.
+  - Converting a unit moves its score to the converting player (game).
 - **Territory:** 20 per tile inside the player's borders.
 - **Exploration:** 5 per explored tile.
 - **Cities:** a level-1 city is worth 100.
@@ -101,7 +101,7 @@ Score only decides the star bonus for meeting a tribe (section 2), but that bonu
 - **Monuments:** 400 each.
 - **Temples:** 100 at level 1, +100 per level above it, up to 500 at level 5.
 - **Techs:** 100 per tier of each tech owned (the basic tech is tier 0).
-- **Losing points:** score goes down when the player loses a city, a building or a unit (killed or disbanded).
+- **Losing points:** score goes down when the player loses a city, a building or a unit (killed, disbanded or converted).
 - **Check: starting scores on turn 0.** These are a good engine test:
 
     | Score | Tribes                                     |
@@ -176,16 +176,16 @@ You can only build on tiles inside your own borders, unless a row says otherwise
 | Sawmill          | 5    | +1 per adjacent Lumber Hut | Field, next to at least one Lumber Hut. Max level 8. One per city.                                                                                                  |
 | Forge            | 5    | +2 per adjacent Mine       | Field or forest, next to at least one Mine. Max level 8. One per city.                                                                                              |
 | Market           | 5    | 0                          | Field, next to at least one Windmill, Sawmill or Forge. Each turn, gives +1 star per level of each adjacent Windmill, Sawmill and Forge. Max level 8. One per city. |
-| Port             | 7    | +1                         | Shallow water only. Lets units embark (section 10). Connects cities over water (section 7). You can't use a Port in enemy territory.                                |
-| Road             | 3    | –                          | Field or forest, on a free or own tile. Not on mountains. Can be built outside your borders.                                                                        |
-| Bridge           | 5    | –                          | One shallow-water tile with land on opposite sides, north and south or east and west, so it spans water rather than leading into it (game); acts as a road                                                                                                                              |
+| Port             | 7    | +1                         | Shallow water only. Lets units embark, its owner's or a peace partner's, if their tribe has Fishing (the Port's tech) (section 10) (game). Connects cities over water (section 7). You can't use a Port in enemy territory.                                |
+| Road             | 3    | –                          | Field or forest, on a free or own tile. Not on mountains. Can be built outside your borders, and on a ruin or lighthouse but not a village (game).                                                                        |
+| Bridge           | 5    | –                          | One shallow-water tile with land on opposite sides, north and south or east and west, so it spans water rather than leading into it (game); acts as a road; without Fishing or Sailing, can't be entered straight from its side, only along it or diagonally; it spans north-south if land is on both those sides, else east-west (game)                                                                                                                              |
 | Temple           | 20   | +1                         | Field                                                                                                                                                               |
 | Forest Temple    | 15   | +1                         | Forest                                                                                                                                                              |
 | Mountain Temple  | 20   | +1                         | Mountain                                                                                                                                                            |
 | Water Temple     | 20   | +1                         | Shallow water or ocean                                                                                                                                              |
 | Monument         | 0    | +3                         | Unlocked by completing its task (section 14). One of each per game.                                                                                                 |
-| Destroy          | 0    | –                          | Removes a building or ruin from your own tile; you lose what it gave                                                                                                |
-| Disband          | –    | –                          | Removes your unit and refunds half its cost, rounded down                                                                                                           |
+| Destroy          | 0    | –                          | Removes a building (monuments too, game) from your own tile, not a ruin (game); you lose what it gave                                                                                                |
+| Disband          | –    | –                          | Removes your unit and refunds half its cost, rounded down; only a unit that hasn't moved or attacked this turn                                                      |
 
 - **Adjacency buildings** (bengreff):
   - A Windmill, Forge or Sawmill needs at least one adjacent Farm, Mine or Lumber Hut respectively.
@@ -193,10 +193,10 @@ You can only build on tiles inside your own borders, unless a row says otherwise
   - These buildings level up as matching neighbours are built later. Each new level adds population straight away, which can level the city up in the middle of a turn.
 - **"One per city"** is the data file's `limited` flag on Windmill, Sawmill, Forge and Market. We read it as one per city.
 - **Max level 8:** Windmill, Sawmill, Forge and Market are capped at level 8, so Market income is capped too.
-- **Temples:** a temple starts at level 1, worth 100 points. It gains a level every 2 turns, up to level 5, for +100 points each time. Points only matter for score, so in Domination a temple is just +1 population.
+- **Temples:** a temple starts at level 1, worth 100 points. It gains a level every 2 turns, up to level 5, for +100 points each time. The turns are its owner's: it levels at the start of its owner's turn, every 2 turns after it was built (game, measured). Points only matter for score, so in Domination a temple is just +1 population.
 - **Can be built outside your borders:** Road, Bridge and Starfish Harvest (the data file's `freelance` flag).
 - **Harvests remove the resource:** Fruit, Hunting, Fishing, Starfish, Clear Forest and Burn Forest consume it (`consumed` flag).
-- **Done by a unit:** Starfish Harvest needs a unit standing on the tile (`manual` flag).
+- **Done by a unit:** Starfish Harvest needs a unit standing on the tile that hasn't moved or attacked this turn (`manual` flag; game), and ends that unit's turn (game).
 - **An enemy unit blocks the tile:** while an enemy unit stands on a tile, nothing can be built, harvested or destroyed there, even inside your own borders, until it's killed or moves off (game).
 - **Removed:** Customs House and Whale Hunting no longer exist.
 
@@ -207,15 +207,18 @@ Sources: <https://polytopia.fandom.com/wiki/Buildings>, <https://polytopia.fando
 ### Villages and capture
 
 - A village is a neutral settlement.
-- A unit that starts its turn on a village or an enemy city can capture it. Capturing ends that unit's turn.
+- A unit that hasn't moved or attacked this turn, on a village or an enemy city, can capture it (game: `CanCapture`). Not a peace partner's city, nor the city of a player either side is cooling down from (section 15). Capturing ends that unit's turn.
 - A captured village becomes a level-1 city. A captured enemy city keeps its level.
 - The capturing unit is then supported by the captured city.
 - A captured capital loses its capital connections and the population those gave (section "Connections").
+- A capture explores every tile within the city's border radius, its territory or not (game).
+- Producers (Windmill, Forge, Sawmill) count only neighbours of their own owner, so a capture can lower the level of the old owner's producers next to the city's land, and the population they gave (game).
 
 ### Population and levels
 
 - Going from level n−1 to level n needs n population (bengreff, measured). Leftover population carries over.
 - A city never loses a level, but its population can go negative.
+- **Order** (game: the `ActionStack`, last in first out): population comes a point at a time, in the order the game's actions run. A level-up waits for its reward, and holds back everything after it in the command until the reward is chosen: more population, the rest of an Explorer's walk. The reward's own effects come first, then what was held back. So of a building's points, the ones after a level-up land after the reward. Building a port first updates connections, then adds its own population.
 
 ### Level-up rewards
 
@@ -235,16 +238,18 @@ The owner chooses one reward each time the city levels up:
 
 ### Connections
 
-- A city is connected if a path of roads, bridges and ports runs from it to the capital, or to a city that is already connected. No tech is needed for the connection itself.
-- When a city becomes connected, it and the capital each get +1 population.
-- **Roads used:** your own, plus roads in neutral or allied (peace treaty) territory. Never roads in enemy territory.
-- **Fog:** no connection forms through road or water tiles you haven't explored.
-- **Over water:**
-  - A Port links to another Port, or to a city, at most 5 tiles away, i.e. with at most 4 water tiles between them (game). This matches the data file's range of 5.
-  - The water route can only cross your own, neutral or allied territory with no fog.
-  - Crossing ocean tiles needs Navigation.
-  - So with a Port next to the capital, cities can be connected without roads.
-- **Shared neutral roads:** a neutral road touching several players' cities can only be used for new connections by the player first in seat order. Connections that already exist aren't affected, and this doesn't apply over water.
+- A city is connected if a path runs from it to the player's original capital, while the player still holds it, over tiles that are each a road, bridge, city, village or port, anyone's (game: `FindConnectedCities`, `HasMatchingTransportPath`). Without the original capital nothing is connected. No tech is needed for the connection itself.
+- When a city becomes connected, it and the capital each get +1 population: the city first, then the capital. Cities are taken last tile first (the game stacks them in tile order).
+- **Borders:** a step from one player's land into another player's needs those two at peace; steps into or out of unclaimed land always work (game). So roads in enemy territory can't be reached from your own land, but can from neutral land.
+- **Fog** doesn't matter (game).
+- **When:** the game recomputes connections at the end of a command that built a road, bridge or port, destroyed anything, examined a ruin, grew borders, answered a peace offer, captured a city, or explored any tile; not otherwise, so breaking peace leaves connections over the former ally's roads until the next recompute (game).
+- **Whose:** only the acting player's connections, except after a peace answer (both players), border growth (everyone) and a capture (the old owner's first, then the capturer's). An enemy's road doesn't connect your cities until you do something that recomputes yours (game: `UpdateCityConnectionsAction`'s players).
+- **Over water** (game: `UpdateRoutes`, `FindPathBetweenRouters`):
+  - A player's routers are its ports and bridges, in tile order. Each pair is joined by a water route if it's within the first one's range (a port 5, a bridge 1) and the game's path finder finds a path. The path goes over terrain both routers open and the player's techs allow: shallow water with Fishing or Sailing, and ocean with Sailing only between two ports. It may cross city tiles too, through tiles the player has explored that are unclaimed, its own or a peace partner's. From land (a city) it can only step onto a port or a bridge, as a unit embarks. The route can cost at most 10 × range: a step costs 10, or 5 onto a road, city or tile already on a route.
+  - Every tile of a route is marked, the ports too, for everyone: the connection search steps between two marked tiles as between two roads. Routes are redone, player by player in seat order, each time connections are.
+  - A port alone doesn't reach a city across the water: it takes a port at each end.
+  - So with a Port next to the capital and one next to the city, cities can be connected without roads.
+- **Shared neutral roads** (bengreff; not in the game's code, so only under rules before `GAME_CONNECTIONS`): a neutral road touching several players' cities can only be used for new connections by the player first in seat order.
 - **Breaking connections:**
   - Capturing a connected city breaks every connection that used roads in its territory.
   - Ending a peace treaty breaks connections that used the former ally's roads.
@@ -257,7 +262,7 @@ The owner chooses one reward each time the city levels up:
 - Independent units don't count toward any city's cap.
 - **Which city a unit belongs to** (wiki):
   - A unit that captures a village or city moves over to that city.
-  - A unit from a ruin belongs to the exploring unit's city, but doesn't count toward its cap.
+  - A unit from a ruin belongs to the city whose land the ruin is on, and counts toward its cap; on unclaimed land it belongs to no city (game: `GetHomeCoordinateForTrainedUnit`; bengreff had it belonging to the exploring unit's city, not counting).
   - A converted unit counts toward the converting player's capital (or a random city if they have no capital), even past the cap. While over the cap, the city can't train units.
   - When a city is captured, the units it trained lose their home city. They don't count again if the city is retaken.
 
@@ -269,10 +274,10 @@ The owner chooses one reward each time the city levels up:
 
 When a Giant spawns on a city tile that already has a unit on it, that unit is pushed off. A ruin's reward unit pushes the examining unit off its ruin the same way (game):
 
-- A new unit is pushed toward the centre of the map.
-- A friendly unit is pushed onward in the direction it was moving.
-- An enemy unit is pushed backward.
-- If the target tile is blocked, try the next neighbouring tiles counter-clockwise, then clockwise.
+- Every unit faces a way: toward the map's centre (the nearest of the 8 directions) when it appears, then the way its last step went, or at the unit it last attacked or was attacked by (game).
+- A friendly unit is pushed the way it faces; an enemy unit the opposite way.
+- If that tile is taken, it tries turning one direction further each way, first toward the lower of the game's directions (SW, W, NW, N, NE, E, SE, S, with N as +y), then two, three and four (game: `TryPushUnit`).
+- A land unit can be pushed onto a port it could embark at (its own or an ally's, with Fishing), and becomes a boat there (a Giant a Juggernaut, which stomps as it arrives, game); embarking ends its turn, as always (game). Otherwise a pushed unit keeps whatever it had left of its turn (game).
 - Only the 8 neighbouring tiles count. If none is free, the pushed unit is destroyed: the "houdini" (game).
 - Pushing an enemy off a city this way lifts the siege (bengreff).
 
@@ -318,7 +323,7 @@ Sources: <https://polytopia.fandom.com/wiki/City>, <https://polytopia.fandom.com
 - **Unlisted costs:** Dagger costs 2 and Giant 10 in the data file, but neither can be trained. Score uses these costs: a Giant is worth 50, which matches 10 × 5 (section 3). Disband refunds use them too.
 - **Naval units:**
   - A naval unit has the HP and max HP of the land unit it carries.
-  - A Raft can only be upgraded inside your own borders. Upgrading does not use the Raft's turn (game).
+  - A Raft can only be upgraded inside your own borders or a peace partner's (game). Upgrading does not use the Raft's turn (game). A Raft that moved but hasn't attacked, upgraded to a Dash boat (Scout, Rammer), can still attack; one that embarked this turn can't (game).
   - A Raft that is already upgraded cannot be changed to another boat type (game).
   - Disembarking loses the boat upgrade: the passenger comes back as itself (bengreff). It keeps its HP and veteran status (game).
 - **Population:** every unit except Independent ones belongs to a city and counts toward that city's cap. A trained unit belongs to the city that trained it.
@@ -331,7 +336,7 @@ Sources: <https://polytopia.fandom.com/wiki/List_of_Units>, each unit's page, <h
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Dash        | Can attack after moving in the same turn                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Escape      | Can move after attacking. It can't attack again that turn, even with Dash (wiki).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Persist     | Can attack again immediately after a kill, with no limit on repeats                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Persist     | Can attack again immediately after a kill if another target is in range, with no limit on repeats                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Fortify     | Defence ×1.5 in your own city, ×4 if that city has a City Wall. Only Fortify units get any city bonus.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Heal        | "Heal Others" action: up to +4 HP to every adjacent friendly unit. Uses the unit's turn (game).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Convert     | Its attack converts the target to the attacker's side instead of damaging it. The converted unit counts toward your capital's cap (or a random city if you have no capital), unless it's Independent.                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -341,12 +346,12 @@ Sources: <https://polytopia.fandom.com/wiki/List_of_Units>, each unit's page, <h
 | Static      | Can never become a veteran                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Independent | Uses no population and belongs to no city                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Hide        | The unit becomes invisible to enemies when it moves; there is no Hide action (game). The move that hides a visible unit ends its attack for the turn, even with Dash (game). It ignores zone of control and can move through enemy units and enemy cities, but can't end a move on an enemy city (game). It stays hidden on an unclaimed village; capturing the village reveals it until it next moves (game). An enemy unit moving onto its exact tile reveals it, and that enemy keeps its move (game). Enemy units next to it see a warning (an eye symbol) but not the unit itself (game). |
-| Creep       | Ignores terrain movement penalties except mountains. Does **not** ignore zone of control (wiki).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Creep       | Ignores terrain movement penalties except mountains. Does **not** ignore zone of control (wiki). Gets nothing from roads: every step costs it a full point (game).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Scout       | Sees 2 tiles instead of 1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Infiltrate  | Only targets adjacent enemy cities, never unclaimed villages (game). The unit is used up and spawns as many Daggers as the city's level (max 5) inside that city's borders. Pirates spawn on water tiles.                                                                                                                                                                                                                                                                                                                                                                                      |
+| Infiltrate  | Only targets adjacent enemy cities, never unclaimed villages (game). The unit is used up and spawns as many Daggers as the city's level (max 5) inside that city's borders. Pirates spawn on water tiles. Each faces the city; the one on the city tile faces no way, which a push treats as SW (game).                                                                                                                                                                                                                                                                                                                                                                                      |
 | Carry       | Carries one land unit. Moving onto land next to water lets it off, which ends the turn (section 10).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Water       | Can only move on water                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Stomp       | Every time it moves, including embarking (a Giant onto a port, becoming a Juggernaut) and disembarking, every adjacent enemy takes splash damage (section 11) (game). Assumed to be half of what the unit's attack on that enemy would deal, not rounded.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Stomp       | Every time it moves, including embarking (a Giant onto a port, becoming a Juggernaut) and disembarking, every adjacent enemy takes area damage (section 11) (game). Each victim and the stomper turn to face each other; the stomper ends facing the first in the game's order.                                                                                                                                                                                                                                                                                                                                                                           |
 
 Source: <https://polytopia.fandom.com/wiki/Unit_Skills>
 
@@ -357,7 +362,7 @@ Source: <https://polytopia.fandom.com/wiki/Unit_Skills>
 - **Forest and mountain:** entering a forest or mountain ends movement. Leaving one costs nothing extra.
 - **Mountains** need Climbing.
 - **Roads:**
-  - A step from a road or city tile to another road or city tile costs 0.5. Cities count as roads.
+  - A step from a road or city tile to another road or city tile costs 0.5. Cities count as roads, and so do villages (game).
   - Any movement left allows one more step, even one costing more than what's left: a unit with movement 1 can take a road step and then an ordinary step (game). That step uses up the rest.
   - That step ignores the forest penalty, but not zone of control.
   - A bridge counts as a road.
@@ -367,6 +372,7 @@ Source: <https://polytopia.fandom.com/wiki/Unit_Skills>
   - Hidden units (Hide) exert no zone of control (game).
   - The unit's starting tile doesn't count.
   - Units with Hide or Creep ignore this. (Sneak also ignores it, but no current unit has Sneak.)
+- **Peaceful cities:** a unit can't stop on, or land on, a city of a peace partner or of a player it's cooling down from after a broken peace (game).
 - **Occupied tiles:** a unit can never stop on an occupied tile, but it can pass through friendly units. Zone of control only comes from enemy units, never from friendly or allied ones (game).
 - **Water:**
   - Land units can't enter water except by embarking.
@@ -378,6 +384,7 @@ Source: <https://polytopia.fandom.com/wiki/Unit_Skills>
   - Embarking ends the unit's turn.
 - **Disembarking:**
   - A naval unit that moves onto land next to water turns back into its passenger.
+  - A naval unit on a bridge can also disembark where it is, even right after moving there: it becomes its passenger on the bridge (game: `DisembarkCommand`, `CanDisembark`).
   - Disembarking ends its turn.
   - The passenger keeps its veteran status and current HP (game), but the boat upgrade is lost (section 8).
 
@@ -410,14 +417,16 @@ retaliation  = round(defenceForce / total * defence * 4.5)        // to attacker
   - the defender isn't Stiff
   - the attacker doesn't have Surprise
   - retaliation doesn't round to 0 (only matters if damage is rounded; see Rounding below)
-- **Splash:** every enemy next to the target takes half of the main (already rounded) damage, **not** rounded. So an odd main damage leaves those units on a .5 HP value (wiki).
+- **Splash and stomp (area damage):** each enemy next to the target (or the stomper) takes half of what an attack on that unit would deal, floored to whole HP (game: `GetFlooredHalfAttackDamage`; before `AREA_DAMAGE_FLOORED`, half of the main damage unrounded, as the wiki says). Own units, peace partners and a player the attacker is cooling down from are spared. Splash needs range 2 or more, and hits after the main kill, the victims in the game's order. Each victim and the attacker turn to face each other, and a retaliation turns the attacker back to the target.
+- **Pacifist** starts over only at an attack that deals damage (at least 1 HP after rounding): a stomp's too, but not a conversion or an infiltration (game).
 - **After a kill:**
-  - A melee attacker (range 1) moves into the dead unit's tile, if it's allowed to enter that terrain.
+  - A melee attacker (range 1) moves into the dead unit's tile, if it's allowed to enter that terrain. A melee boat moving onto land lets its passenger off there, which ends its turn (game). A melee land unit moves onto a port only if it could embark there in a move (its own or a peace partner's, with Fishing), and embarks, which ends its turn.
+  - Persist gives another attack only with another target in range (game).
   - A ranged attacker stays put, even when it attacked from 1 tile away.
 - **Naval units:** killing a naval unit also kills the unit it carries.
-- **Rounding:** damage and retaliation are rounded to the nearest whole HP, halves up (wiki; bengreff checked this against the game's own combat function on 27 attacks).
+- **Rounding:** damage and retaliation are rounded to the nearest whole HP, halves up (wiki; bengreff checked this against the game's own combat function on 27 attacks), but from the game's integer arithmetic (attack and defence ×100, the bonus ×10, each division truncated), so a value of exactly a half can come out just under it and round down: a retaliation of 1.5 is 1.4999, so 1 (game).
   - So a full-health Warrior attacking a full-health Warrior deals 5 and takes 5 back.
-  - HP can still end up fractional, and even below 1, because splash damage isn't rounded (see Splash). That explains the in-game observation of units below 1 HP.
+  - Under older rules HP could end up fractional, and even below 1, because splash damage wasn't rounded (see Splash).
   - **Displaying a .5 HP value:** the map rounds it up and the unit info box rounds it down, so a unit can show 0 HP in its info box while still alive. Display only; the engine keeps the exact value.
   - The engine should store HP in tenths (as integers), so all of these values are exact.
 - **Attacking ends movement:** a unit can't move after attacking unless it has Escape. A unit that moved can't attack unless it has Dash.
@@ -427,11 +436,11 @@ Sources: <https://polytopia.fandom.com/wiki/Combat>, <https://github.com/neveron
 ## 12. Veterans and healing
 
 - **Veterans:**
-  - After 3 kills (by attacking or retaliating), a unit can be promoted.
+  - After 3 kills (by attacking or retaliating), a unit can be promoted. A boat's kills don't count, nor a Static unit's (game: not `IsVehicle`); a boat carrying a unit with 3 kills can be promoted (game).
   - Promotion is an explicit Promote action (bengreff). It gives +5 max HP and heals the unit fully.
   - Static units can never be promoted.
 - **Healing (Recover):**
-  - Recover is an ability: +4 HP inside your borders, +2 elsewhere, never above max. It ends the unit's turn.
+  - Recover is an ability: +4 HP inside your borders or a peace partner's (game), +2 elsewhere, never above max. It ends the unit's turn.
   - A unit can only use it if it hasn't used its turn, i.e. hasn't moved or attacked (bengreff).
   - A unit that can still use an ability when the player ends their turn recovers automatically (game).
 - **Mind Bender:** the Heal action gives up to +4 to every adjacent friendly unit.
@@ -468,7 +477,7 @@ Each task appears once its trigger happens. Completing it lets the player build 
 
 | Task       | Appears after            | Goal                             | Monument        |
 | ---------- | ------------------------ | -------------------------------- | --------------- |
-| Pacifist   | researching Meditation   | Make no attacks for 5 turns      | Altar of Peace  |
+| Pacifist   | researching Meditation   | Make no attacks for 5 turns: each turn's end counts one, and an attack sets the count back to 0 at once, so the turn of the attack counts (game) | Altar of Peace  |
 | Wealth     | researching Trade        | Have 100 stars at once           | Emperor's Tomb  |
 | Explorer   | finding 1 lighthouse     | Find all 4 corner lighthouses    | Eye of God      |
 | Killer     | killing an enemy unit    | Kill 10 enemy units              | Gate of Power   |
@@ -492,18 +501,19 @@ Source: <https://polytopia.fandom.com/wiki/Monuments>
   - Gives +2 stars per turn to both the builder and the host, or +4 each while they have a peace treaty.
   - The builder sees the 3×3 area around the host's capital.
   - The host meets the builder, if it hadn't already (section 2).
-  - **Attacking destroys embassies:** attacking a tribe (one of its units or cities) destroys the attacker's embassy in the defender's capital and the defender's embassy in the attacker's capital.
-  - Embassies can also be destroyed with an explicit action (bengreff).
+  - **Attacking destroys embassies:** attacking a tribe (one of its units or cities) destroys the attacker's embassy in the defender's capital and the defender's embassy in the attacker's capital (game).
+  - **War:** the attack also puts the two at war, from the attack until the attacker's next turn ends; an embassy between them built meanwhile pays nothing until then (game: `HasWarWith`, `GetIncomeFromEmbassy`).
+  - The game has no action that destroys an embassy (section 2).
   - The data file also has embassy levels, an upgrade cost and a tech-price multiplier, but none of these exist in the game (game; wiki). Ignore them.
 - **Capital Vision** (Diplomacy): shows the capitals of tribes you have met.
 - **Peace treaty** (Strategy):
-  - One side proposes and the other accepts. The offer reveals the proposer: the other side meets them, if it hadn't already (section 2).
+  - One side proposes and the other accepts. The offer reveals the proposer: the other side meets them at the start of its next turn, if it hadn't already (section 2). It has to answer the offer before doing anything else that turn (game).
   - While it lasts: neither side can attack the other, each can use the other's roads, and embassy income doubles.
   - Either side can cancel it.
-  - **Breaking it:** the breaker can't attack that turn, and their active units freeze. Their units inside the other tribe's borders are disbanded with no refund.
+  - **Breaking it:** the breaker's active units freeze for that turn. Their units inside the other tribe's borders are disbanded with no refund. Both sides then cool down: neither can attack the other, capture its cities or end a move on them (game: `BreakPeaceAction`, `HasCoolDownWith`). Each side's cooldown lasts until its own turn ends: the breaker's for the rest of that turn, the other side's through its next turn (measured).
   - Built-in bots do propose peace, so an agent playing against them has to answer peace requests (bengreff).
   - **Kept.** Treaties are a real state between two tribes and are possible in 1v1. They're built after the core game, since early training doesn't need them.
-- **"At war"** is part of how the built-in bots decide what to do, not a rule between players (game). The engine has no war state: embassies are limited only by the rules above.
+- **"At war"** is a rule between players only as above, for embassy income; the built-in bots also use it to decide what to do (game).
 
 Sources: <https://polytopia.io/diplomacy/>, <https://polytopia.fandom.com/wiki/Embassy>, <https://polytopia.fandom.com/wiki/Tribe_Relations>
 
@@ -739,7 +749,6 @@ The details below aren't public. The engine uses these defaults for now. They'll
 
 | Unknown                                          | Default                                                                                                                                                                                       |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Who gets the meeting bonus                       | Only the player who meets the other tribe. The other tribe meets them when it sees one of theirs, or receives their peace offer or embassy.                                                   |
 | Archipelago water ruins                          | At most a third, like Lakes and Pangea.                                                                                                                                                       |
 | The `swim` skill and the movement-unlock numbers | Ignored. Movement follows section 10.                                                                                                                                                         |
 | Ocean ruins "at least 2 tiles from any village"  | At least 3 tiles away (2 tiles between).                                                                                                                                                      |
@@ -750,7 +759,7 @@ Sources: <https://polytopia.fandom.com/wiki/Map_Generation> (full page), <https:
 
 - **Might** (first target): a player wins once the number of capitals they hold equals the number of players. In 1v1, that means capturing the enemy capital while holding your own (bengreff, from the code). There is no turn limit.
 - **Domination** (later): the last tribe standing wins. There is no turn limit.
-- **Elimination** (both modes): a player is out once they own no cities (bengreff), and their remaining units disappear (game).
+- **Elimination** (both modes): a player is out once they own no cities (bengreff). Their remaining units are disbanded, each paying its owner the disband refund (game: `WipePlayerAction`).
 
 Sources: <https://polytopia.fandom.com/wiki/Game_Modes>, <https://github.com/bengreff/polytopia/blob/main/docs/design/scope-and-rules.md>
 

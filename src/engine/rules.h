@@ -15,7 +15,7 @@ namespace Rules {
 // ---- score (GAME.md section 3) ----
 
 constexpr int TECH_SCORE_PER_TIER = 100;
-// a unit is worth this per star of its cost (a boat: its passenger's)
+// a unit is worth this per star of its cost plus its passenger's
 constexpr int UNIT_SCORE_PER_STAR = 5;
 constexpr int CITY_SCORE = 100;
 // per level above 1: a population point's worth each, plus a bonus for the
@@ -30,9 +30,16 @@ constexpr int MONUMENT_SCORE = 400;
 
 constexpr int techScore(int tier) { return TECH_SCORE_PER_TIER * tier; }
 constexpr int unitScore(int cost) { return UNIT_SCORE_PER_STAR * cost; }
-constexpr int cityScore(int level, int population, int parks) {
-    return CITY_SCORE + LEVEL_SCORE * (level - 1) +
-           POPULATION_SCORE * population + PARK_SCORE * parks;
+// below zero population a city loses this much per point, down to 0 (game:
+// the score sheet's starvation penalty)
+constexpr int STARVATION_SCORE = 100;
+constexpr int cityScore(int level, int population, int parks, bool starvation = true) {
+    int score = CITY_SCORE + LEVEL_SCORE * (level - 1) +
+                POPULATION_SCORE * population + PARK_SCORE * parks;
+    if (starvation && population < 0) {
+        score = std::max(score + STARVATION_SCORE * population, 0);
+    }
+    return score;
 }
 
 // a temple gains a level every few turns after it's built
@@ -43,6 +50,11 @@ constexpr int templeLevel(int builtTurn, int turn) {
                     1 + (turn - builtTurn) / TEMPLE_TURNS_PER_LEVEL);
 }
 constexpr int templeScore(int level) { return TEMPLE_SCORE_PER_LEVEL * level; }
+// the turn a temple of `owner`'s levels by: the turns its owner has started
+// (game, measured). `turn` counts the first player's turns.
+constexpr int templeTurn(int turn, int currentPlayer, int owner) {
+    return currentPlayer >= owner ? turn : turn - 1;
+}
 
 // ---- stars ----
 
@@ -68,7 +80,12 @@ constexpr int cityIncome(int level, bool capital, bool workshop, int parks,
 }
 
 constexpr TechTypes::TechType EMBASSY_TECH = TechTypes::DIPLOMACY;
-constexpr int EMBASSY_COST = 5;
+// an embassy costs this, plus EMBASSY_COST_STEP per embassy the builder
+// already has (game; before GROWING_EMBASSY_COST: a flat 5)
+constexpr int EMBASSY_COST = 4;
+constexpr int EMBASSY_COST_STEP = 2;
+constexpr int OLD_EMBASSY_COST = 5;
+constexpr int embassyCost(int embassies) { return EMBASSY_COST + EMBASSY_COST_STEP * embassies; }
 // income from each embassy, either way round, and with a peace treaty
 constexpr int EMBASSY_INCOME = 2;
 constexpr int EMBASSY_INCOME_AT_PEACE = 4;
@@ -81,10 +98,13 @@ constexpr int STARFISH_STARS = 8;
 constexpr TechTypes::TechType STARFISH_TECH = TechTypes::NAVIGATION;
 constexpr int disbandRefund(int cost) { return cost / 2; }
 
-// stars for meeting a tribe, by its score then: 1, +2 per thousand
-constexpr int meetingBonus(int score) {
+// stars for meeting a tribe, by its score then: 1, +2 per thousand, and 2
+// more for meeting the first player of a two-player game (the second
+// player's compensation for moving second)
+constexpr int MEETING_FIRST_PLAYER_BONUS = 2;
+constexpr int meetingBonus(int score, bool firstOfTwo = false) {
     int thousands = score <= 0 ? 0 : (score + 999) / 1000;
-    return std::min(11, 1 + 2 * thousands);
+    return std::min(11, 1 + 2 * thousands) + (firstOfTwo ? MEETING_FIRST_PLAYER_BONUS : 0);
 }
 
 // ---- cities (GAME.md section 7) ----
@@ -103,6 +123,8 @@ constexpr int CITY_BORDER_RADIUS = 1;
 constexpr int GROWN_BORDER_RADIUS = 2;
 // a port connects to ports and cities at most this many water tiles away
 constexpr int PORT_CONNECTION_RANGE = 5;
+// a bridge's: a water route from it reaches this far, over shallow water
+constexpr int BRIDGE_CONNECTION_RANGE = 1;
 // a connection to the capital: this much in the city and in the capital
 constexpr int CONNECTION_POPULATION = 1;
 // finding a lighthouse: this much in the capital
@@ -113,8 +135,8 @@ constexpr int LIGHTHOUSE_COUNT = 4;
 // ---- boats ----
 
 // the only boat that upgrades (to the rest of its family, isRaftFamily),
-// inside its owner's borders; the upgrade is final and doesn't use the
-// unit's turn
+// inside its owner's or a peace partner's borders; the upgrade is final and
+// doesn't use the unit's turn
 constexpr UnitTypes::UnitType UPGRADABLE_BOAT = UnitTypes::RAFT;
 
 // ---- ruins (GAME.md section 13) ----
@@ -175,9 +197,28 @@ struct Damage {
 };
 // An attack, from the units' attack and defence (x10), HP, and the
 // defender's defence multiplier. Damage rounds to whole HP, halves up.
+// With `integer`, in the game's own integer arithmetic (BattleHelpers:
+// attack and defence x100, the bonus x10, each division truncated before
+// the rounding), which can round differently from the exact value: a
+// retaliation of 1.5 comes out as 1.4999, so 1
 inline Damage damage(int attack, int attackerHp, int attackerMaxHp,
                      int defence, int defenderHp, int defenderMaxHp,
-                     double defenceBonus) {
+                     double defenceBonus, bool integer = true) {
+    if (integer) {
+        long long a = attack * 10LL;
+        long long bonus = std::llround(defenceBonus * 10);
+        long long d = defence * 10LL * bonus / 10;
+        long long attackForce = a * attackerHp * 100 / attackerMaxHp;
+        long long defenceForce = d * defenderHp * 100 / defenderMaxHp;
+        long long total = attackForce + defenceForce;
+        if (total <= 0) {
+            return {0, 0};
+        }
+        long long dealt = a * attackForce * 450 / (total * 1000);
+        long long returned = defenceForce * d * 4500 / (total * 1000 * bonus);
+        auto round = [](long long tenths) { return static_cast<int>((tenths + 5) / 10 * 10); };
+        return {round(dealt), round(returned)};
+    }
     double a = attack / 10.0, d = defence / 10.0;
     double attackForce = a * attackerHp / attackerMaxHp;
     double defenceForce = d * defenderHp / defenderMaxHp * defenceBonus;

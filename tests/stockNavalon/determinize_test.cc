@@ -71,6 +71,11 @@ TEST_CASE("a sample agrees with everything the player knows") {
                 continue;
             }
             int player = real.currentPlayer, q = 1 - player;
+            // population held back by a level-up, in a city of each player:
+            // a sample renumbers it with the cities, or drops it with one
+            int mine = real.players[player].capital, theirs = real.players[q].capital;
+            real.populationQueue = {{mine, 1}, {theirs, 1}};
+            int mineTile = real.cities[mine].tile;
             Beliefs beliefs = priorBeliefs(makeView(real, player));
             for (Detail detail : {Detail::TILES_AND_UNITS, Detail::EVERYTHING}) {
                 std::optional<Game> sample = determinize(
@@ -80,6 +85,11 @@ TEST_CASE("a sample agrees with everything the player knows") {
                 }
                 samples++;
                 checkInvariants(*sample);
+                for (auto [city, step] : sample->populationQueue) {
+                    REQUIRE(city >= 0);
+                    REQUIRE(city < static_cast<int>(sample->cities.size()));
+                }
+                CHECK(sample->cities[sample->populationQueue.at(0).first].tile == mineTile);
                 PlayerView sampleView = makeView(*sample, player);
                 for (const Unit &u : sample->units) {
                     boats += u.alive && u.owner == q && u.isNaval() &&

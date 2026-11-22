@@ -68,10 +68,66 @@ oracle (real rules)                          polyengine (ours)
 - **What's compared, after every command:**
   - **legal lists**, as sets after translation. A command the real game allows and we don't is a missing or wrong rule; one we allow and it doesn't is a rule we've made up. This is the completeness check, and it catches errors before they're played.
   - **the state projection**: the parts our engine models. Units (type, owner, tile, health, veteran, moved and attacked this turn), cities (owner, level, population, buildings, rewards, walls), tiles (terrain, resource, improvement, owner, explored per player), and each player's stars, income, techs, score, tasks and diplomacy. Everything else (skins, names, AI memory) is left out.
-- **Randomness:** combat is deterministic, but a few outcomes aren't, and the mirror must take them from the oracle. In our engine they're the `Game::randomInt` calls: the ruin reward and its tech (`ruins.cc`), a converted unit's home city (`combat.cc`), the explorer's path (`fog.cc`). The engine gets a queue of forced draws that `randomInt` takes from before its own generator; the bridge fills it by matching the real outcome with the engine's options, which the engine exposes rather than the bridge restating. In training the queue is always empty. If the real game is random somewhere ours isn't (or the other way round), it shows up as a mismatch.
+- **Randomness:** combat is deterministic, but a few outcomes aren't, and the mirror must take them from the oracle. In our engine they're the `Game::randomInt` calls: the ruin reward and its tech (`ruins.cc`), a converted unit's home city (`combat.cc`), the explorer's path (`fog.cc`). Built as `Game::forced` (`force_ruin`, `force_explorer`, `force_converted_home` in Python): the mirror applies a command to the real game first, reads the outcome off the real state, and fixes it for ours before applying it there. An explorer is forced as the tiles it revealed, so its walk itself isn't checked. Empty in training. If the real game is random somewhere ours isn't (or the other way round), it shows up as a mismatch.
 - **On a mismatch:** stop that game, and save both states before and after, the command and the legal lists as a fixture. Each one is a translation bug or a rules bug. A rules fix follows ENGINE.md's usual path: GAME.md updated and marked **(game)**, a new `RuleVersions` number, and a test made from the fixture. GAME.md's **VERIFY** items should all resolve this way.
 - **Settings:** the real 1v1 Might format first (Lakes, 14×14), then every map type and size, more players, peace treaties on, and Domination, since the engine keeps all of these as settings.
 - **The report**, per batch of games: commands compared, mismatches by kind, and a coverage table (each command type, unit, skill, improvement, tech and city reward: how many times exercised). A rule never exercised hasn't been checked, however many games pass.
+
+### First comparison (2026-11-20)
+
+`src/oracle/mirror.py` (docs/oracle.md, "Mirroring a game"), random legal commands, Lakes 11×11, 2 players. At first every game diverged within 5–40 commands; after the fixes below, about 250 on average (up to 1,100), 30 games a run.
+
+**Oracle and mirror fixes** (not rules): nature (player 255) has a turn of its own after every player's; the real `ActionManager` doesn't finish a command's queued actions inside `ExecuteCommand`, so the oracle now calls `ForceUpdate` until it's idle (this alone removed most fog differences); the client only acts on explored tiles, so the oracle's legal list skips the rest (the commands' own checks allow roads in the fog); a real `MoveCommand` from a boat onto land is our Disembark; a city's `xp` is our population (its `population` is a running total); a bridge is a building in the real game, a road on water in ours.
+
+**Timing the mirror allows for** (both engines end up the same): a city's new level is scored, and the population past it counted, only once its reward is picked; with a peace offer waiting at turn start, the turn's income comes once it's answered; the Pacifist task shows done a little after its count reaches 5.
+
+**Rules fixed**, each a `RuleVersions` number (5–31) and in GAME.md, from the mirror and from reading the game's code (with subagents, `annot.py` over the ISIL):
+- Disband only a unit that hasn't moved or attacked (`CanDisband`).
+- Meeting: only the player whose turn it is meets tribes, at its turn start and as it explores; a peace offer's receiver at its turn start (`MeetAction`, `ExploreAction`, `StartTurnAction.CheckTribeConnection`). In 2 players, meeting the first player is worth 2 more stars (`MeetAction.GetReward`, version ≥ 123).
+- Roads go on ruins and lighthouses; monuments and bridges can be destroyed; villages count as roads for movement.
+- A peace offer is answered before anything else (the real pending trigger).
+- A move's route is the game's A* (`PathFinder.GetPath`), shared as `gamePath` in `moveSearch.h`: costs 10/5/1000, straight-line heuristic, first-in first-out ties, neighbours column by column. It decides what a move reveals.
+- Breaking peace: the other side can't attack the breaker in its next turn, nor end a move on its cities (`HasCoolDownWith`, measured). No move ends on an ally's city (`IsAllowedToFinishOnTile`).
+- Temples level at their owner's turn start, every 2 turns (measured).
+- Score: a city below zero population loses 100 a point, down to 0 (`ScoreSheet`); a unit scores its own cost plus its passenger's, so boat upgrades score (`GetUnitScore`).
+- Buildings keep the resource under them (only consumed ones remove it), so destroying one leaves it.
+- An embassy costs 4 + 2 per embassy already built (`GetEmbassyCostForPlayer`). There's no Destroy Embassy: nothing in the game or its client issues it. An attack destroys the embassies between the two and puts them at war until the attacker's next turn ends; one built meanwhile pays nothing (`HasWarWith`).
+- Units face a way: toward the map centre when they appear, then their last step's direction, or at whom they last fought. Pushes go that way, then turning further each way, lower directions first (`TryPushUnit`); a land unit can be pushed onto a port, as a boat, which ends its turn.
+- City connections as the game finds them (`FindConnectedCities`, `HasMatchingTransportPath`, `UpdateRoutes`): from the original capital over roads, bridges, cities, villages and ports, fog or not; a step into another player's land needs peace between the two tiles' owners; water routes join two of a player's ports at most 5 apart by the game's path; recomputed at the end of a command that built a road, bridge or port, destroyed something, examined a ruin, grew borders, answered a peace offer, captured a city or explored a tile.
+- Creep units (Cloak) get nothing from roads. Without Fishing or Sailing a bridge can't be entered straight from its side. A unit heals at the home rate in an ally's borders. Pacifist: an attack resets the count at once and the turn's end still counts. A boat on a bridge can disembark where it is.
+
+**Timing the mirror allows for** (both engines end up the same): a city's new level is scored, and the population past it counted, only once its reward is picked; while a reward is pending the rest of the command's actions wait (a reveal that found a lighthouse, an Explorer's walk), so explored tiles and score aren't compared until it's picked, and the rest of the Explorer is revealed in ours after (`force_reveal`); with a peace offer waiting at turn start, the turn's start (income, temples) comes once it's answered; the Pacifist task shows done a little after its count reaches 5.
+
+**Scenarios** (2026-11-21, `src/oracle/scenarios.py`): mirrored games set up to exercise one rule at a time (docs/oracle.md, "Scenarios"). About 62–65 of 90 scenario games of 300 commands run clean. Rules they found, also fixed (versions 32–35): within a turn a tribe is met only by exploring a tile that shows it (`MEET_ON_EXPLORE`); a unit pushed onto a port embarks and its turn ends (`PUSH_EMBARK_STOPS`; pushes onto open water don't happen, only onto ports); starfish need a boat that hasn't used its turn (`HARVEST_NEEDS_ACTION`, the "manual" improvement); a turn's income waits for a reward or peace offer pending at its start (`INCOME_AFTER_CHOICES`). Stomps turn units as attacks do. Capital Vision now runs after every command again (a regression from `MEET_ON_EXPLORE`, caught by the `fights` scenario).
+
+**Second round** (2026-11-21, versions 36–47), from the scenarios and from decoding the game's actions. The game's `ActionStack` runs last in first out, a command's subactions in the order they were added, and a pending CityLevelUp trigger stops it:
+- Population comes a point at a time in that order, and a level-up holds back the rest of the command until its reward is picked (`POPULATION_STACK`). A connection gives the city its point before the capital, cities last tile first, and a port connects before adding its own population.
+- Routers for water routes are ports and bridges (`IsRouteOpener`: improvements with `routes`, a bridge's range 1). A pair uses the first one's range, and terrain both routers open (`FindPathBetweenRouters`). A route leaves land only onto a port or a bridge (router settings embark) (`BRIDGE_ROUTES`, `ROUTE_LANDINGS`).
+- Connections are recomputed only for the acting player; a peace answer does both, border growth everyone (`ACTING_CONNECTIONS`). Captures still do everyone, unchecked.
+- Area damage: half of a fresh attack on each victim, floored to whole HP; own, peace and cooldown units spared; splash from range 2 up, after the main kill, turning units (`AREA_DAMAGE_FLOORED`). A boat's or Static unit's kills don't count for promotion (`BOATS_GET_NO_KILLS`). A unit faces its move before a stomp turns it.
+- No landing on a peace partner's or cooldown player's city (`NO_LANDING_ON_PEACEFUL_CITIES`). Starfish harvest ends the boat's turn (`HARVEST_ENDS_TURN`). Pacifist resets only on damage, a stomp's included, not a conversion (`PACIFIST_NEEDS_DAMAGE`). A wiped-out player gets each unit's disband refund (`WIPE_PAYS_DISBAND`). A Raft upgrades in a peace partner's borders too (`UPGRADE_IN_ALLIED_BORDERS`).
+- Mirror: a ruin's Explorer paused by a lighthouse walks on after the reward, like a reward's. `force_reveal` checks tasks again. A game the real one puts in FinalTurn ends there (ours stops at once).
+
+**Where it stands** (2026-11-21): about 75–77 of 80 scenario games of 150 commands run clean, and 56 of 60 in the combat ones, each remaining difference a different rule.
+
+**Third round** (2026-11-21, versions 48–56), from subagents decoding `AttackCommand`, `CalculateWork`, `CaptureCommand`/`CanCapture`, `PathFinder` and `SetUnitDirection`, and a new `kills` scenario:
+- A melee boat that kills a unit on land lands its passenger there (`KILL_LANDS`); Persist needs another target in range (`PERSIST_NEEDS_TARGET`).
+- Embarking takes Fishing, the Port's tech (`CanPlayerEmbark`), at one's own or a peace partner's port (`EMBARK_NEEDS_PORT_TECH`).
+- Income tile by tile (`GAME_INCOME`): any other player's unit on a city stops it; markets pay on their own, outside the starvation clamp; hosted embassies are paid with the original capital, inside its clamp; built ones while the host holds its capital with no one else on it.
+- Breaking peace cools down both sides; each lasts until its holder's turn ends; no capture in a cooldown either way (`GAME_COOLDOWN`). The decoded turn-start condition (`CheckDiplomacy`) didn't fit the real games as read, so the timing is measured.
+- A capture recomputes the old owner's connections, then the capturer's, nobody else's (`CAPTURE_CONNECTS_BOTH`). In that order our bookkeeping moves a connected city's point from the old capital to the new.
+- Facing: the game's A* matches `gamePath` exactly (heuristic, ties, re-pushes, neighbour order), and a new unit faces the centre, SW on the centre itself, as ours. The earlier note about NONE was wrong. A NONE comes only from an attack or move with no offset, or an infiltration dagger made on the city tile.
+- A melee land unit that kills a unit on a port moves on and embarks only where a move could embark: on its own port it does, on the enemy's it stays put (`KILL_EMBARKS`, checked on the real game with the `portkills` scenario).
+- Infiltration Daggers face the city (`DAGGERS_FACE_CITY`). The one on the city tile faces NONE, which pushes exactly as SW: `TryPushUnit` uses `(d + turn + 8) mod 8`, and `Opposite(NONE)` is NE, as for SW. So ours, facing SW there, pushes the same way.
+- Accepting peace replaces a cooldown; an attack that rounds to 0 damage doesn't reset Pacifist; a Raft upgraded after moving to a Dash boat can still attack (`UPGRADE_DASHES`).
+- Scenario setup now picks any pending reward before each real action, which ended the dropped-unit setup failures.
+
+**Still open:**
+- Retaliation also needs the defender not Frozen and the attacker without Freeze: Polaris only, out of scope.
+- A melee kill onto a peace partner's port (it embarks there, by the same rule as a move) can't be checked in two players, since the ally's own units can't be attacked. Nor can a killer without Fishing on its own port.
+- Facing on multi-tile moves with path ties: the search matches, so any remaining difference would be in step costs or accessibility (`getMovementCostDefault`, `IsTileAccessible`); none seen since.
+- Only population is held back at a level-up in ours. Other actions after it (score, a reveal's rest) aren't, which the mirror allows for.
+- Not yet compared: other map types and sizes, more players, the bot's games and a coverage table.
 
 ## 5. Maps: is the generator believable
 
@@ -188,14 +244,35 @@ So the order and the per-type steps agree (the community's description came from
 ## 6. Engine changes this needs
 
 All general, none specific to the real game:
-- **Forced random draws** (section 4).
+- **Forced random draws** (section 4): done, as `Game::forced`.
 - **`MapData` covering every feature** of a real start: check lighthouses, starting units, and anything else a real start has that `MapData` can't say.
 - **A state projection** exposed through the Python bindings (one call returning plain arrays), so the bridge compares without restating the engine's state layout.
 - **Legal lists through the bindings,** already there (`LegalMoves`).
 
-## 7. Later: matches against Crazy
+## 7. Matches against Crazy
 
-Once the rules check passes. The oracle's `ai` request plays the built-in AI's seats headlessly (no client, no Frida), and our bot plays its seat through the mirror. This gives a benchmark outside our own engine: the win rate against Crazy, by tribe pair and map type, seats swapped, with Wilson intervals, comparable with bengreff's 94–98%. A few games in the real app with the same seeds confirm the headless matches play the same way. Crazy sees everything and gets +3★ a turn; our bot stays fog-correct.
+Built (2026-11-21): the oracle's `ai` request gives the game's own bot move (`CommandTriggerUtils.TryGetTriggerCommand`, else `AI.GetMove`, as `GameStateUtils.ExecuteCommands` plays a bot's turn), `start <id> keep` keeps Crazy's handicap (4) on its seat, and `mirror.play` takes `ai_seats` and a `pick` for our bot's moves. `python -m stocknavalon.crazy` plays the network against it; runs play it as an anchor with `--crazy-games` (docs/stockNavalon.md). Every game is a mirrored game, so it checks the rules too: it stops at its first difference, which counts for neither side. Crazy sees everything and gets +3★ a turn; our bot stays fog-correct. Still to do: a few games in the real app with the same seeds, to confirm the headless matches play the same way.
+
+What the first batches found (versions 57–70), all from the game's own bot doing things random play rarely does:
+- The AI plays `StayCommand` (a unit done for the turn), which the client never offers: our STAY, applied without a legality check.
+- Its memory (`AIState`, `OpinionManager`) holds other players' states, which broke the state's JSON (`$ref` in the player list), so the dump leaves it out.
+- Captures: producers next to the captured land are re-checked, since they count only their owner's neighbours; the city's whole border area is explored.
+- Ruin soldiers belong to the city whose land the ruin is on (none on unclaimed land) and count toward its cap.
+- Embarking ends the turn, attacks included, so an upgrade after it gives no attack back. A Giant pushed onto a port stomps as a Juggernaut. Ruins can't be destroyed. A city with one's own unit on it can't be infiltrated. A boat carrying a 3-kill unit can be promoted.
+- Infiltration as the game does it (`GAME_INFILTRATION`, decoded from `InfiltrateAction` and `InfiltrationRewardAction`): the defender is hit as by a fresh Cloak; the infiltrator takes the city's base production in stars and robs it (no income or new infiltration until its owner's turn ends); Daggers go on explored, standable tiles of the border area, best first by a seeded hash (forced from the real game in the mirror), an empty city listed twice so a second Dagger pushes the first off.
+- A game the capture of the last city ends isn't compared after that capture: the real game doesn't wipe the loser in its final turn.
+- Damage in the game's integer arithmetic (`INTEGER_DAMAGE`): a retaliation of exactly 1.5 comes out 1.4999 and rounds to 1. An infiltration's Pirate has a Dagger's health, as any boat has its passenger's.
+- A move that bumps into a hidden unit turns the mover toward it (`BUMP_TURNS`). Recover, Heal Others, Stay, Capture and Examine Ruins set the game's "attacked" flag, so a Raft that used one gets no attack back by upgrading (`ACTIONS_SET_ATTACKED`). A boat can't land a Cloak on an enemy city (`NO_HIDDEN_LANDING_ON_CITIES`). Persist is decided before moving in: from the dead unit's tile, with what's seen then, and none if the move-in embarks or lands (`PERSIST_BEFORE_MOVE_IN`).
+- The mirror now tells a ruin's Explorer by the tiles it explored (any), not more than 9; the other rewards explore nothing.
+- Found by these games, not rules: the search's moves are its samples' (what the player sees), so one can be illegal in the real game (a hidden unit in the way); the driver plays the most visited legal one, as self-play falls back. And a crash: the determinized samples renumber cities, and didn't renumber the population a level-up holds back, which then pointed past the city list (fixed in determinize.cc, with an invariant in the tests).
+
+Results (runs/ninth's best, 320,000 steps, Lakes 11×11, 50 turns): with the run's anchor search (`--eval-simulations` 50), the last batch of 24 played 20 to the end and won 15 and lost 4 by capture, one undecided (95% interval about 57–91%); earlier batches at 50 simulations × 2 samples about 55%. The rest stopped at differences, nearly all fixed since.
+
+Still open from these games:
+- A city's unit count after an attack differed once (the real game allowed training where ours didn't); the mirror now saves our units' homes to find it.
+- A border growth that claimed a lighthouse left our city 3 population ahead once (likely from an earlier command, while a level-up hid it).
+- A ruin's examiner ended a tile away once with no reward visible. An Explorer pushing it was tried and is wrong (it pushes neither a city's unit nor, in another game, the examiner).
+- The run's anchor (`--crazy-games`) hasn't been run inside a training run yet; `crazy.match` is what it calls, checked on its own.
 
 ## 8. Phases
 

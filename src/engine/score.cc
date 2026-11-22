@@ -1,12 +1,27 @@
 #include "game.h"
 
 int Game::unitScore(const Unit &unit) const {
-    // by the carried unit's cost; boat upgrades add nothing
-    return Rules::unitScore(unitInfo(unit.passenger).cost);
+    if (!settings.follows(RuleVersions::FULL_UNIT_SCORE)) {
+        // by the carried unit's cost; boat upgrades add nothing
+        return Rules::unitScore(unitInfo(unit.passenger).cost);
+    }
+    return unitScoreOf(unit.type, unit.passenger);
+}
+
+int Game::cityScore(const City &city) const {
+    return Rules::cityScore(city.level, city.population, city.parks,
+                            settings.follows(RuleVersions::CITY_STARVATION));
+}
+
+int Game::templeTurn(int tile) const {
+    int owner = tileOwner(tile);
+    return settings.follows(RuleVersions::TEMPLE_OWNER_TURNS) && owner >= 0
+               ? Rules::templeTurn(turn, currentPlayer, owner)
+               : turn;
 }
 
 int Game::templeLevel(int tile) const {
-    return Rules::templeLevel(tiles[tile].builtTurn, turn);
+    return Rules::templeLevel(tiles[tile].builtTurn, templeTurn(tile));
 }
 
 int Game::templeTurnsToLevelUp(int tile) const {
@@ -15,7 +30,7 @@ int Game::templeTurnsToLevelUp(int tile) const {
         return 0;
     }
     // level n is reached on turn builtTurn + TEMPLE_TURNS_PER_LEVEL (n - 1)
-    return tiles[tile].builtTurn + Rules::TEMPLE_TURNS_PER_LEVEL * level - turn;
+    return tiles[tile].builtTurn + Rules::TEMPLE_TURNS_PER_LEVEL * level - templeTurn(tile);
 }
 
 int Game::tileScore(int tile) const {
@@ -46,7 +61,7 @@ int Game::score(int player) const {
     }
     for (const City &city : cities) {
         if (city.owner == player) {
-            total += Rules::cityScore(city.level, city.population, city.parks);
+            total += cityScore(city);
         }
     }
     for (const TechData &tech : techData) {
@@ -97,14 +112,25 @@ void Game::meet(int p, int other) {
         return;
     }
     player.met |= std::uint32_t{1} << other;
-    player.stars += Rules::meetingBonus(score(other));
+    bool firstOfTwo = settings.follows(RuleVersions::FIRST_PLAYER_MEETING_BONUS) &&
+                      players.size() == 2 && other == 0;
+    player.stars += Rules::meetingBonus(score(other), firstOfTwo);
 }
 
 void Game::checkMeetings() {
     int count = static_cast<int>(players.size());
+    bool turnPlayerOnly = settings.follows(RuleVersions::TURN_PLAYER_MEETS);
     for (int p = 0; p < count; p++) {
-        if (!players[p].alive) {
+        if (!players[p].alive || (turnPlayerOnly && p != currentPlayer)) {
             continue;
+        }
+        // a peace offer reveals its sender
+        if (turnPlayerOnly && settings.follows(RuleVersions::DIPLOMACY_MEETS)) {
+            for (int q = 0; q < count; q++) {
+                if (players[p].peaceRequests >> q & 1) {
+                    meet(p, q);
+                }
+            }
         }
         // meeting a tribe means seeing one of its units or one of its cities;
         // a border tile alone doesn't count
@@ -122,7 +148,11 @@ void Game::checkMeetings() {
             }
         }
     }
+    revealMetCapitals();
+}
 
+void Game::revealMetCapitals() {
+    int count = static_cast<int>(players.size());
     // Capital Vision: Diplomacy shows the capitals of tribes you've met
     for (int p = 0; p < count; p++) {
         if (!players[p].alive || !players[p].hasTech(TechTypes::DIPLOMACY)) {
