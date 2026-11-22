@@ -496,7 +496,9 @@ def parser() -> argparse.ArgumentParser:
                         "go; 0 for none")
     p.add_argument("--crazy-parallel", type=int, default=4,
                    help="games against Crazy at a time, an oracle each")
-    p.add_argument("--crazy-type", default="lakes", help="their map type")
+    p.add_argument("--crazy-type", default="any", choices=["any"] + crazy.MAP_TYPES,
+                   help="their map type, or any: each in turn by pair of games, "
+                        "results by type")
     p.add_argument("--crazy-size", type=int, default=11, help="their map size")
     p.add_argument("--crazy-max-turns", type=int, default=60,
                    help="their turn limit (the side ahead on score wins, undecided)")
