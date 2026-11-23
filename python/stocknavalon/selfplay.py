@@ -23,15 +23,32 @@ from .model import Network, as_input, belief_outputs, tie_breaks
 
 
 class _Pending:
-    """A batch launched on the GPU, not yet collected."""
+    """A batch launched on the GPU, not yet collected: its outputs in one
+    float32 tensor, so collecting it is one copy back (one wait for the GPU)
+    rather than one per output: the move logits, the values, the tie-breaks
+    (the predicted score lead and turns left, [B, 2]) and the raw belief
+    outputs of the positions that want them."""
 
     def __init__(self, moves: torch.Tensor, values: torch.Tensor, size: int,
                  beliefs: torch.Tensor | None, tie_breaks: torch.Tensor):
-        self.moves, self.values, self.size = moves, values, size
-        # raw belief outputs for the positions that want them
-        self.beliefs = beliefs
-        # the predicted score lead and turns left [B, 2], for the search
-        self.tie_breaks = tie_breaks
+        self.size = size
+        self.shapes = [tuple(moves.shape), tuple(values.shape), tuple(tie_breaks.shape)]
+        parts = [moves, values, tie_breaks]
+        if beliefs is not None:
+            self.shapes.append(tuple(beliefs.shape))
+            parts.append(beliefs)
+        self.flat = torch.cat([p.float().reshape(-1) for p in parts])
+
+    def outputs(self) -> list[np.ndarray]:
+        """The outputs on the CPU, after one copy back: moves, values,
+        tie-breaks, and beliefs or None."""
+        flat = self.flat.cpu().numpy()
+        out, at = [], 0
+        for shape in self.shapes:
+            n = int(np.prod(shape))
+            out.append(np.ascontiguousarray(flat[at:at + n].reshape(shape)))
+            at += n
+        return out + [None] * (4 - len(out))
 
 
 # Where self-play's time goes, in seconds (SelfPlay.times): the CPU (advancing
@@ -120,11 +137,7 @@ def _collect(session: pe.SelfPlaySession, encoding: pe.Encoding,
     clock.to("cpu")
     with gpu_lock:
         clock.to("lock")
-        moves = pending.moves.float().cpu().numpy()
-        values = pending.values.float().cpu().numpy()
-        beliefs = (None if pending.beliefs is None
-                   else np.ascontiguousarray(pending.beliefs.float().cpu().numpy()))
-        ties = np.ascontiguousarray(pending.tie_breaks.float().cpu().numpy())
+        moves, values, ties, beliefs = pending.outputs()
         clock.to("gpu")
     session.submit_move_logits(encoding, moves, values, beliefs, ties)
     clock.to("cpu")

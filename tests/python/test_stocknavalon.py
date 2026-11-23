@@ -352,11 +352,12 @@ def test_per_side_networks_give_the_same_batch_as_one_network():
     # paired games: both sides have positions waiting
     assert set(session.pending_sides()) == {0, 1}
     assert one is not None and one.size == each.size
-    for a, b in ((one.moves, each.moves), (one.values, each.values),
-                 (one.tie_breaks, each.tie_breaks), (one.beliefs, each.beliefs)):
+    # moves, values, tie-breaks and beliefs, each copied back in one transfer
+    for a, b in zip(one.outputs(), each.outputs()):
         assert (a is None) == (b is None)
         if a is not None:
-            assert torch.allclose(a.float(), b.float(), atol=1e-5)
+            assert a.shape == b.shape and np.allclose(a, b, atol=1e-5)
+    assert one.outputs()[3] is not None  # network beliefs were asked for
 
 
 def test_opponent_pool_games_train_only_the_current_network_at_either_seat(tmp_path):
@@ -501,15 +502,15 @@ def test_ratings_read_each_part_of_a_gate_against_several_bests(tmp_path):
 def test_pool_draws_favour_the_opponents_the_current_network_struggles_with(tmp_path):
     import collections
     from types import SimpleNamespace
-    from stocknavalon.run import SelfPlayThread
-    thread = SelfPlayThread.__new__(SelfPlayThread)
-    thread.args = SimpleNamespace(pool_weighting="pfsp")
-    thread._against = {"easy": collections.deque([1.0] * 20), "hard": collections.deque([0.0] * 20)}
-    weights = thread._pool_weights(["easy", "hard", "new"])
+    from stocknavalon.worker import Worker
+    player = Worker.__new__(Worker)
+    player.args = SimpleNamespace(pool_weighting="pfsp")
+    player._against = {"easy": collections.deque([1.0] * 20), "hard": collections.deque([0.0] * 20)}
+    weights = player._pool_weights(["easy", "hard", "new"])
     assert weights[1] > weights[2] > weights[0]
     assert abs(weights.sum() - 1) < 1e-9
-    thread.args.pool_weighting = "uniform"
-    assert list(thread._pool_weights(["easy", "hard", "new"])) == [1 / 3] * 3
+    player.args.pool_weighting = "uniform"
+    assert list(player._pool_weights(["easy", "hard", "new"])) == [1 / 3] * 3
 
 
 def test_a_gate_against_several_bests_plays_each_and_judges_the_total(tmp_path):
@@ -588,3 +589,85 @@ def test_a_run_logs_its_settings_at_the_start(tmp_path):
     assert entry["rules_version"] == pe.RULES_VERSION
     line = pretty({"time": "00:00:00", **entry})
     assert "--gate-threshold 0.55" in line and "--batch" not in line
+
+
+def test_the_crazy_evaluator_feeds_a_float16_network_its_own_precision():
+    # a run's network is float16 for inference; the anchor against Crazy
+    # failed when its evaluator sent float32 inputs
+    from stocknavalon import crazy
+    enc = pe.Encoding()
+    net = sn.Network(enc, channels=16, blocks=1).eval().to(torch.float16)
+    session = pe.SelfPlaySession(pe.self_play_config(search=dict(simulations=4, samples=1)), 2, 2, 1)
+    planes, globals_, _ = session.pending_inputs(enc, legal=False)
+    rows, slots = session.pending_slots(enc)
+    logits, values, _, ties = crazy.evaluator(net, torch.device("cpu"), enc)(
+        planes, globals_, rows, slots, session.pending_belief_rows())
+    assert logits.shape == (len(slots),) and values.shape == (len(planes),)
+    assert logits.dtype == np.float32 and ties.shape == (len(planes), 2)
+
+
+@pytest.mark.parametrize("process", [False, True])
+def test_self_play_runs_in_a_worker_and_its_games_reach_the_buffer(tmp_path, process):
+    # the run's self-play: a worker (a thread, or a process of its own) plays
+    # the best network's games and sends them as text; the run's side writes
+    # them to the record files and the buffers, and serves the measures
+    import multiprocessing
+    import threading
+    import time
+    from stocknavalon.run import SelfPlayThread, parser
+    if process:
+        try:
+            multiprocessing.get_context("spawn").Queue()
+        except PermissionError:
+            pytest.skip("this environment doesn't allow multiprocessing's semaphores")
+    args = parser().parse_args([
+        "--dir", str(tmp_path), "--device", "cpu", "--channels", "16", "--blocks", "1",
+        "--inference-dtype", "float32", "--parallel", "2", "--simulations", "4",
+        "--quick-simulations", "2", "--max-turns", "3", "--pool-share", "0",
+        "--handicap-share", "0", "--holdout-every", "2", "--session-threads", "1",
+        "--turn-search", "off", "--self-play-process" if process else "--no-self-play-process"])
+    enc = pe.Encoding()
+    net = sn.Network(enc, channels=16, blocks=1)
+    torch.save({"model": net.state_dict(), "steps": 7}, tmp_path / "best.pt")
+    buffer, holdout = pe.ReplayBuffer(100_000), pe.ReplayBuffer(100_000)
+    player = SelfPlayThread(args, buffer, str(tmp_path / "records.txt"), threading.Lock(),
+                            seed=1, holdout=holdout, holdout_path=str(tmp_path / "holdout.txt"),
+                            recent=[], best_steps=7)
+    player.start()
+    player.fog_share = 0.0
+    deadline = time.time() + 120
+    while (buffer.game_count < 2 or holdout.game_count < 1) and time.time() < deadline:
+        assert player.error is None, player.error
+        time.sleep(0.2)
+    # a new best: the worker reloads best.pt and carries on
+    torch.save({"model": net.state_dict(), "steps": 8}, tmp_path / "best.pt")
+    player.publish({}, 8)
+    before = buffer.game_count
+    while buffer.game_count <= before and time.time() < deadline:
+        time.sleep(0.2)
+    player.stop.set()
+    player.join(timeout=60)
+    assert player.error is None, player.error
+    assert buffer.game_count >= 2 and holdout.game_count >= 1 and player.best_steps == 8
+    # the files hold the same games as the buffers
+    assert len(pe.load_records(str(tmp_path / "records.txt"))) == buffer.game_count
+    assert len(pe.load_records(str(tmp_path / "holdout.txt"))) == holdout.game_count
+    window = player.take_window()
+    assert window["games"] == buffer.game_count + holdout.game_count and window["evaluated"] > 0
+    assert 0 <= player.decided_recent() <= 1
+
+
+def test_a_self_play_worker_that_fails_stops_the_run_with_its_reason(tmp_path):
+    import threading
+    import time
+    from stocknavalon.run import SelfPlayThread, parser
+    # no best.pt: the worker can't load the network it should play
+    args = parser().parse_args(["--dir", str(tmp_path), "--device", "cpu",
+                                "--no-self-play-process"])
+    player = SelfPlayThread(args, pe.ReplayBuffer(1000), str(tmp_path / "records.txt"),
+                            threading.Lock(), seed=1, holdout=pe.ReplayBuffer(1000),
+                            holdout_path=str(tmp_path / "holdout.txt"), recent=[], best_steps=0)
+    player.start()
+    player.join(timeout=60)
+    assert isinstance(player.error, RuntimeError)
+    assert "best.pt" in str(player.error)

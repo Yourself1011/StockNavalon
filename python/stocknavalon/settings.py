@@ -46,7 +46,7 @@ def add_search_arguments(parser: argparse.ArgumentParser, *, simulations: int,
                    help="turn search (notes/design.md section 9): past End Turn, whole "
                         "turns sampled from the policy; a node below the root searches "
                         "command by command once N simulations went through it (0: until "
-                        "End Turn), off for today's search. One value for every side, or "
+                        "End Turn), off for command search. One value for every side, or "
                         "one per side (or seat) where the tool has several")
     g.add_argument("--replies", nargs="+", default=replies, choices=list(REPLIES),
                    help="turn search: how the opponent's replies are drawn: sampled from "
@@ -90,7 +90,7 @@ def side_searches(args: argparse.Namespace, sides: int, **overrides) -> list[pe.
     (add_search_arguments) with the per-side ones (--turn-search, --replies,
     --backup) one value for every side or one per side, and any fields in
     `overrides` on top. Without --horizon, a turn search looks 3 turn changes
-    ahead and today's search has no cutoff."""
+    ahead and command search has no cutoff."""
     visits = per_side(turn_search_values(args.turn_search), sides, "--turn-search")
     replies = per_side(args.replies, sides, "--replies")
     backups = per_side(args.backup, sides, "--backup")

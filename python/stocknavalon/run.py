@@ -25,10 +25,11 @@ log (log.txt). Ctrl-C stops it cleanly; running again resumes.
 from __future__ import annotations
 
 import argparse
-import collections
 import dataclasses
 import json
+import multiprocessing
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -41,7 +42,8 @@ import torch
 import polyengine as pe
 
 from .model import DTYPES, NEWER_HEADS, Network, load_weights, pick_device
-from .selfplay import PoolPlay, SelfPlay
+from . import worker
+from .worker import RECENT_GAMES, pool_snapshots, self_play_settings, snapshot_steps
 from .settings import add_search_arguments, search_config
 from .evaluate import gate_settled, gate_verdict, match
 from . import crazy
@@ -68,20 +70,15 @@ class Window:
 # came from a few early games and swung between 0.7 and 1.3)
 HELDOUT_POSITIONS = 512
 HELDOUT_MIN_GAMES = 100
-# the latest games the logged share decided covers, about 15 to 20 minutes of
-# self-play. Long enough to smooth over most of a restart's swing (all games
-# start together, so those ending in a capture finish first and the ones
-# reaching the turn limit come in a wave later), short enough to follow the
-# network.
-RECENT_GAMES = 512
-# the latest self-play games commands per turn averages over
-ACTIVITY_GAMES = 128
+# the self-play worker process's own CPU threads for torch: its network runs
+# on the GPU, so a few are plenty, and more would compete with the run's
+WORKER_TORCH_THREADS = 2
+# how long a stopping run waits for the self-play worker to finish its batch
+WORKER_STOP_SECONDS = 30
 # with the lambda-return value target, games added since are reanalysed this
 # often (training steps): the buffer turns over within the hour, and a game
 # without values trains on the plain result
 REANALYSE_NEW_STEPS = 100
-# the latest results kept against each pool network, for prioritized draws
-POOL_RESULTS = 50
 
 _log_lock = threading.Lock()
 # held while a game goes into a record file and a buffer together, and while
@@ -408,6 +405,10 @@ def parser() -> argparse.ArgumentParser:
                         "game's result is repeated less")
     p.add_argument("--parallel", type=int, default=256,
                    help="self-play games at once, in each of two sessions")
+    p.add_argument("--self-play-process", action=argparse.BooleanOptionalAction, default=True,
+                   help="self-play in a process of its own (worker.py), so its Python "
+                        "doesn't share the interpreter lock or the cores with training; "
+                        "else a thread of the run")
     # self-play's full searches; gates and anchors the same, at --eval-simulations
     add_search_arguments(p, simulations=64, samples=1, turn_search=["0"], replies=["likely"])
     p.add_argument("--handicap-share", type=float, default=0.2,
@@ -534,31 +535,6 @@ def run_city_weight(args: argparse.Namespace, steps: int) -> float:
     if args.city_fade_steps <= 0:
         return 0.0
     return args.city_weight * max(0.0, 1 - steps / args.city_fade_steps)
-
-
-def self_play_settings(args: argparse.Namespace, fog_share: float) -> pe.SelfPlayConfig:
-    """Self-play's settings from the run's flags (also the bootstrap's, with
-    the score evaluator, and the opponent pool's)."""
-    return pe.self_play_config(
-        search=search_config(args, root_noise=True),
-        max_turns=args.max_turns,
-        stall_turns=args.stall_turns,
-        fog_share=fog_share,
-        network_beliefs=args.network_beliefs,
-        peace_treaties=args.peace_treaties,
-        full_share=args.full_share,
-        quick_simulations=args.quick_simulations,
-        threads=args.session_threads,
-        handicap_share=args.handicap_share,
-        handicap_stars=args.handicap_stars,
-        handicap_income_share=args.handicap_income_share,
-        handicap_income=args.handicap_income,
-        handicap_catch_up_share=args.handicap_catch_up_share,
-        catch_up_from_turn=args.catch_up_from_turn,
-        catch_up_below=args.catch_up_below,
-        trailing_search_factor=args.trailing_search_factor,
-        explore_candidates=args.explore_candidates,
-    )
 
 
 def code_version() -> str | None:
@@ -747,12 +723,10 @@ def main():
     if reanalysing:
         revalue(new_only=False)
     last_full = last_new = trainer.steps
-    player = SelfPlayThread(args, encoding, device, best["model"], buffer,
-                            records_path, gpu_lock, seed=iteration * 7919 + 13,
-                            session=session, holdout=holdout,
-                            holdout_path=holdout_path, recent=recent)
+    player = SelfPlayThread(args, buffer, records_path, gpu_lock, seed=iteration * 7919 + 13,
+                            holdout=holdout, holdout_path=holdout_path, recent=recent,
+                            best_steps=best["steps"])
     del recent
-    player.best_steps = best["steps"]
     player.start()
     player.fog_share = fog_share()
     evaluator = EvaluationThread(args, encoding, device, gpu_lock, best, best_path,
@@ -953,121 +927,73 @@ def gate_split(games: int, opponents: int, best_share: float) -> list[int]:
     return [2 * best] + [2 * (rest // others + (k < rest % others)) for k in range(others)]
 
 
-def snapshot_steps(path: str) -> int:
-    """The training steps a snapshot (step_N.pt) comes from."""
-    return int(os.path.basename(path)[5:-3])
-
-
-def pool_snapshots(run_dir: str, size: int, best_steps: int | None) -> list[str]:
-    """The opponent pool: the latest `size` earlier best networks, from the
-    snapshots kept at each promotion (pool/) and the anchored ones
-    (checkpoints/), leaving out the current best."""
-    found = {}
-    for folder in ("checkpoints", "pool"):
-        path = os.path.join(run_dir, folder)
-        if not os.path.isdir(path):
-            continue
-        for name in os.listdir(path):
-            if name.startswith("step_") and name.endswith(".pt"):
-                found[snapshot_steps(name)] = os.path.join(path, name)
-    steps = sorted(s for s in found if s != best_steps)[-size:] if size > 0 else []
-    return [found[s] for s in steps]
-
-
 class SelfPlayThread(threading.Thread):
-    """Self-play, continuously, with the best network only: its own copy,
-    replaced when a gate passes (`publish`), so a bad stretch of training
-    never reaches the games."""
+    """Self-play, continuously, with the best network only. A worker
+    (worker.py) plays the games: in a process of its own (--self-play-process,
+    the default), so its Python doesn't share the interpreter lock or the cores
+    with training, or as a thread. This thread takes its games into the buffer
+    and the record files (held-out ones apart), and keeps its measures for the
+    status line. A worker that fails, or dies (a crash in C++), stops the run
+    with the reason."""
 
-    def __init__(self, args, encoding, device, weights, buffer, records_path,
-                 gpu_lock, seed, session, holdout, holdout_path, recent):
+    def __init__(self, args, buffer, records_path, gpu_lock, seed, holdout, holdout_path,
+                 recent, best_steps):
         super().__init__(daemon=True)
+        self.args, self.buffer, self.records_path = args, buffer, records_path
         self.holdout, self.holdout_path = holdout, holdout_path
-        self.finished = 0
-        self.args, self.encoding, self.device = args, encoding, device
-        self.buffer, self.records_path, self.gpu_lock = buffer, records_path, gpu_lock
-        self.seed, self.session = seed, session
-        self.model = Network(encoding, args.channels, args.blocks).to(
-            device, DTYPES[args.inference_dtype]).eval()
-        load_weights(self.model, weights)
         # the training step the network playing comes from
-        self.best_steps: int | None = None
-        # the share of games to start with fog, set by the training loop
-        self.fog_share = 1.0
+        self.best_steps = best_steps
         self.stop = threading.Event()
         self.error = None
         self._lock = threading.Lock()
-        self._weights = None
         self._window = {"games": 0, "evaluated": 0}
-        # self-play's running time totals (SelfPlay.times), and where they
-        # stood at the last status line
-        self._runner = None
+        self._fog_share = None
+        # the worker's latest measures (Worker.measures), and its time and
+        # cache totals at the last status line
+        self._measures: dict | None = None
         self._times_then = None
         self._cache_then = None
-        # whether each of the latest games ended in a capture, starting from
-        # the run's games so far
-        self._decided = collections.deque((g.winner >= 0 for g in recent
-                                           if g.handicap_leader < 0 and not g.catch_up
-                                           and g.pool_opponent_seat < 0),
-                                          maxlen=RECENT_GAMES)
-        # commands per player turn in the latest games of this session only:
-        # how active the current network plays, the first thing to fall when
-        # it turns passive
-        self._activity = collections.deque(maxlen=ACTIVITY_GAMES)
-        # whether each of the latest games ended in a stalemate
-        self._stalled = collections.deque(maxlen=RECENT_GAMES)
-        # handicap games, apart: who won each, the side with the head start
-        # ("leader"), the other ("trailing"), or nobody
-        self._handicap = collections.deque(maxlen=RECENT_GAMES)
-        # opponent-pool games: how the current network did in each (1 won,
-        # 0 lost, 0.5 neither), and the games played of each kind
-        self._pool = collections.deque(maxlen=RECENT_GAMES)
-        self._played = {"self": 0, "pool": 0}
-        # pool networks, loaded once each, by snapshot path
-        self._opponents: dict[str, Network] = {}
-        # the current network's latest results against each pool network, by
-        # path (1 won, 0 lost, 0.5 neither): what prioritized draws use
-        self._against: dict[str, collections.deque] = {}
-        self._pool_rng = np.random.default_rng(seed)
         self.totals = {"games": 0}
+        # whether each of the run's latest ordinary games ended in a capture,
+        # for the worker to start its measure from
+        decided = [g.winner >= 0 for g in recent
+                   if g.handicap_leader < 0 and not g.catch_up and g.pool_opponent_seat < 0]
+        decided = decided[-worker.RECENT_GAMES:]
+        if args.self_play_process:
+            # spawn: a fresh interpreter, which loads its own torch and GPU
+            # state (a forked one would inherit the parent's)
+            context = multiprocessing.get_context("spawn")
+            self._inbox, self._outbox = context.Queue(), context.Queue()
+            self._worker = context.Process(
+                target=worker.main, args=(args, seed, decided, self._inbox, self._outbox),
+                kwargs={"threads": WORKER_TORCH_THREADS}, daemon=True)
+        else:
+            self._inbox, self._outbox = queue.Queue(), queue.Queue()
+            self._worker = threading.Thread(
+                target=worker.main, args=(args, seed, decided, self._inbox, self._outbox),
+                kwargs={"gpu_lock": gpu_lock}, daemon=True)
+
+    @property
+    def fog_share(self) -> float:
+        return 1.0 if self._fog_share is None else self._fog_share
+
+    @fog_share.setter
+    def fog_share(self, share: float):
+        """The share of games to start with fog: the worker hears of changes."""
+        if share != self._fog_share:
+            self._fog_share = share
+            self._inbox.put(("fog", share))
+
+    def start(self):
+        self._worker.start()
+        super().start()
 
     def publish(self, weights: dict, steps: int):
-        """A new best network, picked up between chunks of games."""
+        """A new best network (already saved to best.pt): the worker reloads it
+        between batches of games."""
         with self._lock:
-            self._weights = weights
             self.best_steps = steps
-
-    def take_window(self) -> dict[str, int]:
-        with self._lock:
-            window, self._window = self._window, {"games": 0, "evaluated": 0}
-        return window
-
-    def take_cache_rate(self) -> float | None:
-        """The share of evaluations the cache answered since the last call."""
-        if self._runner is None:
-            return None
-        now = list(self._runner.cache)
-        then, self._cache_then = self._cache_then, now
-        if then is None or now[0] == then[0]:
-            return None
-        return round((now[1] - then[1]) / (now[0] - then[0]), 3)
-
-    def take_times(self) -> dict[str, float] | None:
-        """The shares of self-play's time since the last call spent on the
-        CPU, waiting for the GPU lock and on the GPU (selfplay.TIMES)."""
-        if self._runner is None:
-            return None
-        now = dict(self._runner.times)
-        then, self._times_then = self._times_then, now
-        if then is None:
-            return None
-        spent = {k: now[k] - then[k] for k in now}
-        total = sum(spent.values())
-        return {k: round(v / total, 2) for k, v in spent.items()} if total > 0 else None
-
-    def decided_recent(self) -> float:
-        with self._lock:
-            return float(np.mean(self._decided)) if self._decided else 0.0
+        self._inbox.put(("best",))
 
     def add_games(self, games: list[pe.GameRecord]):
         """Games played elsewhere (a gate's) for training: into the buffer and
@@ -1076,179 +1002,115 @@ class SelfPlayThread(threading.Thread):
             pe.save_records(games, self.records_path)
             self.buffer.add(games)
 
-    def decided_window_full(self) -> bool:
+    def _take(self, kept: str, held: str, games: int, evaluated: int):
+        """A batch of the worker's games: those to train on into the buffer
+        and the record file, the held-out ones into theirs."""
+        kept_games = pe.records_from_text(kept) if kept else []
+        held_games = pe.records_from_text(held) if held else []
+        with _records_lock:
+            if kept_games:
+                with open(self.records_path, "a") as f:
+                    f.write(kept)
+                self.buffer.add(kept_games)
+            if held_games:
+                with open(self.holdout_path, "a") as f:
+                    f.write(held)
+                self.holdout.add(held_games)
         with self._lock:
-            return len(self._decided) == self._decided.maxlen
+            self._window["games"] += games
+            self._window["evaluated"] += evaluated
+            self.totals["games"] += games
+
+    def run(self):
+        try:
+            while not self.stop.is_set():
+                try:
+                    message = self._outbox.get(timeout=0.5)
+                except queue.Empty:
+                    if not self._worker.is_alive():
+                        code = getattr(self._worker, "exitcode", None)
+                        raise RuntimeError(f"the self-play worker stopped (exit code {code})")
+                    continue
+                kind = message[0]
+                if kind == "progress":
+                    with self._lock:
+                        self._window["evaluated"] += message[1]
+                elif kind == "games":
+                    self._take(*message[1:])
+                elif kind == "measures":
+                    with self._lock:
+                        self._measures = message[1]
+                elif kind == "error":
+                    raise RuntimeError(f"the self-play worker failed:\n{message[1]}")
+        except Exception as e:  # handed to the training thread to raise
+            self.error = e
+        finally:
+            # stop the worker; its last games still come in meanwhile (a
+            # process can't exit while its queue holds messages nobody takes)
+            self._inbox.put(("stop",))
+            deadline = time.perf_counter() + WORKER_STOP_SECONDS
+            while self._worker.is_alive() and time.perf_counter() < deadline:
+                try:
+                    message = self._outbox.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if message[0] == "games":
+                    self._take(*message[1:])
+            if self._worker.is_alive() and hasattr(self._worker, "terminate"):
+                self._worker.terminate()
+
+    def _measure(self, key):
+        with self._lock:
+            return None if self._measures is None else self._measures[key]
+
+    def take_window(self) -> dict[str, int]:
+        with self._lock:
+            window, self._window = self._window, {"games": 0, "evaluated": 0}
+        return window
+
+    def take_cache_rate(self) -> float | None:
+        """The share of evaluations the cache answered since the last call."""
+        now = self._measure("cache")
+        if now is None:
+            return None
+        then, self._cache_then = self._cache_then, now
+        if then is None or now[0] == then[0]:
+            return None
+        return round((now[1] - then[1]) / (now[0] - then[0]), 3)
+
+    def take_times(self) -> dict[str, float] | None:
+        """The shares of self-play's time since the last call spent on the
+        CPU, waiting for the GPU lock and on the GPU (selfplay.TIMES)."""
+        now = self._measure("times")
+        if now is None:
+            return None
+        then, self._times_then = self._times_then, now
+        if then is None:
+            return None
+        spent = {k: now[k] - then[k] for k in now}
+        total = sum(spent.values())
+        return {k: round(v / total, 2) for k, v in spent.items()} if total > 0 else None
+
+    def decided_recent(self) -> float:
+        return self._measure("decided") or 0.0
+
+    def decided_window_full(self) -> bool:
+        return bool(self._measure("decided_full"))
 
     def handicap_recent(self) -> dict | None:
         """Of the latest handicap games, the share each side won."""
-        with self._lock:
-            if not self._handicap:
-                return None
-            n = len(self._handicap)
-            return {"games": n,
-                    "leader_won": round(self._handicap.count("leader") / n, 3),
-                    "trailing_won": round(self._handicap.count("trailing") / n, 3)}
+        return self._measure("handicap")
 
     def pool_recent(self) -> dict | None:
         """Of the latest opponent-pool games, the share the current network
         won; and the pool network it does worst against."""
-        with self._lock:
-            if not self._pool:
-                return None
-            out = {"games": len(self._pool),
-                   "current_won": round(float(np.mean(self._pool)), 3)}
-            rates = {path: self._win_rate(path) for path in self._against}
-            if rates:
-                path = min(rates, key=rates.get)
-                out["hardest"] = {"steps": snapshot_steps(path),
-                                  "current_won": round(rates[path], 3)}
-            return out
-
-    def _win_rate(self, path: str) -> float:
-        """The current network's recent win rate against a pool network,
-        smoothed toward 50% (one virtual win and one loss), so one it hasn't
-        played counts as even."""
-        results = self._against.get(path, ())
-        return (sum(results) + 1) / (len(results) + 2)
-
-    def _pool_weights(self, paths: list[str]) -> np.ndarray:
-        """How likely each pool network is to be drawn: uniform, or with
-        prioritized fictitious self-play (AlphaStar) by how often it beats the
-        current network, (1 - win rate)^2, so practice goes where the current
-        network is weakest."""
-        if self.args.pool_weighting == "uniform":
-            weights = np.ones(len(paths))
-        else:
-            weights = np.array([(1 - self._win_rate(p)) ** 2 for p in paths])
-        return weights / weights.sum()
-
-    def _opponent(self) -> tuple[str, Network] | None:
-        """A pool network to play (`--pool-weighting`), and its path; None
-        with an empty pool."""
-        paths = pool_snapshots(self.args.dir, self.args.pool_size, self.best_steps)
-        for path in list(self._opponents):
-            if path not in paths:
-                del self._opponents[path]
-        if not paths:
-            return None
-        path = paths[self._pool_rng.choice(len(paths), p=self._pool_weights(paths))]
-        if path not in self._opponents:
-            net = Network(self.encoding, self.args.channels, self.args.blocks).to(
-                self.device, DTYPES[self.args.inference_dtype]).eval()
-            load_weights(net, torch.load(path, map_location="cpu")["model"])
-            self._opponents[path] = net
-        return path, self._opponents[path]
-
-    def _play_pool(self, runner: PoolPlay) -> bool:
-        """A few opponent-pool games, if they're due (`pool_share` of all
-        games) and the pool has any. Returns whether it played."""
-        share = self.args.pool_share
-        total = self._played["self"] + self._played["pool"]
-        if share <= 0 or self._played["pool"] >= share * total:
-            return False
-        drawn = self._opponent()
-        if drawn is None:
-            return False
-        path, opponent = drawn
-        games, evaluated = runner.play(self.model, opponent, 8)
-        # the buffer and the record file, but not the held-out set or
-        # self-play's measures
-        with _records_lock:
-            pe.save_records(games, self.records_path)
-            self.buffer.add(games)
-        with self._lock:
-            self._window["games"] += len(games)
-            self._window["evaluated"] += evaluated
-            results = self._against.setdefault(path, collections.deque(maxlen=POOL_RESULTS))
-            for g in games:
-                current = 1 - g.pool_opponent_seat
-                result = 0.5 if g.winner < 0 else float(g.winner == current)
-                self._pool.append(result)
-                # games in flight when the opponent changed count for the new
-                # one: few, and only at the switch
-                results.append(result)
-            self._played["pool"] += len(games)
-            self.totals["games"] += len(games)
-        return True
+        return self._measure("pool")
 
     def stalled_recent(self) -> float | None:
-        with self._lock:
-            return float(np.mean(self._stalled)) if self._stalled else None
+        return self._measure("stalled")
 
     def commands_per_turn(self) -> float | None:
-        with self._lock:
-            return float(np.mean(self._activity)) if self._activity else None
-
-    def run(self):
-        try:
-            runner = SelfPlay(self.encoding, self.device, self.session,
-                              parallel=self.args.parallel, seed=self.seed,
-                              gpu_lock=self.gpu_lock)
-            self._runner = runner
-            pool = PoolPlay(self.encoding, self.device, self.session,
-                            parallel=self.args.parallel, seed=self.seed + 1,
-                            gpu_lock=self.gpu_lock) if self.args.pool_share > 0 else None
-            while not self.stop.is_set():
-                with self._lock:
-                    weights, self._weights = self._weights, None
-                if weights is not None:
-                    with self.gpu_lock:
-                        load_weights(self.model, weights)
-                    # answers from the old network no longer hold
-                    runner.clear_caches()
-                    if pool is not None:
-                        pool.clear_caches()
-                runner.set_fog_share(self.fog_share)
-                if pool is not None:
-                    pool.set_fog_share(self.fog_share)
-                    if self._play_pool(pool):
-                        continue
-                # a few games at a time, so new weights come in often; the
-                # positions evaluated are counted as they go, not only once a
-                # game finishes
-                counted = [0]
-
-                def progress(p):
-                    with self._lock:
-                        self._window["evaluated"] += int(p["evaluated"]) - counted[0]
-                    counted[0] = int(p["evaluated"])
-
-                games, stats = runner.play(self.model, 8, progress=progress,
-                                           progress_seconds=2.0)
-                # one game in `holdout_every` kept out of training
-                kept, held = [], []
-                ordinary = [g for g in games if g.handicap_leader < 0 and not g.catch_up]
-                for g in games:
-                    self.finished += 1
-                    every = self.args.holdout_every
-                    # handicap games train, but aren't held out
-                    hold = (every and self.finished % every == 0 and g.handicap_leader < 0
-                            and not g.catch_up)
-                    (held if hold else kept).append(g)
-                with _records_lock:
-                    pe.save_records(kept, self.records_path)
-                    self.buffer.add(kept)
-                    if held:
-                        pe.save_records(held, self.holdout_path)
-                        self.holdout.add(held)
-                with self._lock:
-                    self._window["games"] += len(games)
-                    self._window["evaluated"] += int(stats["evaluated"]) - counted[0]
-                    self._decided.extend(g.winner >= 0 for g in ordinary)
-                    self._stalled.extend(g.stalled for g in ordinary)
-                    # every seat plays each turn
-                    self._activity.extend(
-                        g.move_count / max(1, len(g.tribes) * g.turns) for g in ordinary)
-                    for g in games:
-                        leader = g.handicap_leader
-                        if leader >= 0:
-                            self._handicap.append("nobody" if g.winner < 0 else
-                                                  "leader" if g.winner == leader else "trailing")
-                    self.totals["games"] += len(games)
-                    self._played["self"] += len(games)
-        except Exception as e:  # handed to the training thread to raise
-            self.error = e
+        return self._measure("activity")
 
 
 class EvaluationThread(threading.Thread):
@@ -1465,6 +1327,12 @@ class EvaluationThread(threading.Thread):
         log(self.args.dir, {"event": "evaluation", "steps": steps, "against": "crazy", **result})
         for d in differences:
             log(self.args.dir, {"event": "rules difference", "steps": steps, **d})
+        if differences:
+            # our rules differ from the real game's: stop rather than train on
+            # them (the training loop raises this)
+            raise RuntimeError(f"{len(differences)} rules difference(s) against Crazy at step "
+                               f"{steps}, logged as \"rules difference\" (states in "
+                               f"{os.path.join(self.args.dir, 'crazy')}): stopping")
 
     def run(self):
         try:

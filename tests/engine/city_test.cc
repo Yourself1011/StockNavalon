@@ -233,6 +233,25 @@ TEST_CASE("a captured city's connection moves from the old owner's capital to th
     CHECK(game.cities[mine].population == minePop + 1);
 }
 
+TEST_CASE("a captured city the capturer doesn't reach loses its connection: -1 there and at the old capital (game)") {
+    // player 1's city at (4,4) on a road to its capital (6,6), none to
+    // player 0's capital (1,1)
+    Game game = makeGame(fieldMap({"5 5 F=", "4 4 FV"}));
+    clearUnits(game);
+    int city = game.foundCity(game.index(4, 4), 1);
+    int mine = game.players[0].capital, theirs = game.players[1].capital;
+    game.updateAllConnections();
+    REQUIRE(game.cities[city].connectedFor == 1);
+    int cityPop = game.cities[city].population;
+    int minePop = game.cities[mine].population, theirsPop = game.cities[theirs].population;
+    addUnit(game, 0, WARRIOR, 4, 4);
+    game.apply({CAPTURE, game.index(4, 4)});
+    CHECK(game.cities[city].connectedFor == -1);
+    CHECK(game.cities[city].population == cityPop - 1);
+    CHECK(game.cities[theirs].population == theirsPop - 1);
+    CHECK(game.cities[mine].population == minePop);
+}
+
 TEST_CASE("no capture of a city of a player either side is cooling down from (game)") {
     Game game = makeGame(fieldMap());
     clearUnits(game);

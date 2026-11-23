@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 using namespace TechTypes;
 using namespace UnitTypes;
@@ -222,6 +223,27 @@ std::optional<Game> sample(const Game &real, int player,
                 weights[t] = possible.test(t);
             }
             tribe = pick(weights, rng);
+        }
+        if (tribe < 0) {
+            // Inference ruled out every tribe, which it can't if its
+            // arithmetic and the engine's agree: an error, with what it
+            // read, rather than a sample on a tribe of -1 (which crashed
+            // map generation) or on a guess.
+            std::string history;
+            for (const ScoreRecord &r : view.scoreHistory) {
+                if (r.player == q) {
+                    history += " " + std::to_string(r.turn) + ":" + std::to_string(r.score);
+                }
+            }
+            throw std::runtime_error(
+                "determinize: no tribe fits player " + std::to_string(player) + "'s view of player " +
+                std::to_string(q) + " (turn " + std::to_string(view.turn) + ", size " +
+                std::to_string(view.size) + ", head start " +
+                std::to_string(q < static_cast<int>(view.headStart.size()) ? view.headStart[q] : 0) +
+                ", capital income " +
+                std::to_string(q < static_cast<int>(view.capitalIncome.size()) ? view.capitalIncome[q]
+                                                                              : -1) +
+                "); their published scores (turn:score):" + history);
         }
         them.tribe = static_cast<TribeTypes::Tribe>(tribe);
     }

@@ -13,7 +13,7 @@ training.
         --backup pbar --evaluations 200
     python -m stocknavalon.searches runs/ninth --plan bridge none --map-types continents
 
-Turn search (notes/design.md section 9): "off" is today's search, a number
+Turn search (notes/design.md section 9): "off" is command search, a number
 is turn search with that many commandVisits (0: command by command until End
 Turn, large: the policy completes nearly every turn), to --turn-horizon turns.
 --evaluations sets both sides' budget in network evaluations a decision, so
@@ -215,7 +215,7 @@ def main():
         if args.turn_search:
             for k, v in enumerate(per_side(turn_search_values(args.turn_search), 2,
                                            "--turn-search")):
-                parts[k].append("today's search" if v is None else f"turn search ({v})")
+                parts[k].append("command search" if v is None else f"turn search ({v})")
                 if v is not None:
                     changes[k].update(turn_search=True, command_visits=v,
                                       horizon=args.turn_horizon)

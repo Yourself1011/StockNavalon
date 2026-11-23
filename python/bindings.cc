@@ -1355,6 +1355,10 @@ void bindSearch(nb::module_ &m) {
     m.def("save_records", &saveRecords, "records"_a, "path"_a, "append"_a = true,
           "Appends records to a text file, or with append=False replaces it.");
     m.def("load_records", &loadRecords, "path"_a);
+    m.def("records_to_text", &recordsToText, "records"_a,
+          "The records as save_records writes them, as a string.");
+    m.def("records_from_text", &recordsFromText, "text"_a,
+          "Records from records_to_text's string.");
     m.def(
         "thin_policy_targets",
         [](std::vector<GameRecord> records, double share, std::uint64_t seed) {
@@ -1450,7 +1454,7 @@ void bindSearch(nb::module_ &m) {
                                 std::snprintf(which, sizeof which, " (turn search %d)",
                                               search.commandVisits);
                             } else {
-                                std::snprintf(which, sizeof which, " (today's search)");
+                                std::snprintf(which, sizeof which, " (command search)");
                             }
                         }
                         std::snprintf(note, sizeof note,

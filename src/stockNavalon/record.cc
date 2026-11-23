@@ -100,12 +100,8 @@ Command readCommand(std::istream &in) {
 //   <player> <command> <visits> (<command> <count>)...   one line per move
 // where a command is <type> <from> <to> <arg>. The map is regenerated from
 // its settings, with the generator's defaults for everything else.
-void saveRecords(const std::vector<GameRecord> &records, const std::string &path,
-                 bool append) {
-    std::ofstream out(path, append ? std::ios::app : std::ios::trunc);
-    if (!out) {
-        throw std::runtime_error("Can't write " + path);
-    }
+namespace {
+void writeRecords(std::ostream &out, const std::vector<GameRecord> &records) {
     for (const GameRecord &r : records) {
         out << "game " << r.map.size << ' ' << r.map.type << ' ' << r.map.seed
             << ' ' << r.map.candidates << ' ' << r.map.tribes.size();
@@ -174,12 +170,11 @@ void saveRecords(const std::vector<GameRecord> &records, const std::string &path
         }
     }
 }
+} // namespace
 
-std::vector<GameRecord> loadRecords(const std::string &path) {
-    std::ifstream in(path);
-    if (!in) {
-        throw std::runtime_error("Can't read " + path);
-    }
+namespace {
+// `path` names the source in error messages
+std::vector<GameRecord> readRecords(std::istream &in, const std::string &path) {
     std::vector<GameRecord> records;
     std::string word;
     while (in >> word) {
@@ -336,6 +331,35 @@ std::vector<GameRecord> loadRecords(const std::string &path) {
         records.push_back(std::move(r));
     }
     return records;
+}
+} // namespace
+
+void saveRecords(const std::vector<GameRecord> &records, const std::string &path,
+                 bool append) {
+    std::ofstream out(path, append ? std::ios::app : std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("Can't write " + path);
+    }
+    writeRecords(out, records);
+}
+
+std::vector<GameRecord> loadRecords(const std::string &path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("Can't read " + path);
+    }
+    return readRecords(in, path);
+}
+
+std::string recordsToText(const std::vector<GameRecord> &records) {
+    std::ostringstream out;
+    writeRecords(out, records);
+    return out.str();
+}
+
+std::vector<GameRecord> recordsFromText(const std::string &text) {
+    std::istringstream in(text);
+    return readRecords(in, "(text)");
 }
 
 void encodeExamples(const std::vector<GameRecord> &records,

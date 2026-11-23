@@ -33,7 +33,7 @@ import torch
 
 import polyengine as pe
 
-from .model import Network, belief_outputs, pick_device, tie_breaks
+from .model import Network, as_input, belief_outputs, pick_device, tie_breaks
 from .settings import add_search_arguments, side_searches
 
 def _repository() -> str:
@@ -61,21 +61,22 @@ except ImportError:  # no oracle code here: matches against Crazy can't run
 
 
 def evaluator(model: Network, device: torch.device, encoding: pe.Encoding, gpu_lock=None):
-    """The network as pe.search's evaluate callback (under `gpu_lock`, if
-    given, as a run's matches share the GPU with training)."""
+    """The network as pe.search's (and run_cli's) evaluate callback, its
+    inputs in the model's precision (a run's network is float16), every GPU
+    step under `gpu_lock` if given, as a run's matches share the GPU with
+    training (MPS has trouble with two threads submitting at once)."""
     lock = gpu_lock if gpu_lock is not None else contextlib.nullcontext()
 
     @torch.no_grad()
     def evaluate(planes, globals_, rows, slots, belief_rows):
         with lock:
-            out = model(torch.from_numpy(planes).to(device),
-                        torch.from_numpy(globals_).to(device))
-        logits = out["policy"][torch.from_numpy(rows).to(device),
-                               torch.from_numpy(slots).to(device)]
-        beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
-                   .float().cpu().numpy() if len(belief_rows) else None)
-        return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
-                np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
+            out = model(as_input(planes, model, device), as_input(globals_, model, device))
+            logits = out["policy"][torch.from_numpy(rows).to(device),
+                                   torch.from_numpy(slots).to(device)]
+            beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
+                       .float().cpu().numpy() if len(belief_rows) else None)
+            return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
+                    np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
     return evaluate
 
 
@@ -237,7 +238,9 @@ class CrazySeat:
                 step.check(game, legal)
             except mirror.Difference as d:
                 self.checking = False
-                print(f"rules check: {d.verdict} (not checked from here on)", flush=True)
+                saved = (f"; saved in {self.lockstep.args.save}/{self.lockstep.seed}.json"
+                         if self.lockstep.args.save else "")
+                print(f"rules check: {d.verdict} (not checked from here on{saved})", flush=True)
                 for line in d.detail:
                     print("    " + line, flush=True)
         return legal

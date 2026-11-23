@@ -31,13 +31,12 @@ import os
 import random
 import sys
 
-import numpy as np
 import torch
 
 import polyengine as pe
 
 from . import crazy
-from .model import Network, belief_outputs, load_weights, pick_device, tie_breaks
+from .model import Network, load_weights, pick_device
 from .settings import add_search_arguments, side_count, side_searches
 
 
@@ -87,6 +86,9 @@ def main():
                              "(stocknavalon.crazy; needs the oracle built and the game "
                              "set up), on the real game's map, in lockstep with ours "
                              "and its rules checked on the way")
+    parser.add_argument("--crazy-save", default=os.path.join("game", "crazy"),
+                        help="with --crazy, where the real state and ours are saved at a "
+                             "rules difference (kept out of git, with the game's files)")
     parser.add_argument("--device", default=None)
     parser.add_argument("--network-beliefs", action=argparse.BooleanOptionalAction,
                         default=True,
@@ -110,16 +112,7 @@ def main():
     model = load(args.checkpoint, device, args.channels, args.blocks)
     encoding = pe.Encoding()
 
-    @torch.no_grad()
-    def evaluate(planes, globals_, rows, slots, belief_rows):
-        out = model(torch.from_numpy(planes).to(device),
-                    torch.from_numpy(globals_).to(device))
-        logits = out["policy"][torch.from_numpy(rows).to(device),
-                               torch.from_numpy(slots).to(device)]
-        beliefs = (belief_outputs(out, torch.from_numpy(belief_rows).to(device), encoding)
-                   .float().cpu().numpy() if len(belief_rows) else None)
-        return (logits.float().cpu().numpy(), out["value"].float().cpu().numpy(), beliefs,
-                np.ascontiguousarray(tie_breaks(out).float().cpu().numpy()))
+    evaluate = crazy.evaluator(model, device, encoding)
 
     # the per-side flags (--turn-search, --replies, --backup): one value for
     # every bot, or one per seat (seat 0 first)
@@ -127,7 +120,7 @@ def main():
     hooks = {}
     crazy_seat = None
     if args.crazy is not None:
-        crazy_seat = start_crazy(args.crazy, rest)
+        crazy_seat = start_crazy(args.crazy, rest, args.crazy_save)
         hooks = dict(start=crazy_seat.start, before_command=crazy_seat.before_command,
                      outside_seats=[args.crazy], outside_turn=crazy_seat.turn)
     try:
@@ -145,7 +138,7 @@ def main():
     sys.exit(code)
 
 
-def start_crazy(seat: int, rest: list[str]) -> crazy.CrazySeat:
+def start_crazy(seat: int, rest: list[str], save: str) -> crazy.CrazySeat:
     """The Crazy seat for the CLI's arguments: the map type and tribes
     (positional), --size and --seed."""
     cli = argparse.ArgumentParser(add_help=False)
@@ -158,7 +151,7 @@ def start_crazy(seat: int, rest: list[str]) -> crazy.CrazySeat:
     if len(tribes) != 2:
         raise SystemExit("--crazy plays two-player games")
     return crazy.CrazySeat(seat, tribes, known.seed,
-                           crazy.Settings(type=map_type, size=known.size))
+                           crazy.Settings(type=map_type, size=known.size, save=save))
 
 if __name__ == "__main__":
     main()

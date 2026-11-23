@@ -380,29 +380,35 @@ def force_outcome(game, command, before, after, n, seat_of):
 
 # ---- one game on both ----
 
-def save(args, seed, real, legal, previous, game=None):
+def _ours(game):
+    """Our side, as saved with a difference: the projection compared, each
+    city (with its connection), unit homes and our legal list."""
+    projected = project_ours(game)
+    return {"tiles": {str(t): v for t, v in projected["tiles"].items()},
+            "units": {str(t): v for t, v in projected["units"].items()},
+            "players": {str(p): v for p, v in projected["players"].items()},
+            "cities": [{"tile": c.tile, "owner": c.owner, "level": c.level,
+                        "population": c.population, "pending": c.pending_rewards,
+                        "connected_for": c.connected_for}
+                       for c in game.cities],
+            # each unit's tile and home city's tile
+            "homes": {str(u.tile): (game.cities[u.home].tile if u.home >= 0 else -1)
+                      for u in game.units if u.alive},
+            "legal": [game.describe(c) for c in game.legal_commands()]}
+
+
+def save(args, seed, real, legal, previous, game=None, previous_game=None):
     """The real state and legal list at a difference, the state before the
-    last command, and our side (the projection compared, our legal list),
-    for a closer look (the real maps aren't seeded, so a game can't be
-    replayed)."""
+    last command, and our side then and now, for a closer look (the real
+    maps aren't seeded, so a game can't be replayed)."""
     if args.save:
         os.makedirs(args.save, exist_ok=True)
-        ours = None
-        if game is not None:
-            projected = project_ours(game)
-            ours = {"tiles": {str(t): v for t, v in projected["tiles"].items()},
-                    "units": {str(t): v for t, v in projected["units"].items()},
-                    "players": {str(p): v for p, v in projected["players"].items()},
-                    "cities": [{"tile": c.tile, "owner": c.owner, "level": c.level,
-                                "population": c.population, "pending": c.pending_rewards}
-                               for c in game.cities],
-                    # each unit's tile and home city's tile
-                    "homes": {str(u.tile): (game.cities[u.home].tile if u.home >= 0 else -1)
-                              for u in game.units if u.alive},
-                    "legal": [game.describe(c) for c in game.legal_commands()]}
         with open(os.path.join(args.save, f"{seed}.json"), "w") as f:
-            json.dump({"state": real.state(), "legal": legal, "previous": previous, "ours": ours},
+            json.dump({"state": real.state(), "legal": legal, "previous": previous,
+                       "ours": _ours(game) if game is not None else None,
+                       "ours_previous": _ours(previous_game) if previous_game is not None else None},
                       f, default=str)
+
 
 def random_choice(rng, legal):
     """A random command, ending the turn 15% of the time."""
@@ -509,14 +515,14 @@ class Lockstep:
                     f"{t['improvement']['rewards']}"
                     for t in state["Map"]["tiles"]
                     if t["improvement"] and t["improvement"]["type"] == "City" and t["owner"]))
-            save(args, self.seed, real, legal, self.previous, game)
+            save(args, self.seed, real, legal, self.previous, game, self.previous_game)
             raise Difference(f"state differs after {last}", self.history[-args.history:] + diff)
         translated = [to_command(c, game, self.seat_of) for c in legal]
         theirs = {command_key(c) for c in translated}
         mine = {command_key(c) for c in game.legal_commands()
                 if c.type not in (pe.CommandType.RESIGN, pe.CommandType.STAY)}
         if theirs != mine:
-            save(args, self.seed, real, legal, self.previous, game)
+            save(args, self.seed, real, legal, self.previous, game, self.previous_game)
             only_real = [game.describe(c) for c in translated if command_key(c) not in mine]
             only_ours = [game.describe(c) for c in game.legal_commands()
                          if command_key(c) in mine - theirs]
@@ -531,7 +537,7 @@ class Lockstep:
         k = move["index"]
         chosen = move["command"]
         if k < 0 and chosen["$type"] != "StayCommand":
-            save(self.args, self.seed, self.real, legal, self.previous, game)
+            save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game)
             raise Difference(f"the AI played a command not in the legal list after {self.last}",
                              self.history[-self.args.history:] + [str(chosen)])
         return (k if k >= 0 else "ai"), chosen, to_command(chosen, game, self.seat_of)
@@ -542,7 +548,7 @@ class Lockstep:
         for i, c in enumerate(legal):
             if command_key(to_command(c, game, self.seat_of)) == command_key(command):
                 return i
-        save(self.args, self.seed, self.real, legal, self.previous, game)
+        save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game)
         ours_legal = any(command_key(c) == command_key(command) for c in game.legal_commands())
         raise Difference(f"the move isn't in the real legal list after {self.last}",
                          self.history[-self.args.history:] +
@@ -552,6 +558,7 @@ class Lockstep:
         """Plays the command on the real game, fixes its random outcome on
         ours, and (with apply_ours) plays it on ours."""
         state = self.real.state()
+        self.previous_game = game.copy()
         rejected = self.real.apply(k)
         if rejected:
             raise Difference(f"the real game rejected {chosen}", [str(rejected)])
@@ -585,6 +592,7 @@ class Lockstep:
 
     pending_explorer = False
     after_reward = None
+    previous_game = None
 
     def finish_reward(self, game):
         """After ours applied a reward: the rest of an Explorer the reward

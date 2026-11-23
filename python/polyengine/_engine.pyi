@@ -1697,6 +1697,12 @@ def save_records(records: Sequence[GameRecord], path: str, append: bool = True) 
 
 def load_records(path: str) -> list[GameRecord]: ...
 
+def records_to_text(records: Sequence[GameRecord]) -> str:
+    """The records as save_records writes them, as a string."""
+
+def records_from_text(text: str) -> list[GameRecord]:
+    """Records from records_to_text's string."""
+
 def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int = 0) -> list[GameRecord]:
     """
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.

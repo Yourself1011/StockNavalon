@@ -138,6 +138,9 @@ void thinPolicyTargets(std::vector<GameRecord> &records, double share,
 void saveRecords(const std::vector<GameRecord> &records, const std::string &path,
                  bool append = true);
 std::vector<GameRecord> loadRecords(const std::string &path);
+// the same text, as a string (games between processes)
+std::string recordsToText(const std::vector<GameRecord> &records);
+std::vector<GameRecord> recordsFromText(const std::string &text);
 
 // How the value target and its weight are made (docs/stockNavalon.md section
 // 6). The target is about winning, GameRecord::value, blended with the final

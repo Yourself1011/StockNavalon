@@ -4,6 +4,7 @@
 #include "encoding.h"
 #include "helpers.h"
 #include "mapgen.h"
+#include "tribeInference.h"
 #include "view.h"
 
 using namespace TribeTypes;
@@ -393,4 +394,30 @@ TEST_CASE("a sample's opponent has met the player once the player sent them an e
         determinize(real, player, beliefs, 1, Detail::TILES_AND_UNITS, 50);
     REQUIRE(after);
     CHECK(after->players[q].hasMet(player));
+}
+
+TEST_CASE("an opponent's tribe no inference allows stops determinization, with what it read") {
+    // a starting score no tribe could have: inference rules out every tribe
+    // (as a disagreement between its arithmetic and the engine's would).
+    // The sample once took tribe -1, and map generation crashed on it; now
+    // it's an error naming the inputs, so a run stops rather than training on
+    // it.
+    Game real = randomGame(3, 0);
+    int player = real.currentPlayer, q = 1 - player;
+    for (ScoreRecord &r : real.scoreHistory) {
+        if (r.player == q) {
+            r.score = 1;
+        }
+    }
+    PlayerView view = makeView(real, player);
+    REQUIRE_FALSE(view.tribes[q]);
+    REQUIRE(possibleTribes(view, q).none());
+    Beliefs beliefs = priorBeliefs(view);
+    for (Detail detail : {Detail::TILES_AND_UNITS, Detail::EVERYTHING}) {
+        CHECK_THROWS_WITH_AS(determinize(real, player, beliefs, 1, detail),
+                             doctest::Contains("no tribe fits"), std::runtime_error);
+        CHECK_THROWS_WITH_AS(determinize(real, player, beliefs, 1, detail),
+                             doctest::Contains("their published scores (turn:score): 0:1"),
+                             std::runtime_error);
+    }
 }
