@@ -105,6 +105,30 @@ TEST_CASE("Pacifist: a conversion doesn't start the count over (game)") {
     CHECK(player.peacefulTurns == 3);
 }
 
+TEST_CASE("Pacifist: a stomp on a hidden unit doesn't start the count over (game)") {
+    for (bool hidden : {true, false}) {
+        CAPTURE(hidden);
+        // water down x = 3, a Juggernaut on it, an enemy beside its next tile
+        std::vector<std::string> water;
+        for (int y = 0; y < 8; y++) {
+            water.push_back("3 " + std::to_string(y) + " W");
+        }
+        Game game = makeGame(bigMap(water));
+        clearUnits(game);
+        Player &player = game.players[0];
+        player.techs.set(TechTypes::MEDITATION);
+        player.peacefulTurns = 3;
+        int jug = addUnit(game, 0, UnitTypes::GIANT, 3, 3);
+        game.units[jug].type = UnitTypes::JUGGERNAUT;
+        int enemy = addUnit(game, 1, hidden ? UnitTypes::CLOAK : UnitTypes::WARRIOR, 2, 5);
+        game.units[enemy].hidden = hidden;
+        int hp = game.units[enemy].hp;
+        game.apply({CommandTypes::MOVE, game.index(3, 3), game.index(3, 4)});
+        CHECK(game.units[enemy].hp < hp);
+        CHECK(player.peacefulTurns == (hidden ? 3 : 0));
+    }
+}
+
 TEST_CASE("Pacifist: 5 turns without attacking after Meditation") {
     Game game = makeGame(bigMap());
     clearUnits(game);

@@ -80,18 +80,26 @@ TEST_CASE("moves and builds never touch unexplored tiles") {
     CHECK(canReach(open, r2, 6, 2));
 }
 
-TEST_CASE("everything inside your borders is revealed") {
-    Game game = makeFogGame(bigMap());
-    int city = game.foundCity(game.index(7, 2), 0);
-    CHECK(seen(game, 0, 8, 3));
-    CHECK_FALSE(seen(game, 0, 9, 2));
+TEST_CASE("everything inside your borders is revealed, and border growth explores its 5x5") {
+    for (bool area : {true, false}) {
+        CAPTURE(area);
+        Game game = makeFogGame(bigMap());
+        game.settings.rulesVersion =
+            area ? RuleVersions::LATEST : RuleVersions::BORDER_GROWTH_REVEALS_AREA - 1;
+        int city = game.foundCity(game.index(7, 2), 0);
+        // (9,4) another's, so not claimed
+        game.foundCity(game.index(10, 5), 1);
+        CHECK(seen(game, 0, 8, 3));
+        CHECK_FALSE(seen(game, 0, 9, 2));
 
-    game.cities[city].level = 3;
-    game.addPopulation(city, 4);
-    game.apply({CommandTypes::CITYREWARD, game.index(7, 2), -1,
-                CityRewards::BORDERGROWTH});
-    CHECK(seen(game, 0, 9, 2));
-    CHECK(seen(game, 0, 9, 4));
+        game.cities[city].level = 3;
+        game.addPopulation(city, 4);
+        game.apply({CommandTypes::CITYREWARD, game.index(7, 2), -1,
+                    CityRewards::BORDERGROWTH});
+        CHECK(seen(game, 0, 9, 2));
+        CHECK(game.tileOwner(game.index(9, 4)) == 1);
+        CHECK(seen(game, 0, 9, 4) == area);
+    }
 }
 
 TEST_CASE("finding a lighthouse gives the capital a population, once") {
@@ -171,9 +179,14 @@ TEST_CASE("hidden units") {
         CHECK(game.attackTargets(w).empty());
         CHECK(makeView(game, 0).tiles[game.index(5, 5)].unit >= 0);
     }
-    SUBCASE("an enemy moving onto it reveals it and keeps its move") {
+    SUBCASE("an enemy moving onto it reveals it, meets its tribe and keeps its move") {
         REQUIRE(canReach(game, w, 5, 5));
+        game.players[1].met = 0;
+        int stars = game.players[1].stars;
         game.apply({MOVE, game.index(6, 5), game.index(5, 5)});
+        // (BUMP_MEETS)
+        CHECK(game.players[1].hasMet(0));
+        CHECK(game.players[1].stars > stars);
         CHECK_FALSE(game.units[cloak].hidden);
         CHECK(game.units[cloak].tile == game.index(5, 5));
         CHECK(game.units[w].tile == game.index(6, 5));

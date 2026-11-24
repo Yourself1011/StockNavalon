@@ -242,6 +242,21 @@ TEST_CASE("Mind Bender converts instead of damaging") {
         attack(game, m, 3, 4);
         CHECK(game.units[e].home == other);
     }
+    SUBCASE("a Dagger belongs to no city, but a Pirate does (game)") {
+        game.tiles[game.index(3, 4)].terrain = TerrainTypes::WATER;
+        int dagger = addUnit(game, 1, UnitTypes::DAGGER, 2, 3);
+        int pirate = addUnit(game, 1, UnitTypes::DAGGER, 3, 4);
+        game.units[pirate].type = UnitTypes::PIRATE;
+        for (int target : {dagger, pirate}) {
+            game.units[m].canAttack = true;
+            attack(game, m, game.tileX(game.units[target].tile), game.tileY(game.units[target].tile));
+            CHECK(game.units[target].owner == 0);
+        }
+        CHECK(game.units[dagger].home == -1);
+        CHECK(game.units[pirate].home == game.players[0].capital);
+        // and its Dagger lands with it
+        CHECK(game.units[pirate].passengerHome == game.players[0].capital);
+    }
 }
 
 TEST_CASE("no infiltrating a city one's own unit stands on (game)") {
@@ -285,9 +300,13 @@ TEST_CASE("infiltration as the game does it: rebellion stars, a robbed city, Dag
         const Unit *onCity = game.unitAt(game.index(6, 6));
         REQUIRE(onCity);
         CHECK(onCity->type == DAGGER);
+        // none belongs to the city, the one on it included (game)
         int daggers = 0;
         for (const Unit &u : game.units) {
-            daggers += u.alive && u.type == DAGGER;
+            if (u.alive && u.type == DAGGER) {
+                daggers++;
+                CHECK(u.home == -1);
+            }
         }
         CHECK(daggers == 2);
         // a robbed city can't be infiltrated again until its owner's turn ends

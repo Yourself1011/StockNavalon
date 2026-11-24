@@ -250,16 +250,78 @@ constexpr int INTEGER_DAMAGE = 66;
 // RevealAction)
 constexpr int BUMP_TURNS = 67;
 // the unit actions that use its turn (Recover, Heal Others, Stay, Capture,
-// Examine Ruins) set the game's "attacked" too, so an upgrade to a Dash
-// boat afterwards gives no attack back (UPGRADE_DASHES)
+// Examine Ruins, Harvest) set the game's "attacked" too, as being converted
+// and being made do, so an upgrade to a Dash boat afterwards gives no attack
+// back (UPGRADE_DASHES)
 constexpr int ACTIONS_SET_ATTACKED = 68;
 // a boat can't land a Hide unit (a Cloak) on an enemy city either
 constexpr int NO_HIDDEN_LANDING_ON_CITIES = 69;
-// Persist is decided before the unit moves in: targets from the dead
-// unit's tile as seen before the move reveals more, and none if it embarks
-// or lands there (which ends its turn) (game)
+// Persist gives no attack to a unit that embarks or lands as it moves in
+// (which ends its turn) (game)
 constexpr int PERSIST_BEFORE_MOVE_IN = 70;
-constexpr int LATEST = 70;
+// border growth explores every tile within the new borders' radius, its
+// city's or not (as a capture does)
+constexpr int BORDER_GROWTH_REVEALS_AREA = 71;
+// a market counts each producer next to it as at least 1, a level-0 one
+// too (game, measured)
+constexpr int MARKET_COUNTS_PRODUCERS = 72;
+// a ruin's Explorer appears on the ruin, pushing the examiner off (game:
+// TrainUnitOnOccupiedSpace; a city reward's Explorer pushes no one)
+constexpr int RUIN_EXPLORER_PUSHES = 73;
+// a stomp that hurts is an attack on the victim's tribe (embassies, war),
+// and so is moving or landing onto an enemy city (game, measured)
+constexpr int STOMP_AND_SIEGE_ATTACK = 74;
+// units' home cities as the game keeps them: a ruin's soldier has none; an
+// infiltration's Dagger made on the city tile belongs to that city (wrong:
+// see GAME_DAGGER_HOMES), and a unit counts toward its city's cap,
+// Independent or not (the cap counts units by home);
+// a capture takes the city from the other players' units only (game)
+constexpr int GAME_UNIT_HOMES = 75;
+// examining a ruin reveals a hidden examiner (game: ExamineRuinsCommand's
+// RevealAction)
+constexpr int EXAMINING_REVEALS = 76;
+// a capture leaves every unit's home alone, so the old owner's units keep
+// counting toward the city's cap (wrong: see CAPTURE_SPARES_PASSENGERS)
+constexpr int CAPTURE_KEEPS_HOMES = 77;
+// a ruin's Explorer pushes no one after all: the reward only sends a new
+// unit scouting (game: ExamineRuinsAction's ScoutMoveAction, no
+// TrainUnitOnOccupiedSpace); RUIN_EXPLORER_PUSHES holds from 73 to 77 only
+constexpr int RUIN_EXPLORER_STAYS = 78;
+// a capture does take the city from the other players' units on the map
+// (as GAME_UNIT_HOMES, so CAPTURE_KEEPS_HOMES holds for 77 and 78 only),
+// but not from a boat's passenger, which lands with its home (game:
+// CaptureCityAction clears the tiles' units only)
+constexpr int CAPTURE_SPARES_PASSENGERS = 79;
+// an infiltration's Daggers belong to no city, the one on the city tile
+// neither (as GAME_UNIT_HOMES had it); a converted Independent boat (a
+// Pirate) does belong to the converter's city, as other converted units do
+// (game: ConvertAction skips the home only for one without a passenger)
+constexpr int GAME_DAGGER_HOMES = 80;
+// a capture updates the old owner's connections on their own first: with
+// the capturer's (due from what the capture explored) run alongside, in
+// player order, the capturer could take the city's connection over before
+// the old owner lost it, and its population was never taken away
+constexpr int OLD_OWNER_DISCONNECTS_FIRST = 81;
+// a move that bumps into a hidden unit meets its tribe: the mover has seen
+// it (game, measured)
+constexpr int BUMP_MEETS = 82;
+// harvesting reveals a hidden boat (a Dinghy) doing it (game: BuildAction's
+// RevealAction; a build by the player on its hidden unit's tile doesn't)
+constexpr int HARVEST_REVEALS = 83;
+// a stomp on a hidden unit neither starts Pacifist over nor is an attack on
+// its tribe (game: BattleResults.shouldResetPacifistTask, false for an
+// Invisible defender)
+constexpr int HIDDEN_STOMPS_UNCOUNTED = 84;
+// a temple's level is kept (Tile::level), set at its owner's turn start: a
+// captured one keeps it until its new owner's next turn starts, where
+// before it was worked out from the new owner's turns at once (game:
+// StartTurnAction's UpdateImprovementLevel)
+constexpr int TEMPLE_LEVEL_KEPT = 85;
+// capturing a city is an attack on its old owner: the embassies between
+// them go, and they're at war (game: CaptureCityAction's RemoveEmbassies,
+// ModifyDiplomacyRelationsFromAttack)
+constexpr int CAPTURE_IS_ATTACK = 86;
+constexpr int LATEST = 86;
 } // namespace RuleVersions
 
 struct GameSettings {
@@ -629,8 +691,13 @@ class Game {
     int revealAlongPath(int unit, int to);
     void moveUnit(int unit, int to);
     void disembark(int unit, int to);
+    // a unit arriving on an enemy city attacks its tribe (embassies, war)
+    // (STOMP_AND_SIEGE_ATTACK)
+    void siegeAttack(int unit, int to);
     // the land unit on a port becomes a boat carrying it, which ends its turn
     void embark(int unit);
+    // the boat becomes the land unit it carries, with that unit's home
+    void land(int unit);
     // puts the unit on the tile, facing the way it came from `from` (its
     // own tile if -1), and applies Stomp
     void placeUnit(int unit, int to, int from = -1);

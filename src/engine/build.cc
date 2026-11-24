@@ -214,7 +214,8 @@ void Game::build(int tile, ImprovementType type) {
     if (!settings.follows(RuleVersions::BUILDINGS_KEEP_RESOURCES)) {
         t.resource = ResourceTypes::NONE;
     }
-    t.level = 0;
+    // a temple starts at level 1 (TEMPLE_LEVEL_KEPT)
+    t.level = isTemple(type) ? 1 : 0;
     t.builtTurn = turn;
     // the game connects a port before adding its population, and levels
     // the producers around last

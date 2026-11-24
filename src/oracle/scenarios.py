@@ -409,8 +409,49 @@ def portkills(rng):
     return setup, favouring(kind("AttackCommand"), 0.95)
 
 
+def cloaks(rng):
+    """Cloaks beside their own port: hiding, embarking and landing."""
+    def setup(real, game, seat_of):
+        both = Both(real, game, seat_of)
+        seat = game.current_player
+        for tech in ("Fishing", "Sailing", "Diplomacy"):
+            both.tech(seat, tech)
+        both.stars(seat, 40)
+        x0, y0 = capital(game, seat)
+        land = (pe.TerrainType.FIELD, pe.TerrainType.FOREST)
+        for wx, wy in neighbours(game, x0, y0, (pe.TerrainType.WATER,)):
+            shore = [p for p in neighbours(game, wx, wy, land) if game.tiles[both.tile(*p)].unit < 0]
+            if game.tile_owner(both.tile(wx, wy)) == seat and shore:
+                both.build(seat, "Port", wx, wy)
+                both.unit(seat, "Cloak", *shore[0], ready=True)
+                break
+    return setup, favouring(kind("MoveCommand", "DisembarkCommand"), 0.9)
+
+
+def infiltrations(rng):
+    """Cloaks beside the enemy capital, empty or defended: the Daggers, their
+    homes, and captures after."""
+    def setup(real, game, seat_of):
+        both = Both(real, game, seat_of)
+        seat = game.current_player
+        for tech in ("Diplomacy", "Fishing"):
+            both.tech(seat, tech)
+        both.stars(seat, 30)
+        x0, y0 = capital(game, 1 - seat)
+        both.city_level(x0, y0, 3)
+        land = (pe.TerrainType.FIELD, pe.TerrainType.FOREST)
+        free = [p for p in neighbours(game, x0, y0, land) if game.tiles[both.tile(*p)].unit < 0]
+        for x, y in free[:2]:
+            both.unit(seat, "Cloak", x, y, ready=True)
+        if rng.random() < 0.5 and (unit := game.tiles[both.tile(x0, y0)].unit) >= 0:
+            # an empty city half the time
+            both.ask(f"set 0 unit {x0} {y0} health 1")
+            game.set_unit_hp(both.tile(x0, y0), 1)
+    return setup, favouring(kind("AttackCommand", "CaptureCommand", "MoveCommand"), 0.9)
+
+
 SCENARIOS = {f.__name__: f for f in (starvation, embassies, pushes, fights, stomps, boats, ports,
-                                     connections, kills, portkills)}
+                                     connections, kills, portkills, cloaks, infiltrations)}
 
 
 def main():

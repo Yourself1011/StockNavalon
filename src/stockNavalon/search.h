@@ -382,6 +382,10 @@ class BatchedSearch {
     // per game, the seed of its root moves' Gumbel noise, so every
     // determinized tree of a game draws the same noise for the same command
     std::vector<std::uint64_t> gumbelSeeds;
+    // per game, the samples no determinization matched, and why its draws
+    // were turned down (for result's error)
+    std::vector<int> unsampled;
+    std::vector<DeterminizeStats> drawn;
     std::vector<EvalRequest> requests;
     // the tree each request is for
     std::vector<int> requestTree;

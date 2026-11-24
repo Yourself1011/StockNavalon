@@ -1733,7 +1733,7 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
 
 ENCODING_VERSION: int = 16
 
-RULES_VERSION: int = 70
+RULES_VERSION: int = 86
 
 MAP_TYPE_COUNT: int = 6
 

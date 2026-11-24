@@ -219,6 +219,33 @@ TEST_CASE("a hidden unit the player was warned of is resampled next to the warni
     }
 }
 
+TEST_CASE("an enemy in the fog whose zone of control the player's moves show is placed there") {
+    // player 0 has explored x, y <= 4, and the Rider at (4,0) the tiles around
+    // it; water at (3,1) leaves it one way south, past (4,1), beside the
+    // Warrior at (5,2) in the fog (a draw making (5,2) water is turned down)
+    Game real = makeFogGame(bigMap({"3 1 W"}));
+    clearUnits(real);
+    int rider = addUnit(real, 0, UnitTypes::RIDER, 4, 0);
+    Game open = real;
+    addUnit(real, 1, UnitTypes::WARRIOR, 5, 2);
+    REQUIRE_FALSE(makeView(real, 0).tiles[real.index(5, 2)].explored);
+    auto reaches = [&](const Game &g, int x, int y) {
+        std::vector<int> t = g.moveTargets(g.tiles[real.units[rider].tile].unit);
+        return std::find(t.begin(), t.end(), g.index(x, y)) != t.end();
+    };
+    REQUIRE(reaches(open, 4, 2));
+    REQUIRE_FALSE(reaches(real, 4, 2));
+
+    Beliefs beliefs = priorBeliefs(makeView(real, 0));
+    for (std::uint64_t seed = 0; seed < 20; seed++) {
+        std::optional<Game> sample =
+            determinize(real, 0, beliefs, seed, Detail::TILES_AND_UNITS);
+        REQUIRE(sample);
+        checkInvariants(*sample);
+        CHECK_FALSE(reaches(*sample, 4, 2));
+    }
+}
+
 TEST_CASE("only what nothing else explains proves a tech") {
     using namespace UnitTypes;
     // player 0 has explored x, y <= 4; their units there are visible

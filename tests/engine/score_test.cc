@@ -42,12 +42,18 @@ TEST_CASE("score follows cities, temples, techs and units") {
         CHECK(game.score(0) == start + 300);
     }
     SUBCASE("temples gain 100 a level every 2 turns, up to 5") {
-        game.tiles[game.index(3, 3)].building = ImprovementTypes::TEMPLE;
-        game.tiles[game.index(3, 3)].builtTurn = game.turn;
-        CHECK(game.score(0) == start + 100);
-        game.turn += 2;
+        game.players[0].stars = 100;
+        game.players[0].techs.set(TechTypes::FREESPIRIT);
+        game.placeBuilding(0, game.index(3, 3), ImprovementTypes::TEMPLE);
+        start = game.score(0) - 100;
+        auto rounds = [&](int n) {
+            for (int i = 0; i < 2 * n; i++) {
+                game.apply({CommandTypes::ENDTURN});
+            }
+        };
+        rounds(2);
         CHECK(game.score(0) == start + 200);
-        game.turn += 20;
+        rounds(20);
         CHECK(game.score(0) == start + 500);
     }
     SUBCASE("units count for whoever first had them") {
@@ -121,7 +127,10 @@ TEST_CASE("examining a ruin") {
     game.apply({CommandTypes::ENDTURN});
     game.apply({CommandTypes::ENDTURN});
     REQUIRE(hasCommand(game, examine));
+    // and reveals the examiner (game)
+    game.units[unit].hidden = true;
     game.apply(examine);
+    CHECK_FALSE(game.units[unit].hidden);
     CHECK(game.tiles[game.index(4, 4)].building == ImprovementTypes::NONE);
     CHECK_FALSE(game.units[unit].canMove);
     CHECK_FALSE(game.units[unit].canAttack);
@@ -160,7 +169,7 @@ TEST_CASE("ruin rewards and their conditions") {
         game.apply({CommandTypes::CITYREWARD, game.cities[capital].tile, -1, CityRewards::WORKSHOP});
         CHECK(game.cities[capital].population == 1);
     }
-    SUBCASE("a veteran Swordsman on the ruin, of the city whose land it's on: none here (game)") {
+    SUBCASE("a veteran Swordsman on the ruin, belonging to no city (game)") {
         int capital = game.players[0].capital;
         int count = game.unitCount(capital);
         game.giveRuinReward(unit, G::RUIN_UNIT);
@@ -169,16 +178,22 @@ TEST_CASE("ruin rewards and their conditions") {
         CHECK(swordsman->type == UnitTypes::SWORDSMAN);
         CHECK(swordsman->veteran);
         CHECK(swordsman->hp == 200);
-        // unclaimed land: no city, so no cap
+        // no city, so no cap, on its owner's land or not (GAME_UNIT_HOMES)
         CHECK(swordsman->home == -1);
         CHECK(game.unitCount(capital) == count);
-        // on the capital's land it's the capital's, and counts toward its cap
         game.tiles[game.index(5, 5)].territory = capital;
         game.giveRuinReward(game.tiles[game.index(5, 5)].unit, G::RUIN_UNIT);
-        CHECK(game.units[game.tiles[game.index(5, 5)].unit].home == capital);
-        CHECK(game.unitCount(capital) == count + 1);
+        CHECK(game.units[game.tiles[game.index(5, 5)].unit].home == -1);
         // the examiner never moved, so it's pushed toward the centre
         CHECK(game.units[unit].tile == game.index(6, 6));
+    }
+    SUBCASE("an Explorer leaves the examiner on the ruin (game), but pushed it in 73-77") {
+        Game older = game;
+        game.giveRuinReward(unit, G::RUIN_EXPLORER);
+        CHECK(game.units[unit].tile == game.index(5, 5));
+        older.settings.rulesVersion = RuleVersions::RUIN_EXPLORER_STAYS - 1;
+        older.giveRuinReward(unit, G::RUIN_EXPLORER);
+        CHECK(older.units[unit].tile == game.index(6, 6));
     }
     SUBCASE("the examiner is pushed the way it faces") {
         game.units[unit].facing = 1;  // west
@@ -279,19 +294,53 @@ TEST_CASE("others see a score only when its player ends their turn") {
 TEST_CASE("a temple's level and next level-up are visible to everyone") {
     Game game = makeGame(bigMap());
     int tile = game.index(3, 3);
-    game.tiles[tile].building = ImprovementTypes::TEMPLE;
-    game.tiles[tile].builtTurn = game.turn;
+    game.players[0].stars = 100;
+    game.players[0].techs.set(TechTypes::FREESPIRIT);
+    game.placeBuilding(0, tile, ImprovementTypes::TEMPLE);
+    auto rounds = [&](int n) {
+        for (int i = 0; i < 2 * n; i++) {
+            game.apply({CommandTypes::ENDTURN});
+        }
+    };
     for (int player : {0, 1}) {
         PlayerView::TileView t = makeView(game, player).tiles[tile];
         CHECK(t.level == 1);
         CHECK(t.turnsToLevelUp == 2);
     }
-    game.turn += 3;
+    rounds(3);
     CHECK(makeView(game, 1).tiles[tile].level == 2);
     CHECK(makeView(game, 1).tiles[tile].turnsToLevelUp == 1);
-    game.turn += 20;
+    rounds(20);
     CHECK(makeView(game, 1).tiles[tile].level == 5);
     CHECK(makeView(game, 1).tiles[tile].turnsToLevelUp == 0);
+}
+
+TEST_CASE("a captured temple keeps its level until its new owner's turn starts (game)") {
+    // player 1's temple built in its turn 1; player 0 takes it in turn 2,
+    // before player 1's turn 2 would have levelled it, so it stays at 1
+    Game game = makeGame(fieldMap({"4 4 FV"}));
+    clearUnits(game);
+    int village = game.index(4, 4);
+    int city = game.foundCity(village, 1);
+    (void)city;
+    int temple = game.index(4, 5);
+    game.apply({CommandTypes::ENDTURN});
+    game.players[1].stars = 100;
+    game.players[1].techs.set(TechTypes::FREESPIRIT);
+    game.placeBuilding(1, temple, ImprovementTypes::TEMPLE);
+    REQUIRE(game.tileOwner(temple) == 1);
+    int built = game.tiles[temple].builtTurn;
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    game.apply({CommandTypes::ENDTURN});
+    REQUIRE(game.turn == built + 2);
+    REQUIRE(game.currentPlayer == 0);
+    addUnit(game, 0, UnitTypes::WARRIOR, 4, 4);
+    game.apply({CommandTypes::CAPTURE, village});
+    REQUIRE(game.tileOwner(temple) == 0);
+    CHECK(game.templeLevel(temple) == 1);
+    game.settings.rulesVersion = RuleVersions::TEMPLE_LEVEL_KEPT - 1;
+    CHECK(game.templeLevel(temple) == 2);
 }
 
 TEST_CASE("a player knows where their units have stood, and when they were attacked") {

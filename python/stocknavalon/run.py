@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import Any
 
 import numpy as np
@@ -495,12 +496,16 @@ def parser() -> argparse.ArgumentParser:
                         "Crazy bot (stocknavalon.crazy; needs the oracle built and "
                         "the game set up, docs/oracle.md), checking the rules as they "
                         "go; 0 for none")
-    p.add_argument("--crazy-parallel", type=int, default=4,
-                   help="games against Crazy at a time, an oracle each")
+    p.add_argument("--crazy-parallel", type=int, default=12,
+                   help="games against Crazy at a time, an oracle each, their "
+                        "positions evaluated together (crazy.Batcher)")
     p.add_argument("--crazy-type", default="any", choices=["any"] + crazy.MAP_TYPES,
                    help="their map type, or any: each in turn by pair of games, "
                         "results by type")
     p.add_argument("--crazy-size", type=int, default=11, help="their map size")
+    p.add_argument("--crazy-max-minutes", type=float, default=20.0,
+                   help="no more games against Crazy start after this long; those "
+                        "playing finish")
     p.add_argument("--crazy-max-turns", type=int, default=60,
                    help="their turn limit (the side ahead on score wins, undecided)")
     p.add_argument("--holdout-every", type=int, default=20,
@@ -1300,6 +1305,8 @@ class EvaluationThread(threading.Thread):
             log(self.args.dir, {"event": "evaluation", "steps": steps,
                                 "against": name, **result})
         if self.args.crazy_games > 0 and not self.stop.is_set():
+            # status lines go on meanwhile: these games take a while
+            self.busy.clear()
             self._run_crazy(model, steps)
         self._log_rating()
 
@@ -1319,11 +1326,18 @@ class EvaluationThread(threading.Thread):
                 model, self.device, search_config(self.args, simulations=self.args.eval_simulations),
                 self.args.crazy_games, settings, seed=steps, parallel=self.args.crazy_parallel,
                 network_beliefs=self.args.network_beliefs and self.fog_share() > 0,
-                gpu_lock=self.gpu_lock)
+                gpu_lock=self.gpu_lock, max_minutes=self.args.crazy_max_minutes,
+                progress=lambda p: log(self.args.dir, {"event": "evaluation progress",
+                                                       "steps": steps, "against": "crazy", **p}))
         except Exception as e:  # the oracle's trouble shouldn't stop training
-            log(self.args.dir, {"event": "crazy failed", "steps": steps, "error": repr(e)})
+            log(self.args.dir, {"event": "crazy failed", "steps": steps, "error": repr(e),
+                                "traceback": traceback.format_exc()})
             return
         differences = result.pop("differences")
+        # bugs of ours in single games: logged loudly, but they don't feed
+        # training, so it goes on
+        for error in result.pop("errors"):
+            log(self.args.dir, {"event": "crazy error", "steps": steps, "traceback": error})
         log(self.args.dir, {"event": "evaluation", "steps": steps, "against": "crazy", **result})
         for d in differences:
             log(self.args.dir, {"event": "rules difference", "steps": steps, **d})

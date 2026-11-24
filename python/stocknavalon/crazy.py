@@ -22,10 +22,13 @@ import argparse
 import contextlib
 import math
 import os
+import queue
 import random
 import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import traceback
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
@@ -80,6 +83,94 @@ def evaluator(model: Network, device: torch.device, encoding: pe.Encoding, gpu_l
     return evaluate
 
 
+class Batcher:
+    """Evaluations from several games' searches, gathered into one network
+    call: each game's search (its own thread, `mirror.play`'s loop) asks for
+    one position at a time, and one at a time a network call is mostly
+    waiting (behind self-play's batches on a shared GPU). A caller's request
+    waits until every game playing has one in, or `wait_seconds` pass; then
+    one call evaluates them all, and each gets its share back."""
+
+    def __init__(self, evaluate, wait_seconds: float = 0.005):
+        self.evaluate, self.wait_seconds = evaluate, wait_seconds
+        self.requests: queue.Queue = queue.Queue()
+        # games playing now: how many requests a batch can expect
+        self.playing = 0
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def started(self):
+        with self._lock:
+            self.playing += 1
+
+    def finished(self):
+        with self._lock:
+            self.playing -= 1
+
+    def close(self):
+        """Stops serving, once the requests in already are answered."""
+        self.requests.put(None)
+        self._thread.join()
+
+    def __call__(self, planes, globals_, rows, slots, belief_rows):
+        request = {"args": (planes, globals_, rows, slots, belief_rows),
+                   "done": threading.Event()}
+        self.requests.put(request)
+        request["done"].wait()
+        if "error" in request:
+            raise request["error"]
+        return request["result"]
+
+    def _serve(self):
+        while True:
+            first = self.requests.get()
+            if first is None:
+                return
+            batch = [first]
+            deadline = time.perf_counter() + self.wait_seconds
+            while len(batch) < max(1, self.playing):
+                left = deadline - time.perf_counter()
+                try:
+                    request = self.requests.get(timeout=max(0.0, left))
+                except queue.Empty:
+                    break
+                if request is None:
+                    self.requests.put(None)  # stop once this batch is done
+                    break
+                batch.append(request)
+            self._evaluate(batch)
+
+    def _evaluate(self, batch: list[dict]):
+        """One network call for the batch: positions, slots and belief rows
+        joined (each request's row numbers moved past the ones before), the
+        outputs split back."""
+        args = [r["args"] for r in batch]
+        counts = [len(a[0]) for a in args]
+        offsets = np.cumsum([0] + counts[:-1])
+        planes = np.concatenate([a[0] for a in args])
+        globals_ = np.concatenate([a[1] for a in args])
+        rows = np.concatenate([a[2] + o for a, o in zip(args, offsets)])
+        slots = np.concatenate([a[3] for a in args])
+        belief_rows = np.concatenate([a[4] + o for a, o in zip(args, offsets)])
+        try:
+            moves, values, beliefs, ties = self.evaluate(planes, globals_, rows, slots,
+                                                         belief_rows)
+        except Exception as e:
+            for r in batch:
+                r["error"] = e
+                r["done"].set()
+            return
+        at_move = at_belief = at = 0
+        for r, (_, _, a_rows, _, a_beliefs), n in zip(batch, args, counts):
+            k, b = len(a_rows), len(a_beliefs)
+            r["result"] = (moves[at_move:at_move + k], values[at:at + n],
+                           None if beliefs is None or b == 0 else beliefs[at_belief:at_belief + b],
+                           ties[at:at + n])
+            at_move, at_belief, at = at_move + k, at_belief + b, at + n
+            r["done"].set()
+
+
 # the map types by name, in the engine's order
 MAP_TYPES = [name.lower() for name in pe.MapType.__members__]
 
@@ -111,6 +202,11 @@ class Outcome:
     turns: int
     verdict: str
     detail: list[str] = field(default_factory=list)
+    # the oracle failed (died, or stopped answering): neither a result nor a
+    # rules difference
+    failed: bool = False
+    # our own code raised during the game (its traceback): neither either
+    error: str | None = None
 
 
 def map_type_of(settings: Settings, game: int) -> str:
@@ -121,12 +217,13 @@ def map_type_of(settings: Settings, game: int) -> str:
 
 def play_game(model: Network, device: torch.device, search: pe.SearchConfig, seed: int,
               seat: int, settings: Settings, network_beliefs: bool = True,
-              gpu_lock=None, map_type: str | None = None) -> Outcome:
+              gpu_lock=None, map_type: str | None = None, evaluate=None) -> Outcome:
     """One game against Crazy, the network in `seat`, on `map_type` (by
-    default the settings')."""
+    default the settings'); its positions evaluated by `evaluate` (a
+    Batcher's, shared with other games), else on its own."""
     map_type = map_type or settings.type
     encoding = pe.Encoding()
-    evaluate = evaluator(model, device, encoding, gpu_lock)
+    evaluate = evaluate or evaluator(model, device, encoding, gpu_lock)
     rng = random.Random(seed)
     tribes = rng.sample(mirror.mapstats.TRIBES, 2)
     moves = [0]
@@ -138,11 +235,10 @@ def play_game(model: Network, device: torch.device, search: pe.SearchConfig, see
         commands, visits, chosen = found[0], found[1], found[4]
         # the search's moves are its samples' (what the player can see), so
         # one can be illegal in the real game, a hidden unit in the way: the
-        # most visited legal one instead, as self-play falls back
+        # most visited legal one instead, as self-play falls back (the chosen
+        # one first; without Gumbel there's none)
         legal = {mirror.command_key(c) for c in game.legal_commands()}
-        if mirror.command_key(commands[chosen]) in legal:
-            return commands[chosen]
-        order = sorted(range(len(commands)), key=lambda i: -visits[i])
+        order = sorted(range(len(commands)), key=lambda i: (i != chosen, -visits[i]))
         return next((commands[i] for i in order if mirror.command_key(commands[i]) in legal),
                     game.legal_commands()[0])
 
@@ -150,9 +246,13 @@ def play_game(model: Network, device: torch.device, search: pe.SearchConfig, see
                               size=settings.size, history=settings.history, save=settings.save,
                               steps=100000)
     result: dict = {}
-    steps, verdict, detail = mirror.play(args, seed, ai_seats=(1 - seat,), pick=pick,
-                                         tribes=tribes, max_turns=settings.max_turns,
-                                         result=result)
+    try:
+        steps, verdict, detail = mirror.play(args, seed, ai_seats=(1 - seat,), pick=pick,
+                                             tribes=tribes, max_turns=settings.max_turns,
+                                             result=result)
+    except mirror.OracleFailed as e:
+        return Outcome(seed, seat, tribes, map_type, None, False, result.get("turns", 0),
+                       f"oracle failed: {e}", failed=True)
     won, decided = None, False
     if verdict.startswith("no differences"):
         if result.get("winner") is not None:
@@ -165,23 +265,67 @@ def play_game(model: Network, device: torch.device, search: pe.SearchConfig, see
                    detail)
 
 
+def game_of_match(model: Network, device: torch.device, search: pe.SearchConfig, seed: int,
+                  g: int, settings: Settings, network_beliefs: bool, batcher: Batcher) -> Outcome:
+    """Game `g` of a match (seed + g, seats alternating, the map types in
+    turn), its positions evaluated through the match's batcher. A bug of ours
+    in it is kept with its traceback (Outcome.error) and the other games go
+    on, their rules differences still counting."""
+    batcher.started()
+    try:
+        return play_game(model, device, search, seed + g, g % 2, settings, network_beliefs,
+                         map_type=map_type_of(settings, g), evaluate=batcher)
+    except Exception:
+        return Outcome(seed + g, g % 2, [], map_type_of(settings, g), None, False, 0, "error",
+                       error=traceback.format_exc())
+    finally:
+        batcher.finished()
+
+
 def match(model: Network, device: torch.device, search: pe.SearchConfig, games: int,
           settings: Settings, seed: int = 0, parallel: int = 4, network_beliefs: bool = True,
-          gpu_lock=None) -> dict:
+          gpu_lock=None, progress=None, progress_seconds: float = 30.0,
+          max_minutes: float | None = None) -> dict:
     """`games` games against Crazy (seats alternating), `parallel` at a
-    time, each with its own oracle. Returns the results as evaluate.match's
-    (games, win_rate, captures, was_captured, ...; a game the turn limit
-    ends goes to the side ahead on score, but isn't decided), with the games
-    a rules difference stopped counted apart, those differences, and per map
-    type (by_map) the games played, won and decided."""
+    time, each with its own oracle. `progress`, if given, is called every
+    `progress_seconds` with the games so far (as evaluate.match's progress:
+    games, of, win_rate, seconds). Past `max_minutes` no more games start;
+    those playing finish. Returns the results as evaluate.match's (games,
+    win_rate, captures, was_captured, ...; a game the turn limit ends goes to
+    the side ahead on score, but isn't decided), with the games a rules
+    difference stopped counted apart, those differences, per map type
+    (by_map) the games played, won and decided, and the games never started
+    (not_started)."""
     model.eval()
-    start = time.time()
+    start = reported = time.time()
+    outcomes: list[Outcome] = []
+    not_started = 0
+    batcher = Batcher(evaluator(model, device, pe.Encoding(), gpu_lock))
+
     with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
-        outcomes = list(pool.map(
-            lambda g: play_game(model, device, search, seed + g, g % 2, settings,
-                                network_beliefs, gpu_lock, map_type_of(settings, g)),
-            range(games)))
+        pending = {pool.submit(game_of_match, model, device, search, seed, g, settings,
+                               network_beliefs, batcher) for g in range(games)}
+        while pending:
+            done, pending = wait(pending, timeout=5, return_when=FIRST_COMPLETED)
+            outcomes.extend(f.result() for f in done)
+            now = time.time()
+            if max_minutes is not None and now - start >= max_minutes * 60:
+                # the time's up: games not begun yet never will
+                for f in pending:
+                    if f.cancel():
+                        not_started += 1
+                pending = {f for f in pending if not f.cancelled()}
+            if progress is not None and now - reported >= progress_seconds:
+                reported = now
+                ended = [o for o in outcomes if o.won is not None]
+                progress({"games": len(outcomes), "of": games,
+                          "win_rate": (round(sum(o.won for o in ended) / len(ended), 3)
+                                       if ended else None),
+                          "seconds": round(now - start)})
+    batcher.close()
     played = [o for o in outcomes if o.won is not None]
+    failed = [o for o in outcomes if o.failed]
+    errors = [o for o in outcomes if o.error is not None]
     decided = [o for o in played if o.decided]
     captures = sum(o.won for o in decided)
     n = len(played)
@@ -192,9 +336,13 @@ def match(model: Network, device: torch.device, search: pe.SearchConfig, games: 
             "was_captured_percent": round(100 * (len(decided) - captures) / n, 1) if n else None,
             "captures": captures, "was_captured": len(decided) - captures,
             "seconds": round(time.time() - start, 1),
-            "stopped": len(outcomes) - len(played),
+            "stopped": len(outcomes) - len(played) - len(failed) - len(errors),
+            "failed": len(failed),
+            "errors": [o.error for o in errors],
+            "not_started": not_started,
             "by_map": by_map(played),
-            "differences": [asdict(o) for o in outcomes if o.won is None]}
+            "differences": [asdict(o) for o in outcomes
+                            if o.won is None and not o.failed and o.error is None]}
 
 
 def by_map(played: list[Outcome]) -> dict[str, dict[str, int]]:
@@ -257,7 +405,7 @@ class CrazySeat:
         played = []
         while not game.game_over and game.current_player == self.seat:
             legal = self._legal(game)
-            if self.lockstep.over(game):
+            if self.lockstep.over(game, legal):
                 break
             k, chosen, ours = self.lockstep.ai_move(game, legal)
             self.lockstep.play(game, k, chosen, ours)
@@ -280,14 +428,22 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
 
 def report(g: int, o: Outcome, start: float, wins: int, losses: int,
            stopped: int) -> tuple[int, int, int]:
-    """Prints one game's result; returns the counts with it."""
-    if o.won is None:
+    """Prints one game's result; returns the counts with it (a game the
+    oracle failed in, or one our code failed in, counts in none of them)."""
+    if o.failed or o.error is not None:
+        pass
+    elif o.won is None:
         stopped += 1
     elif o.won:
         wins += 1
     else:
         losses += 1
-    outcome = "stopped" if o.won is None else "won" if o.won else "lost"
+    if o.error is not None:
+        print(f"game {g}, {o.map_type}: an error in our code ({time.time() - start:.0f} s in)\n"
+              + o.error, flush=True)
+        return wins, losses, stopped
+    outcome = ("failed" if o.failed else "stopped" if o.won is None
+               else "won" if o.won else "lost")
     print(f"game {g}, {o.map_type}: network seat {o.seat} ({o.tribes[o.seat]} against "
           f"{o.tribes[1 - o.seat]}): {outcome} at turn {o.turns}, {o.verdict} "
           f"({time.time() - start:.0f} s in)", flush=True)
@@ -306,7 +462,7 @@ def main():
                         help="the map type, or any: each in turn by pair of games")
     parser.add_argument("--size", type=int, default=11)
     parser.add_argument("--max-turns", type=int, default=50)
-    parser.add_argument("--parallel", type=int, default=1,
+    parser.add_argument("--parallel", type=int, default=12,
                         help="games at a time, an oracle each")
     parser.add_argument("--save", help="save the real state at each rules difference here")
     parser.add_argument("--device", default=None)
@@ -326,10 +482,11 @@ def main():
     wins = losses = stopped = 0
     start = time.time()
 
+    batcher = Batcher(evaluator(model, device, pe.Encoding()))
+
     def one(g: int) -> tuple[int, Outcome]:
-        return g, play_game(model, device, search, args.seed + g, g % 2, settings,
-                            network_beliefs=args.network_beliefs,
-                            map_type=map_type_of(settings, g))
+        return g, game_of_match(model, device, search, args.seed, g, settings,
+                                args.network_beliefs, batcher)
 
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
         done = [pool.submit(one, g) for g in range(args.games)]
@@ -338,9 +495,12 @@ def main():
         for g, o in finished:
             wins, losses, stopped = report(g, o, start, wins, losses, stopped)
             outcomes.append(o)
+    batcher.close()
     low, high = wilson(wins, wins + losses)
     print(f"against Crazy: {wins} won, {losses} lost ({100 * low:.0f}–{100 * high:.0f}% "
-          f"win rate, 95%), {stopped} stopped by a rules difference")
+          f"win rate, 95%), {stopped} stopped by a rules difference, "
+          f"{sum(o.failed for o in outcomes)} where the oracle failed, "
+          f"{sum(o.error is not None for o in outcomes)} with an error in our code")
     for t, d in by_map([o for o in outcomes if o.won is not None]).items():
         print(f"  {t:12s} won {d['won']} of {d['games']} ({d['decided']} decided)")
 

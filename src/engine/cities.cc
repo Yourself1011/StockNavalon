@@ -387,6 +387,9 @@ void Game::capture(int unitIdx) {
         scoreEffects[owner * players.size() + previous] -= loss;
 
         cities[city].owner = owner;
+        if (previous >= 0 && settings.follows(RuleVersions::CAPTURE_IS_ATTACK)) {
+            onAttack(owner, previous, false);
+        }
         // a reward the old owner hadn't picked goes; one the capture itself
         // brings (its producers, below) is the new owner's
         cities[city].pendingRewards = 0;
@@ -416,9 +419,13 @@ void Game::capture(int unitIdx) {
                 p.embassies &= ~(std::uint32_t{1} << capitalOf);
             }
         }
-        // its units lose their home, and don't get it back if it's retaken
+        // its units lose their home for good (a boat's passenger keeps its
+        // own, CAPTURE_SPARES_PASSENGERS)
+        bool keep = settings.follows(RuleVersions::CAPTURE_KEEPS_HOMES) &&
+                    !settings.follows(RuleVersions::CAPTURE_SPARES_PASSENGERS);
         for (Unit &u : units) {
-            if (u.alive && u.home == city) {
+            if (u.alive && u.home == city && !keep &&
+                (u.owner != owner || !settings.follows(RuleVersions::GAME_UNIT_HOMES))) {
                 u.home = -1;
             }
         }
@@ -431,7 +438,9 @@ void Game::capture(int unitIdx) {
         if (settings.follows(RuleVersions::CAPTURE_CONNECTS_BOTH)) {
             // the old owner's first (the game stacks its updates last), then
             // the capturer's at the command's end
-            if (previous >= 0) {
+            if (previous >= 0 && settings.follows(RuleVersions::OLD_OWNER_DISCONNECTS_FIRST)) {
+                updateAllConnections(std::uint32_t{1} << previous);
+            } else if (previous >= 0) {
                 connectNow(std::uint32_t{1} << previous);
             }
             connectionsChanged();
@@ -481,6 +490,10 @@ void Game::rewardEffect(int city, CityReward reward) {
     case BORDERGROWTH:
         c.borderGrown = true;
         claimBorders(city, Rules::GROWN_BORDER_RADIUS);
+        if (settings.follows(RuleVersions::BORDER_GROWTH_REVEALS_AREA)) {
+            forEachInRadius(c.tile, Rules::GROWN_BORDER_RADIUS,
+                            [&](int t) { reveal(c.owner, t); });
+        }
         if (settings.follows(RuleVersions::GAME_CONNECTIONS)) {
             connectNow(ALL_PLAYERS);
         }

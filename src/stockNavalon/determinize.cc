@@ -171,6 +171,7 @@ void canonicalize(Game &g) {
     }
     for (Unit &u : units) {
         u.home = renumber(u.home);
+        u.passengerHome = renumber(u.passengerHome);
     }
     for (Player &p : g.players) {
         p.capital = renumber(p.capital);
@@ -189,6 +190,13 @@ void canonicalize(Game &g) {
 int borderRadius(const City &city) {
     return city.borderGrown ? Rules::GROWN_BORDER_RADIUS
                             : Rules::CITY_BORDER_RADIUS;
+}
+
+// why the last sample on this thread was turned down (DeterminizeStats)
+thread_local const char *rejection = nullptr;
+std::nullopt_t reject(const char *why) {
+    rejection = why;
+    return std::nullopt;
 }
 
 // One sample for a two-player game, or nullopt if it can't match the score
@@ -360,6 +368,7 @@ std::optional<Game> sample(const Game &real, int player,
         }
         for (Unit &u : g.units) {
             u.home = renumber(u.home);
+            u.passengerHome = renumber(u.passengerHome);
         }
         for (Player &p : g.players) {
             p.capital = renumber(p.capital);
@@ -417,7 +426,7 @@ std::optional<Game> sample(const Game &real, int player,
         }
         int at = pick(weights, rng);
         if (at < 0) {
-            return std::nullopt;
+            return reject("no place for a city whose borders the player saw");
         }
         bool needsGrowth = false;
         for (int s : seenBorders) {
@@ -646,6 +655,7 @@ std::optional<Game> sample(const Game &real, int player,
                            .hp = passenger.maxHp,
                            .maxHp = passenger.maxHp,
                            .home = them.capital,
+                           .passengerHome = them.capital,
                            .scoreOwner = q,
                            .hidden = unitInfo(o.type).abilities.test(Abilities::HIDE)});
         g.tiles[at].unit = static_cast<int>(g.units.size()) - 1;
@@ -698,14 +708,83 @@ std::optional<Game> sample(const Game &real, int player,
         });
         int at = pick(where, rng);
         if (at < 0) {
-            return std::nullopt;
+            return reject("no tile for a hidden unit a warning shows");
         }
         place(at, found[at][pickOption(found[at])]);
         placed++;
         g.forEachNeighbour(at, [&](int n) { covered[n] = 1; });
     }
 
-    // then the rest, in the fog
+    // Then those the player's own moves prove: an enemy in the fog stops a
+    // move beside it (zone of control), so where a unit of theirs can't go,
+    // though it could with no one there, someone is. Placed one at a time
+    // where it takes away moves the player doesn't have and none it has.
+    std::vector<std::pair<int, std::vector<int>>> movers;
+    for (const Unit &u : real.units) {
+        if (u.alive && u.owner == player && u.canMove) {
+            std::vector<int> targets = real.moveTargets(real.tiles[u.tile].unit);
+            std::sort(targets.begin(), targets.end());
+            movers.push_back({u.tile, std::move(targets)});
+        }
+    }
+    auto beside = [&](int t) {
+        bool found = false;
+        g.forEachNeighbour(t, [&](int n) { found |= known(n); });
+        return found;
+    };
+    // the moves the sample gives beyond the real ones, -1 if it lacks one
+    auto excess = [&]() {
+        int more = 0;
+        for (const auto &[tile, want] : movers) {
+            std::vector<int> have = g.moveTargets(g.tiles[tile].unit);
+            std::sort(have.begin(), have.end());
+            if (!std::includes(have.begin(), have.end(), want.begin(), want.end())) {
+                return -1;
+            }
+            more += static_cast<int>(have.size() - want.size());
+        }
+        return more;
+    };
+    for (int more = excess(); more != 0;) {
+        if (more < 0) {
+            return reject("a move the player has blocked");
+        }
+        std::vector<float> where(tiles, 0);
+        std::vector<int> option(tiles, -1), after(tiles, -1);
+        std::vector<std::vector<Option>> found(tiles);
+        for (int t = 0; t < tiles; t++) {
+            if (known(t) || g.tiles[t].unit >= 0 || !beside(t)) {
+                continue;
+            }
+            // one that exerts zone of control: not hidden
+            found[t] = options(t, false);
+            std::erase_if(found[t], [](const Option &o) {
+                return unitInfo(o.type).abilities.test(Abilities::HIDE);
+            });
+            int i = pickOption(found[t]);
+            if (i < 0) {
+                continue;
+            }
+            place(t, found[t][i]);
+            int left = excess();
+            g.units.pop_back();
+            g.tiles[t].unit = -1;
+            if (left >= 0 && left < more) {
+                option[t] = i;
+                after[t] = left;
+                where[t] = std::max(b.unitHere.at(t), 0.01f);
+            }
+        }
+        int at = pick(where, rng);
+        if (at < 0) {
+            return reject("no fog tile for the unit the player's moves show");
+        }
+        place(at, found[at][option[at]]);
+        placed++;
+        more = after[at];
+    }
+
+    // then the rest, in the fog, none taking away a move the player has
     int count = std::max(0, pick(b.hiddenUnitCount, rng) - placed);
     std::vector<float> where(tiles, 0);
     for (int t = 0; t < tiles; t++) {
@@ -721,8 +800,14 @@ std::optional<Game> sample(const Game &real, int player,
         where[at] = 0;
         std::vector<Option> found = options(at, false);
         int i = pickOption(found);
-        if (i >= 0) {
-            place(at, found[i]);
+        if (i < 0) {
+            continue;
+        }
+        place(at, found[i]);
+        if (beside(at) && excess() != 0) {
+            g.units.pop_back();
+            g.tiles[at].unit = -1;
+            n--;
         }
     }
     // what the player can't know about the units they do see
@@ -735,6 +820,7 @@ std::optional<Game> sample(const Game &real, int player,
             if (u.home < 0 || g.cities[u.home].owner != q) {
                 u.home = them.capital;
             }
+            u.passengerHome = u.home;
         }
     }
 
@@ -804,13 +890,13 @@ std::optional<Game> sample(const Game &real, int player,
             }
             int t = pick(weights, rng);
             if (t < 0) {
-                return std::nullopt;
+                return reject("no tech to make up their score");
             }
             them.techs.set(t);
             missing -= Rules::techScore(techData[t].tier);
         }
         if (missing < 0 || missing % Rules::EXPLORED_SCORE != 0) {
-            return std::nullopt;
+            return reject("their score can't be matched");
         }
         int more = missing / Rules::EXPLORED_SCORE;
         for (; more > 0; more--) {
@@ -828,7 +914,7 @@ std::optional<Game> sample(const Game &real, int player,
             }
             int t = pick(edge, rng);
             if (t < 0) {
-                return std::nullopt;
+                return reject("no tile to explore to make up their score");
             }
             g.tiles[t].explored |= bit;
         }
@@ -912,6 +998,7 @@ std::optional<Game> determinize(const Game &real, int player,
         }
         if (stats) {
             stats->rejected++;
+            stats->reasons[g ? "the player's moves differ" : rejection]++;
         }
     }
     return std::nullopt;

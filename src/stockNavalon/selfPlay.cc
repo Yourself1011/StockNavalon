@@ -415,7 +415,7 @@ void SelfPlaySession::advance(Slot &slot) {
                              : result.visits[i];
             move.visits.push_back({result.moves[i], weight});
         }
-        if (result.moves.empty() || !game.isLegal(move.command)) {
+        if (!game.isLegal(move.command)) {
             move.command = game.legalCommands().front();
             move.visits.clear();
         }

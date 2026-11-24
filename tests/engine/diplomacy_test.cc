@@ -182,6 +182,23 @@ TEST_CASE("embassies") {
         CHECK_FALSE(game.atWar(0, 1));
         CHECK(game.income(0) == withEmbassy);
     }
+    SUBCASE("so is moving onto the tribe's city (game)") {
+        clearUnits(game);
+        game.foundCity(game.index(6, 5), 1);
+        addUnit(game, 0, WARRIOR, 5, 5);
+        game.apply({MOVE, game.index(5, 5), game.index(6, 5)});
+        CHECK_FALSE(player.hasEmbassyWith(1));
+        CHECK(game.atWar(0, 1));
+    }
+    SUBCASE("and so is capturing one, the embassy built since the unit got there (game)") {
+        clearUnits(game);
+        game.foundCity(game.index(6, 5), 1);
+        addUnit(game, 0, WARRIOR, 6, 5);
+        REQUIRE(player.hasEmbassyWith(1));
+        game.apply({CAPTURE, game.index(6, 5)});
+        CHECK_FALSE(player.hasEmbassyWith(1));
+        CHECK(game.atWar(0, 1));
+    }
     SUBCASE("the host can't destroy it (the game has no way to), but could under older rules") {
         game.apply({ENDTURN});
         CHECK_FALSE(hasCommand(game, {DESTROYEMBASSY, -1, -1, 0}));

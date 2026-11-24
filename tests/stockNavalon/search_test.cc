@@ -2,6 +2,7 @@
 #include "helpers.h"
 #include "search.h"
 #include "view.h"
+#include <stdexcept>
 
 using namespace CommandTypes;
 
@@ -348,7 +349,8 @@ TEST_CASE("a search without trees can't be reused") {
         BatchedSearch search({&game}, {priorBeliefs(makeView(game, 0))}, config, 1);
         run(search, evaluator);
         CHECK(search.treeCount() == 0);
-        CHECK(search.result(0).moves.empty());
+        // nothing to choose from is an error, not an empty result
+        CHECK_THROWS_AS(search.result(0), std::runtime_error);
         CHECK_FALSE(search.reuse({CommandTypes::ENDTURN}, config));
     }
 }

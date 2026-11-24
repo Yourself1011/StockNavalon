@@ -60,6 +60,10 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         addPopulation(player.capital, Rules::RUIN_POPULATION);
         break;
     case RUIN_EXPLORER:
+        if (settings.follows(RuleVersions::RUIN_EXPLORER_PUSHES) &&
+            !settings.follows(RuleVersions::RUIN_EXPLORER_STAYS)) {
+            pushUnit(unitIdx, unit.owner);
+        }
         runExplorer(unit.owner, unit.tile);
         break;
     case RUIN_UNIT: {
@@ -69,7 +73,9 @@ void Game::giveRuinReward(int unitIdx, RuinReward reward) {
         bool water = onWater(tiles[spot]);
         pushUnit(unitIdx, unit.owner);
         int home = unit.home;
-        if (settings.follows(RuleVersions::RUIN_UNIT_HOME_TILE)) {
+        if (settings.follows(RuleVersions::GAME_UNIT_HOMES)) {
+            home = -1;
+        } else if (settings.follows(RuleVersions::RUIN_UNIT_HOME_TILE)) {
             int territory = tiles[spot].territory;
             home = territory >= 0 && cities[territory].owner == unit.owner ? territory : -1;
         }
@@ -101,6 +107,9 @@ void Game::examineRuins(int unitIdx) {
     tiles[unit.tile].building = ImprovementTypes::NONE;
     // before the reward: a pushed unit can be destroyed, freeing its slot
     unit.canMove = unit.canAttack = unit.canAct = false;
+    if (settings.follows(RuleVersions::EXAMINING_REVEALS)) {
+        unit.hidden = false;
+    }
     giveRuinReward(unitIdx, reward);
     if (settings.follows(RuleVersions::GAME_CONNECTIONS)) {
         connectionsChanged();

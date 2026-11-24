@@ -8,7 +8,13 @@ favours one.
     python -m stocknavalon.offline --dir runs/ninth --sizes 64x6 128x10 --steps 10000
 
 Every flag of stocknavalon.run applies (--batch, --lr, --value-share,
---value-lambda, ...), as the run would train. Every --eval-every steps, each
+--value-lambda, ...), as the run would train; with --init, every network
+starts from those weights (its size must match), so training settings can be
+compared from a trained network:
+
+    python -m stocknavalon.offline --dir runs/tenth --init runs/tenth/best.pt --sizes 64x6 \
+        --value-lambda 1.0 --lr 5e-5 --city-weight 0 --out runs/tenth/offline_lambda1
+ Every --eval-every steps, each
 network's average is scored on the held-out positions, next to the run's own
 network for reference; the averages are saved to --out at the end (each with
 its size, so stocknavalon.play and versus load them).
@@ -24,7 +30,7 @@ import torch
 
 import polyengine as pe
 
-from .model import pick_device
+from .model import load_weights, pick_device
 from .run import (HELDOUT_POSITIONS, make_trainer, parser, run_city_weight,
                   run_learning_rate)
 from .train import heldout_losses, reanalyse
@@ -81,6 +87,10 @@ def main():
     for text in args.sizes:
         channels, blocks = size_of(text)
         trainer = make_trainer(args, encoding, device, channels, blocks)
+        if args.init:
+            # the run's way: the weights, and their average starting from them
+            load_weights(trainer.model, torch.load(args.init, map_location=device)["model"])
+            trainer.ema.load_state_dict(trainer.model.state_dict())
         buffer = pe.ReplayBuffer(args.buffer)
         buffer.add(games)
         parameters = sum(p.numel() for p in trainer.model.parameters())

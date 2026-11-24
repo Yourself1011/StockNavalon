@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import random
+import select
 import subprocess
 import sys
 
@@ -65,6 +66,21 @@ def lookup(table, name):
 # the real game's player id for nature, which owns no seat
 NATURE = 255
 
+# How long an answer from the oracle may take (seconds): a request normally
+# takes well under one, and the AI's command a little more. Past it the game's
+# code is taken to be stuck (it has no timeout of its own), the oracle killed,
+# and the request fails (OracleTimeout), rather than waiting forever.
+ORACLE_TIMEOUT = 120
+
+
+class OracleFailed(RuntimeError):
+    """The oracle stopped answering: it died, or (OracleTimeout) took too long
+    and was killed."""
+
+
+class OracleTimeout(OracleFailed):
+    """The oracle didn't answer in ORACLE_TIMEOUT seconds; it's been killed."""
+
 class RealGame:
     """One game in an oracle process."""
 
@@ -82,9 +98,16 @@ class RealGame:
         if line is not None:
             self.process.stdin.write(line + "\n")
             self.process.stdin.flush()
+        # each answer is one whole line, so nothing waits in Python's buffer
+        # between requests and select on the pipe sees the next one
+        ready, _, _ = select.select([self.process.stdout], [], [], ORACLE_TIMEOUT)
+        if not ready:
+            self.process.kill()
+            self.process.wait()
+            raise OracleTimeout(f"the oracle didn't answer {line!r} in {ORACLE_TIMEOUT} s")
         reply = self.process.stdout.readline()
         if not reply:
-            raise RuntimeError(f"the oracle died on {line!r}")
+            raise OracleFailed(f"the oracle died on {line!r}")
         return json.loads(reply)
 
     def ask(self, line):
@@ -213,7 +236,11 @@ def project_real(state, seat_of):
                         # a unit made on the map's centre faces no way
                         # ("NONE"); ours then faces the first direction
                         "facing": DIRECTIONS.index(unit["direction"])
-                        if unit["direction"] in DIRECTIONS else 0}
+                        if unit["direction"] in DIRECTIONS else 0,
+                        "hidden": "Invisible" in unit["effects"] or 3 in unit["effects"],
+                        # its home city's tile (what its city's cap counts)
+                        "home": _tile(unit["home"], n)
+                        if unit["home"] and unit["home"]["x"] >= 0 else -1}
     players = {}
     for player in state["PlayerStates"]:
         if player["Id"] in seat_of:
@@ -269,7 +296,9 @@ def project_ours(game):
         tiles[t] = {"terrain": int(tile.terrain), "resource": int(tile.resource),
                     "building": building, "road": tile.road}
     for u in game.units:
-        units[u.tile] = {"type": int(u.type), "owner": u.owner, "hp": u.hp, "facing": u.facing}
+        units[u.tile] = {"type": int(u.type), "owner": u.owner, "hp": u.hp, "facing": u.facing,
+                         "hidden": u.hidden,
+                         "home": game.cities[u.home].tile if u.home >= 0 else -1}
     pending = {c.owner for c in game.cities if c.pending_rewards}
     players = {p: {"stars": player.stars,
                    # the real game scores a level once its reward is picked
@@ -340,8 +369,13 @@ def force_outcome(game, command, before, after, n, seat_of):
         game.force_explorer(newly)
     elif kind == "ExamineRuinsCommand":
         techs = set(then["availableTech"]) - set(player["availableTech"])
-        units = lambda state: sum(1 for t in state["Map"]["tiles"]
-                                  if t["unit"] and t["unit"]["owner"] == who)
+        # a unit reward: a new unit of the player's (the examiner it pushes
+        # off can die with nowhere to go, so counting units won't do)
+        ids = lambda state: {t["unit"]["id"] for t in state["Map"]["tiles"]
+                             if t["unit"] and t["unit"]["owner"] == who}
+        made = ids(after) - ids(before)
+        # or one a level-up held back (the pushed examiner found a lighthouse)
+        made = made or any(a["$type"] == "TrainAction" for a in after.get("ActionStack") or [])
         start = player["startTile"]
         capital = lambda state: state["Map"]["tiles"][start["y"] * n + start["x"]]["improvement"]
         grew = (capital(after)["level"], capital(after)["xp"]) != \
@@ -350,16 +384,20 @@ def force_outcome(game, command, before, after, n, seat_of):
         # rewards explore nothing (the examining unit doesn't move)
         if techs:
             game.force_ruin(pe.RuinReward.TECH, int(lookup(TECHS, techs.pop())))
-        elif units(after) > units(before):
+        elif made:
             game.force_ruin(pe.RuinReward.UNIT)
         elif newly:
             # (one that finds a lighthouse grows the capital too)
             game.force_ruin(pe.RuinReward.EXPLORER)
             game.force_explorer(newly)
-        elif grew or then["currency"] <= player["currency"]:
+        elif grew:
             game.force_ruin(pe.RuinReward.POPULATION)
-        else:
+        elif then["currency"] > player["currency"]:
             game.force_ruin(pe.RuinReward.STARS)
+        else:
+            # nothing to see: an Explorer that found no fog
+            game.force_ruin(pe.RuinReward.EXPLORER)
+            game.force_explorer([])
     elif kind == "AttackCommand":
         target = after["Map"]["tiles"][command["Target"]["y"] * n + command["Target"]["x"]]
         unit = target["unit"]
@@ -397,14 +435,17 @@ def _ours(game):
             "legal": [game.describe(c) for c in game.legal_commands()]}
 
 
-def save(args, seed, real, legal, previous, game=None, previous_game=None):
+def save(args, seed, real, legal, previous, game=None, previous_game=None, difference=None):
     """The real state and legal list at a difference, the state before the
     last command, and our side then and now, for a closer look (the real
-    maps aren't seeded, so a game can't be replayed)."""
+    maps aren't seeded, so a game can't be replayed); with the Difference,
+    what it says (where, and the recent commands and what differs)."""
     if args.save:
         os.makedirs(args.save, exist_ok=True)
         with open(os.path.join(args.save, f"{seed}.json"), "w") as f:
-            json.dump({"state": real.state(), "legal": legal, "previous": previous,
+            json.dump({"verdict": difference.verdict if difference else None,
+                       "detail": difference.detail if difference else None,
+                       "state": real.state(), "legal": legal, "previous": previous,
                        "ours": _ours(game) if game is not None else None,
                        "ours_previous": _ours(previous_game) if previous_game is not None else None},
                       f, default=str)
@@ -477,10 +518,13 @@ class Lockstep:
             legal = self.real.legal()
         return legal
 
-    def over(self, game):
+    def over(self, game, legal):
         """The game is over on both (the real one lets the winner finish the
-        turn, and doesn't wipe the loser out)."""
-        return game.game_over and self.real.state()["CurrentState"] in ("FinalTurn", "Ended")
+        turn, and doesn't wipe the loser out; a city the last capture levels
+        up keeps it going until its reward is picked)."""
+        return game.game_over and (
+            self.real.state()["CurrentState"] in ("FinalTurn", "Ended") or
+            all(c["$type"] == "CityRewardCommand" for c in legal))
 
     def check(self, game, legal):
         """Compares the states, then the legal lists; raises Difference."""
@@ -501,7 +545,20 @@ class Lockstep:
             for tile in ours["tiles"].values():
                 if tile["building"] and tile["building"][0] == "city":
                     tile["building"] = tile["building"][:2] + (None, None)
-        diff = differences(project_real(state, self.seat_of), ours, game.current_player)
+        theirs = project_real(state, self.seat_of)
+        if legal and legal[0]["$type"] == "CityRewardCommand":
+            # what it holds back is done already in ours: a unit made (a
+            # ruin's, a Dagger's) or embarking, stars paid (an infiltration's)
+            for action in state.get("ActionStack") or []:
+                if action["$type"] in ("TrainAction", "EmbarkAction"):
+                    t = _tile(action["Coordinates"], n)
+                    ours["units"].pop(t, None)
+                    theirs["units"].pop(t, None)
+                elif (action["$type"] == "IncreaseCurrencyAction" and action["PlayerId"] in self.seat_of
+                      # (a turn's income waits in ours too)
+                      and not last.startswith("end turn")):
+                    theirs["players"][self.seat_of[action["PlayerId"]]]["stars"] += action["Amount"]
+        diff = differences(theirs, ours, game.current_player)
         if diff:
             if any("stars" in line for line in diff):
                 # what our income is made of, next to the real cities
@@ -515,19 +572,23 @@ class Lockstep:
                     f"{t['improvement']['rewards']}"
                     for t in state["Map"]["tiles"]
                     if t["improvement"] and t["improvement"]["type"] == "City" and t["owner"]))
-            save(args, self.seed, real, legal, self.previous, game, self.previous_game)
-            raise Difference(f"state differs after {last}", self.history[-args.history:] + diff)
+            difference = Difference(f"state differs after {last}",
+                                    self.history[-args.history:] + diff)
+            save(args, self.seed, real, legal, self.previous, game, self.previous_game, difference)
+            raise difference
         translated = [to_command(c, game, self.seat_of) for c in legal]
         theirs = {command_key(c) for c in translated}
         mine = {command_key(c) for c in game.legal_commands()
                 if c.type not in (pe.CommandType.RESIGN, pe.CommandType.STAY)}
         if theirs != mine:
-            save(args, self.seed, real, legal, self.previous, game, self.previous_game)
             only_real = [game.describe(c) for c in translated if command_key(c) not in mine]
             only_ours = [game.describe(c) for c in game.legal_commands()
                          if command_key(c) in mine - theirs]
-            raise Difference(f"legal lists differ after {last}", self.history[-args.history:] +
-                             [f"only real: {only_real[:6]}", f"only ours: {only_ours[:6]}"])
+            difference = Difference(f"legal lists differ after {last}",
+                                    self.history[-args.history:] +
+                                    [f"only real: {only_real[:6]}", f"only ours: {only_ours[:6]}"])
+            save(args, self.seed, real, legal, self.previous, game, self.previous_game, difference)
+            raise difference
 
     def ai_move(self, game, legal):
         """The game's AI's next command, as (the real legal index, or "ai"
@@ -537,9 +598,12 @@ class Lockstep:
         k = move["index"]
         chosen = move["command"]
         if k < 0 and chosen["$type"] != "StayCommand":
-            save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game)
-            raise Difference(f"the AI played a command not in the legal list after {self.last}",
-                             self.history[-self.args.history:] + [str(chosen)])
+            difference = Difference(
+                f"the AI played a command not in the legal list after {self.last}",
+                self.history[-self.args.history:] + [str(chosen)])
+            save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game,
+                 difference)
+            raise difference
         return (k if k >= 0 else "ai"), chosen, to_command(chosen, game, self.seat_of)
 
     def find(self, game, legal, command):
@@ -548,11 +612,13 @@ class Lockstep:
         for i, c in enumerate(legal):
             if command_key(to_command(c, game, self.seat_of)) == command_key(command):
                 return i
-        save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game)
         ours_legal = any(command_key(c) == command_key(command) for c in game.legal_commands())
-        raise Difference(f"the move isn't in the real legal list after {self.last}",
-                         self.history[-self.args.history:] +
-                         [f"{game.describe(command)}; in our legal list: {ours_legal}"])
+        difference = Difference(f"the move isn't in the real legal list after {self.last}",
+                                self.history[-self.args.history:] +
+                                [f"{game.describe(command)}; in our legal list: {ours_legal}"])
+        save(self.args, self.seed, self.real, legal, self.previous, game, self.previous_game,
+             difference)
+        raise difference
 
     def play(self, game, k, chosen, ours, apply_ours=True):
         """Plays the command on the real game, fixes its random outcome on
@@ -631,7 +697,7 @@ def play(args, seed, setup=None, choose=random_choice, ai_seats=(), pick=None, t
         for step in range(args.steps):
             try:
                 legal = step_.legal()
-                if step_.over(game):
+                if step_.over(game, legal):
                     if result is not None:
                         result.update(turns=game.turn, winner=game.winner,
                                       scores=[game.score(p) for p in range(len(game.players))])

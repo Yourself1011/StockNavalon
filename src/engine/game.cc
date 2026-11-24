@@ -131,9 +131,10 @@ bool Game::besieged(int city) const {
 
 int Game::unitCount(int city) const {
     return static_cast<int>(
-        std::count_if(units.begin(), units.end(), [city](const Unit &unit) {
+        std::count_if(units.begin(), units.end(), [this, city](const Unit &unit) {
             return unit.alive && unit.home == city && !unit.freeOfCap &&
-                   !unit.has(Abilities::INDEPENDENT);
+                   (!unit.has(Abilities::INDEPENDENT) ||
+                    settings.follows(RuleVersions::GAME_UNIT_HOMES));
         }));
 }
 
@@ -150,9 +151,10 @@ bool Game::canResearch(int player, TechTypes::TechType tech) const {
 int Game::marketIncome(int tile) const {
     int total = 0;
     int owner = tileOwner(tile);
+    bool counts = settings.follows(RuleVersions::MARKET_COUNTS_PRODUCERS);
     forEachNeighbour(tile, [&](int n) {
         if (isProducer(tiles[n].building) && tileOwner(n) == owner) {
-            total += tiles[n].level;
+            total += counts ? std::max(tiles[n].level, 1) : tiles[n].level;
         }
     });
     return std::min(total, MAX_BUILDING_LEVEL);
@@ -247,6 +249,14 @@ void Game::startTurn() {
         if (unit.alive && unit.owner == currentPlayer) {
             unit.canMove = unit.canAttack = unit.canAct = true;
             unit.attacked = false;
+        }
+    }
+    // the player's temples level up by their age (TEMPLE_LEVEL_KEPT)
+    if (settings.follows(RuleVersions::TEMPLE_LEVEL_KEPT)) {
+        for (int t = 0; t < size * size; t++) {
+            if (isTemple(tiles[t].building) && tileOwner(t) == currentPlayer) {
+                tiles[t].level = Rules::templeLevel(tiles[t].builtTurn, turn);
+            }
         }
     }
 }
@@ -595,6 +605,7 @@ void Game::applyUnchecked(const Command &command) {
         case STAY:
         case CAPTURE:
         case EXAMINERUINS:
+        case HARVEST:
             units[actor].attacked = true;
             break;
         default:
@@ -637,8 +648,8 @@ void Game::applyCommand(const Command &command) {
     case DISEMBARK:
         if (command.to == command.from) {
             // on a bridge: the unit leaves its boat where it is
+            land(unit);
             Unit &u = units[unit];
-            u.type = u.passenger;
             u.canMove = u.canAttack = u.canAct = false;
         } else {
             disembark(unit, command.to);
@@ -699,6 +710,9 @@ void Game::applyCommand(const Command &command) {
         tiles[command.from].resource = ResourceTypes::NONE;
         if (settings.follows(RuleVersions::HARVEST_ENDS_TURN)) {
             units[unit].canMove = units[unit].canAttack = units[unit].canAct = false;
+        }
+        if (settings.follows(RuleVersions::HARVEST_REVEALS)) {
+            units[unit].hidden = false;
         }
         break;
     case CAPTURE:

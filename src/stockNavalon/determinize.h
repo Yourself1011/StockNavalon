@@ -10,7 +10,9 @@
 #include "data/unitData.h"
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 class Game;
@@ -66,6 +68,8 @@ struct DeterminizeStats {
     // samples drawn, and rejected: they couldn't match an opponent's score,
     // or had nowhere to put a city the player has seen the borders of
     int tries = 0, rejected = 0;
+    // why, for each reason how many
+    std::map<std::string, int> reasons;
 };
 
 // A game that agrees with everything `player` knows of `real`, with the rest

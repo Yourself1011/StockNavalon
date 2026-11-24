@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <map>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <tuple>
 
 namespace {
@@ -147,9 +149,6 @@ void ScoreEvaluator::evaluate(const std::vector<EvalRequest> &requests,
 }
 
 Command SearchResult::choose(double temperature, std::mt19937_64 &rng) const {
-    if (moves.empty()) {
-        return {CommandTypes::ENDTURN};
-    }
     if (chosen >= 0) {
         return moves[chosen];
     }
@@ -173,6 +172,8 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
     // Beyond the player's own turn, the opponent's stars and techs matter,
     // so their score has to be matched too
     Detail detail = config.horizon > 0 ? Detail::EVERYTHING : Detail::TILES_AND_UNITS;
+    unsampled.assign(games, 0);
+    drawn.assign(games, {});
     for (int i = 0; i < games; i++) {
         const Game &real = *gameList[i];
         if (config.fullInformation) {
@@ -191,14 +192,15 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
             std::uint64_t s = seeds();
             std::optional<Game> sample = determinize(
                 real, real.currentPlayer, beliefs.at(i), s, detail,
-                config.determinizeTries);
+                config.determinizeTries, &drawn[i]);
             if (!sample && detail == Detail::EVERYTHING) {
                 // no sample matched their score: the tiles and units at least
                 sample = determinize(real, real.currentPlayer, beliefs.at(i), s,
                                      Detail::TILES_AND_UNITS,
-                                     config.determinizeTries);
+                                     config.determinizeTries, &drawn[i]);
             }
             if (!sample) {
+                unsampled[i]++;
                 continue;
             }
             Tree tree{.game = i, .rng = std::mt19937_64(seeds())};
@@ -1118,6 +1120,26 @@ SearchResult BatchedSearch::result(int game) const {
         }
     }
     const std::size_t n = out.moves.size();
+    if (n == 0) {
+        // nothing to choose from: say why rather than play something
+        int over = 0, stuck = 0;
+        for (const Tree &tree : trees) {
+            if (tree.game == game) {
+                (tree.nodes[0].terminal ? over : stuck)++;
+            }
+        }
+        std::string why;
+        for (const auto &[reason, count] : drawn[game].reasons) {
+            why += (why.empty() ? "" : ", ") + reason + " " + std::to_string(count);
+        }
+        throw std::runtime_error(
+            "search: no moves for game " + std::to_string(game) + ": " +
+            std::to_string(unsampled[game]) + " of its " + std::to_string(config.samples) +
+            " samples matched no determinization (" +
+            std::to_string(config.determinizeTries) + " tries each; draws turned down: " + why +
+            "), " + std::to_string(over) + " were over, " + std::to_string(stuck) +
+            " had only Stay or Resign");
+    }
     for (std::size_t i = 0; i < n; i++) {
         out.values.push_back(out.visits[i] ? totals[i] / out.visits[i] : 0);
         out.backed.push_back(out.visits[i] ? backedTotals[i] / out.visits[i] : 0);
@@ -1295,7 +1317,7 @@ std::vector<Command> playTurn(Game &game, Evaluator &evaluator,
             *lastValue = static_cast<float>(total / visits);
         }
         Command command = result.choose(0, rng);
-        if (result.moves.empty() || !game.isLegal(command)) {
+        if (!game.isLegal(command)) {
             command = game.legalCommands().front();
         }
         if (explain) {

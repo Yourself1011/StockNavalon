@@ -181,6 +181,12 @@ TEST_CASE("windmills level with their farms; markets earn from them") {
     game.apply({CommandTypes::DESTROY, game.index(1, 0)});
     CHECK(game.tiles[game.index(0, 1)].level == 1);
     CHECK(game.marketIncome(game.index(0, 2)) == 1);
+    // a windmill with no farms left still counts 1 (game), nothing before
+    game.apply({CommandTypes::DESTROY, game.index(0, 0)});
+    CHECK(game.tiles[game.index(0, 1)].level == 0);
+    CHECK(game.marketIncome(game.index(0, 2)) == 1);
+    game.settings.rulesVersion = RuleVersions::MARKET_COUNTS_PRODUCERS - 1;
+    CHECK(game.marketIncome(game.index(0, 2)) == 0);
 }
 
 TEST_CASE("income as the game pays it: markets outside a starving city's clamp, any foreign unit stops a city (game)") {
@@ -245,7 +251,10 @@ TEST_CASE("starfish harvest") {
     Command harvest{CommandTypes::HARVEST, game.index(4, 4)};
     CHECK_FALSE(hasCommand(game, harvest));
     game.players[0].techs.set(NAVIGATION);
+    game.units[boat].hidden = true;
     game.apply(harvest);
+    // and shows a hidden boat (a Dinghy) (game)
+    CHECK_FALSE(game.units[boat].hidden);
     CHECK(game.players[0].stars == 13);
     CHECK(game.tiles[game.index(4, 4)].resource == ResourceTypes::NONE);
     // it ends the boat's turn (game)

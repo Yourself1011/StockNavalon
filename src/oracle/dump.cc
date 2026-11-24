@@ -91,7 +91,9 @@ class Dumper {
             string(toString(reinterpret_cast<String *>(o)));
             return;
         }
-        if (skipped(klass) || !seen.insert(o).second) {
+        // a list of values can't hold a cycle, and may be shared (a boat
+        // and its passenger share their effects), so it's always written out
+        if (skipped(klass) || (!ofValues(o, klass, name) && !seen.insert(o).second)) {
             out += "{\"$ref\":";
             string(name);
             out += '}';
@@ -117,6 +119,14 @@ class Dumper {
 
   private:
     std::unordered_set<Object *> seen;
+
+    bool ofValues(Object *o, Class *klass, std::string_view name) {
+        if (name == "List`1") {
+            Object *items = refField(o, klass, "_items");
+            return items != nullptr && ofValues(items, object_get_class(items), "[]");
+        }
+        return name.ends_with("[]") && class_is_valuetype(class_get_element_class(klass));
+    }
     std::map<Class *, std::vector<Field>> fieldCache;
     std::map<Class *, std::map<long long, std::string>> enumCache;
 

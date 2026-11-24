@@ -51,6 +51,10 @@ struct Unit {
     int hp, maxHp;
     // index into Game::cities of the city supporting this unit, -1 if none
     int home = -1;
+    // a boat's passenger's own home, which it lands with
+    // (CAPTURE_SPARES_PASSENGERS): the game keeps the passenger whole inside
+    // the boat, out of reach of a capture's clearing
+    int passengerHome = -1;
     // a unit from a ruin belongs to a city but doesn't count toward its cap
     bool freeOfCap = false;
     // the player whose score this unit counts for. Converting a unit doesn't

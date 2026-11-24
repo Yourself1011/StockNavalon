@@ -109,8 +109,12 @@ int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile, int home) {
               .hp = unitInfo(type).maxHp,
               .maxHp = unitInfo(type).maxHp,
               .home = home,
+              .passengerHome = home,
               .scoreOwner = player,
               .facing = Directions::nearest(size / 2 - tileX(tile), size / 2 - tileY(tile))};
+    // made spent, moved and attacked (game: TrainUnit), until its owner's
+    // next turn
+    unit.attacked = settings.follows(RuleVersions::ACTIONS_SET_ATTACKED);
     auto slot = std::find_if(units.begin(), units.end(),
                              [](const Unit &u) { return !u.alive; });
     int idx;
@@ -242,6 +246,9 @@ bool bumpsHidden(Game &game, int unitIdx, int to) {
         return false;
     }
     other->hidden = false;
+    if (game.settings.follows(RuleVersions::BUMP_MEETS)) {
+        game.meet(game.units[unitIdx].owner, other->owner);
+    }
     // the mover stays, turned toward it
     if (game.settings.follows(RuleVersions::BUMP_TURNS)) {
         Unit &unit = game.units[unitIdx];
@@ -281,6 +288,7 @@ void Game::moveUnit(int unitIdx, int to) {
     // tiles are revealed along the whole path, not just at the end
     int last = revealAlongPath(unitIdx, to);
     placeUnit(unitIdx, to, last);
+    siegeAttack(unitIdx, to);
     unit.canMove = false;
     unit.canAct = false;
     unit.canAttack = unit.canAttack && unit.has(Abilities::DASH);
@@ -300,6 +308,7 @@ void Game::moveUnit(int unitIdx, int to) {
 void Game::embark(int unitIdx) {
     Unit &unit = units[unitIdx];
     unit.type = boatFor(unit.passenger);
+    unit.passengerHome = unit.home;
     // its turn is over, attacking included, so an upgrade gives it no attack
     // back (game: embarking sets moved and attacked)
     unit.canMove = unit.canAttack = false;
@@ -311,6 +320,22 @@ void Game::embark(int unitIdx) {
     }
 }
 
+void Game::land(int unitIdx) {
+    Unit &unit = units[unitIdx];
+    unit.type = unit.passenger;
+    if (settings.follows(RuleVersions::CAPTURE_SPARES_PASSENGERS)) {
+        unit.home = unit.passengerHome;
+    }
+}
+
+void Game::siegeAttack(int unitIdx, int to) {
+    int city = cityAt(to);
+    if (city >= 0 && settings.follows(RuleVersions::STOMP_AND_SIEGE_ATTACK) &&
+        hostile(units[unitIdx].owner, cities[city].owner)) {
+        onAttack(units[unitIdx].owner, cities[city].owner, false);
+    }
+}
+
 void Game::disembark(int unitIdx, int to) {
     Unit &unit = units[unitIdx];
     if (bumpsHidden(*this, unitIdx, to)) {
@@ -318,7 +343,8 @@ void Game::disembark(int unitIdx, int to) {
     }
     int last = revealAlongPath(unitIdx, to);
     placeUnit(unitIdx, to, last);
-    unit.type = unit.passenger;
+    siegeAttack(unitIdx, to);
+    land(unitIdx);
     unit.canMove = unit.canAttack = unit.canAct = false;
     if (unit.has(Abilities::HIDE)) {
         unit.hidden = true;

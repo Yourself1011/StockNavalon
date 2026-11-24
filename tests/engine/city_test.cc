@@ -233,6 +233,40 @@ TEST_CASE("a captured city's connection moves from the old owner's capital to th
     CHECK(game.cities[mine].population == minePop + 1);
 }
 
+TEST_CASE("a capture that explores still moves the connection: the old owner loses it first") {
+    // in the fog, the city's grown borders exploring new tiles
+    for (bool first : {true, false}) {
+        CAPTURE(first);
+        // capitals at (2,2) and (9,9), a road between them through (4,4)
+        Game game = makeFogGame(bigMap({"3 3 F=", "4 4 FV", "5 5 F=", "6 6 F=", "7 7 F=",
+                                        "8 8 F="}));
+        game.settings.rulesVersion =
+            first ? RuleVersions::LATEST : RuleVersions::OLD_OWNER_DISCONNECTS_FIRST - 1;
+        clearUnits(game);
+        int city = game.foundCity(game.index(4, 4), 1);
+        game.cities[city].borderGrown = true;
+        int theirs = game.players[1].capital;
+        game.updateAllConnections();
+        REQUIRE(game.cities[city].connectedFor == 1);
+        int cityPop = game.cities[city].population;
+        int theirsPop = game.cities[theirs].population;
+        addUnit(game, 0, WARRIOR, 4, 4);
+        REQUIRE_FALSE(game.explored(0, game.index(6, 6)));
+        game.apply({CAPTURE, game.index(4, 4)});
+        REQUIRE(game.explored(0, game.index(6, 6)));
+        CHECK(game.cities[city].connectedFor == 0);
+        // before, the capturer took the connection over first, and the old
+        // owner's population was never taken away: the city's extra point
+        // levelled it up
+        CHECK(game.cities[theirs].population == theirsPop - (first ? 1 : 0));
+        if (first) {
+            CHECK(game.cities[city].population == cityPop);
+        } else {
+            CHECK(game.cities[city].level == 2);
+        }
+    }
+}
+
 TEST_CASE("a captured city the capturer doesn't reach loses its connection: -1 there and at the old capital (game)") {
     // player 1's city at (4,4) on a road to its capital (6,6), none to
     // player 0's capital (1,1)
@@ -331,17 +365,45 @@ TEST_CASE("capturing the enemy capital wins Might") {
     CHECK(game.legalCommands().empty());
 }
 
-TEST_CASE("units lose their home when their city is captured") {
-    Game game = makeGame(fieldMap({"4 4 FV"}));
+TEST_CASE("a captured city's units lose it as their home, but not under 77-78") {
+    for (bool keeps : {false, true}) {
+        CAPTURE(keeps);
+        Game game = makeGame(fieldMap({"4 4 FV"}));
+        game.settings.rulesVersion =
+            keeps ? RuleVersions::CAPTURE_SPARES_PASSENGERS - 1 : RuleVersions::LATEST;
+        clearUnits(game);
+        int village = game.index(4, 4);
+        int city = game.foundCity(village, 1);
+        int defender = game.spawnUnit(1, WARRIOR, game.index(6, 5), city);
+        addUnit(game, 0, WARRIOR, 4, 4);
+        game.apply({CAPTURE, village});
+        CHECK(game.cities[city].owner == 0);
+        CHECK(game.units[defender].home == (keeps ? city : -1));
+        // the capturer and the defender
+        CHECK(game.unitCount(city) == (keeps ? 2 : 1));
+        CHECK_FALSE(game.gameOver());
+    }
+}
+
+TEST_CASE("a boat's passenger keeps its home through a capture, and lands with it (game)") {
+    Game game = makeGame(fieldMap({"4 4 FV", "7 5 W"}));
     clearUnits(game);
     int village = game.index(4, 4);
     int city = game.foundCity(village, 1);
-    int defender = game.spawnUnit(1, WARRIOR, game.index(6, 5), city);
+    int boat = game.spawnUnit(1, WARRIOR, game.index(7, 5), city);
+    game.units[boat].type = RAFT;
     addUnit(game, 0, WARRIOR, 4, 4);
     game.apply({CAPTURE, village});
-    CHECK(game.cities[city].owner == 0);
-    CHECK(game.units[defender].home == -1);
-    CHECK_FALSE(game.gameOver());
+    // the boat is on the map: it loses the city, so it doesn't count
+    CHECK(game.units[boat].home == -1);
+    CHECK(game.unitCount(city) == 1);
+    game.apply({ENDTURN});
+    Unit &b = game.units[boat];
+    b.canMove = b.canAct = true;
+    game.apply({CommandTypes::DISEMBARK, game.index(7, 5), game.index(6, 5)});
+    CHECK(game.units[boat].type == WARRIOR);
+    CHECK(game.units[boat].home == city);
+    CHECK(game.unitCount(city) == 2);
 }
 
 TEST_CASE("the super unit pushes a unit off the city") {

@@ -75,6 +75,7 @@ inline int addUnit(Game &game, int player, UnitTypes::UnitType type, int x,
                               game.players[player].capital);
     Unit &u = game.units[unit];
     u.canMove = u.canAttack = u.canAct = true;
+    u.attacked = false;
     return unit;
 }
 

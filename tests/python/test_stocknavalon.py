@@ -671,3 +671,45 @@ def test_a_self_play_worker_that_fails_stops_the_run_with_its_reason(tmp_path):
     player.join(timeout=60)
     assert isinstance(player.error, RuntimeError)
     assert "best.pt" in str(player.error)
+
+
+def test_crazy_games_positions_are_evaluated_together_and_each_gets_its_own():
+    # several games' searches ask at once: one network call, and each caller
+    # gets exactly what the network gives for its own positions
+    import threading
+    from stocknavalon import crazy
+    enc = pe.Encoding()
+    net = sn.Network(enc, channels=16, blocks=1).eval()
+    direct = crazy.evaluator(net, torch.device("cpu"), enc)
+    calls = []
+
+    def counted(*a):
+        calls.append(len(a[0]))
+        return direct(*a)
+    batcher = crazy.Batcher(counted, wait_seconds=0.5)
+    asks = []
+    for seed in range(3):
+        session = pe.SelfPlaySession(pe.self_play_config(
+            search=dict(simulations=4, samples=1), network_beliefs=seed != 1), 2 + seed, 2 + seed, seed)
+        planes, globals_, _ = session.pending_inputs(enc, legal=False)
+        rows, slots = session.pending_slots(enc)
+        asks.append((planes, globals_, rows, slots, session.pending_belief_rows()))
+    results = [None] * len(asks)
+    for _ in asks:
+        batcher.started()
+
+    def ask(i):
+        results[i] = batcher(*asks[i])
+    threads = [threading.Thread(target=ask, args=(i,)) for i in range(len(asks))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    batcher.close()
+    assert calls == [sum(len(a[0]) for a in asks)]  # one call for all three
+    for ask_, got in zip(asks, results):
+        want = direct(*ask_)
+        for a, b in zip(got, want):
+            assert (a is None) == (b is None)
+            if a is not None:
+                assert np.allclose(a, b, atol=1e-5)

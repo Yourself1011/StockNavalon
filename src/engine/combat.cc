@@ -110,8 +110,13 @@ void Game::stomp(int unitIdx) {
         units[unitIdx].facing = Directions::nearest(dx, dy);
         units[victim].facing = Directions::nearest(-dx, -dy);
         int amount = areaDamage(unit, units[victim]);
-        // a stomp that hurts starts Pacifist over
-        if (amount > 0 && settings.follows(RuleVersions::PACIFIST_NEEDS_DAMAGE)) {
+        // a stomp that hurts starts Pacifist over, and is an attack on the
+        // victim's tribe, unless the victim was hidden
+        bool counts = amount > 0 && !(units[victim].hidden &&
+                                      settings.follows(RuleVersions::HIDDEN_STOMPS_UNCOUNTED));
+        if (counts && settings.follows(RuleVersions::STOMP_AND_SIEGE_ATTACK)) {
+            onAttack(unit.owner, units[victim].owner, true);
+        } else if (counts && settings.follows(RuleVersions::PACIFIST_NEEDS_DAMAGE)) {
             players[unit.owner].peacefulTurns = 0;
         }
         splashDamage(unitIdx, victim, amount);
@@ -194,13 +199,9 @@ void Game::attack(int unitIdx, int target) {
                        embarksAt(unit.owner, target);
         bool movesIn = unit.data().range == 1 &&
                        (lands || embarks || canEnterTerrain(unit, target));
-        bool persists = unit.has(Abilities::PERSIST);
-        if (persists && settings.follows(RuleVersions::PERSIST_BEFORE_MOVE_IN)) {
-            persists = !(movesIn && (lands || embarks)) &&
-                       !attackTargets(unitIdx, movesIn ? target : -1).empty();
-        } else if (persists && settings.follows(RuleVersions::PERSIST_NEEDS_TARGET)) {
-            persists = false;  // decided after the move, below
-        }
+        // a unit that embarks or lands there is done for the turn
+        bool turnEnds = settings.follows(RuleVersions::PERSIST_BEFORE_MOVE_IN) &&
+                        movesIn && (lands || embarks);
         if (unit.data().range == 1 && lands) {
             disembark(unitIdx, target);
         } else if (unit.data().range == 1 && embarks) {
@@ -209,13 +210,11 @@ void Game::attack(int unitIdx, int target) {
         } else if (unit.data().range == 1 && canEnterTerrain(unit, target)) {
             placeUnit(unitIdx, target);
         }
-        if (settings.follows(RuleVersions::PERSIST_BEFORE_MOVE_IN)) {
-            if (persists) {
-                unit.canAttack = true;
-            }
-        } else if (unit.has(Abilities::PERSIST) &&
-                   (!settings.follows(RuleVersions::PERSIST_NEEDS_TARGET) ||
-                    !attackTargets(unitIdx).empty())) {
+        // targets as seen from where it ends up (game: tiles the move in
+        // reveals count)
+        if (unit.has(Abilities::PERSIST) && !turnEnds &&
+            (!settings.follows(RuleVersions::PERSIST_NEEDS_TARGET) ||
+             !attackTargets(unitIdx).empty())) {
             unit.canAttack = true;
         }
     } else if (retaliates) {
@@ -255,7 +254,8 @@ void Game::convert(int unitIdx, int targetIdx) {
     markOccupied(unit.owner, target.tile);
     // counts toward the capital, or a random city without one, even past its
     // cap
-    if (!target.has(Abilities::INDEPENDENT)) {
+    if (!target.has(Abilities::INDEPENDENT) ||
+        (target.type != target.passenger && settings.follows(RuleVersions::GAME_DAGGER_HOMES))) {
         int capital = players[unit.owner].capital;
         if (capital >= 0 && cities[capital].owner == unit.owner) {
             target.home = capital;
@@ -274,7 +274,10 @@ void Game::convert(int unitIdx, int targetIdx) {
             }
         }
     }
+    target.passengerHome = target.home;
     target.canMove = target.canAttack = target.canAct = false;
+    // spent, as the game's new units are (an upgrade gives it no attack)
+    target.attacked = settings.follows(RuleVersions::ACTIONS_SET_ATTACKED);
     target.hidden = false;
     revealForUnit(targetIdx);
     unit.canAttack = false;
@@ -353,7 +356,11 @@ void Game::infiltrate(int unitIdx, int target) {
     auto spawnDagger = [&](int tile, int facing, bool look) {
         bool boat = TerrainTypes::isWater(tiles[tile].terrain) && !tiles[tile].road &&
                     !embarksAt(owner, tile);
-        int dagger = spawnUnit(owner, boat ? UnitTypes::PIRATE : UnitTypes::DAGGER, tile, -1);
+        // on the city tile it belonged to that city before GAME_DAGGER_HOMES
+        int home = tile == target && settings.follows(RuleVersions::GAME_UNIT_HOMES) &&
+                           !settings.follows(RuleVersions::GAME_DAGGER_HOMES)
+                       ? city : -1;
+        int dagger = spawnUnit(owner, boat ? UnitTypes::PIRATE : UnitTypes::DAGGER, tile, home);
         Unit &u = units[dagger];
         u.passenger = UnitTypes::DAGGER;
         // a Pirate is a boat: the health is its passenger's, the Dagger's

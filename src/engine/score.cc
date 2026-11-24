@@ -21,6 +21,9 @@ int Game::templeTurn(int tile) const {
 }
 
 int Game::templeLevel(int tile) const {
+    if (settings.follows(RuleVersions::TEMPLE_LEVEL_KEPT)) {
+        return tiles[tile].level;
+    }
     return Rules::templeLevel(tiles[tile].builtTurn, templeTurn(tile));
 }
 
