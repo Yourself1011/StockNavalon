@@ -157,6 +157,9 @@ def main():
                              "both sides or one each")
     parser.add_argument("--backup", nargs="+", choices=list(BACKUPS),
                         help="how values are backed up; one for both sides or one each")
+    parser.add_argument("--transpositions", nargs="+", choices=["on", "off"],
+                        help="one node per position (SearchConfig::transpositions); one for "
+                             "both sides or one each, with --side-simulations too")
     parser.add_argument("--plan", nargs=2, metavar=("A", "B"), default=["none", "none"],
                         help="each side's forced plan: none, bridge, naval or convert")
     parser.add_argument("--plan-turns", type=int, default=20,
@@ -205,6 +208,9 @@ def main():
         names = [f"{n} simulations" for n in args.side_simulations]
         for k in (0, 1):
             changes[k] = dict(simulations=args.side_simulations[k])
+        for k, t in enumerate(per_side(args.transpositions, 2, "--transpositions")):
+            if t is not None:
+                changes[k]["transpositions"] = t == "on"
         # one match; --simulations doesn't apply
         args.simulations = [max(args.side_simulations)]
     else:
@@ -227,6 +233,10 @@ def main():
             if b is not None:
                 changes[k]["backup"] = BACKUPS[b]
                 parts[k].append(f"{b} backup")
+        for k, t in enumerate(per_side(args.transpositions, 2, "--transpositions")):
+            if t is not None:
+                changes[k]["transpositions"] = t == "on"
+                parts[k].append(f"transpositions {t}")
         for k in (0, 1):
             if args.candidates:
                 changes[k]["gumbel_candidates"] = args.candidates[k]

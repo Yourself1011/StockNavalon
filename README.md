@@ -22,7 +22,7 @@ The venv is optional for C++ work. When it's there, the CMake build also builds 
 
 ## Build
 
-Two presets, each building into `build/<preset>`:
+Three presets, each building into `build/<preset>`:
 
 ```bash
 cmake --preset release        # optimized
@@ -85,7 +85,7 @@ ctest --preset dev            # the same with full debug checks, unoptimized (10
 
 - **Fair play:** it searches on determinized games, so it only knows what its own player could.
 - **Its options:** `--simulations N` per determinized game (default 200), `--samples N` determinized games per command (default 4), and `--horizon N`, the turn changes its search may look across (by default no cutoff: it goes as deep as its simulations reach).
-- **How it plays:** `play_stocknavalon` judges positions by the score lead, so expect it to build up score rather than attack. A turn takes it about a third of a second.
+- **How it plays:** `play_stocknavalon` judges positions by the score lead, so expect it to build up score rather than attack.
 - **Against a trained network:** `stocknavalon.play` runs the same CLI with the network's search, from a run directory (its best network, `best.pt`) or a `.pt` snapshot, with the same options plus `--device`:
 
   ```bash
@@ -127,7 +127,7 @@ view = pe.make_view(game, 0)          # what player 0 knows
 results = pe.play_random_games(100, tribes)   # loops in C++
 ```
 
-A call into the engine costs about as much as a game step (a full step from Python is about 14 µs, against 6 µs in C++), so loops over many games or positions belong in C++ as single calls. The full guide is [`docs/python.md`](docs/python.md).
+A call into the engine costs about as much as a game step, so loops over many games or positions belong in C++ as single calls. The full guide is [`docs/python.md`](docs/python.md).
 
 ## Training stockNavalon
 
@@ -138,14 +138,15 @@ uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.measure          # network and self-play speed
 .venv/bin/python -m stocknavalon.rating runs/NAME # Elo of each best network so far
 .venv/bin/python -m stocknavalon.searches runs/NAME  # Gumbel search against PUCT, same network
-.venv/bin/python -m stocknavalon.versus runs/NAME    # the training network's average against the best, a full match
+.venv/bin/python -m stocknavalon.versus runs/NAME    # the training network's average against the best, a full match (--save FILE keeps the games)
+.venv/bin/python -m stocknavalon.crazy runs/NAME     # against the real game's Crazy bot, through the oracle (docs/oracle.md)
 .venv/bin/python -m stocknavalon.diagnose runs/NAME  # the economy checks: villages, ruins, ports, bridges, idle units
 .venv/bin/python -m stocknavalon.losses MATCH.txt     # how each side lost the games of a match saved with versus --save
 .venv/bin/python -m stocknavalon.offline --dir runs/NAME --sizes 64x6 128x10  # network sizes trained offline on the run's games, compared
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```
 
-A run bootstraps from score-evaluator games, then runs self-play and training at once, in two threads, with training held to `--reuse` samples per new position. It saves its games, checkpoint and log in the run directory; Ctrl-C stops it cleanly, and running it again resumes. Every 5,000 training steps (about an hour) it also plays evaluation matches (against the random bot, the score-evaluator search and its previous self) and logs the win rates; each status line includes the loss on held-out games. It uses Apple Silicon's GPU (MPS) when one is available. See `docs/stockNavalon.md` section 6.
+A run bootstraps from score-evaluator games (or the network's own, with `--init`), then runs self-play, training and evaluation at once, with training held to `--reuse` samples per new position. Every `--gate-steps` the training network's average plays the best network and replaces it if it wins (`--no-promote` keeps the starting best throughout; `--stop-after-gates N` stops after N gates); every `--eval-steps` the best network plays the random bot and the score-evaluator search (and, with `--crazy-games`, the real game's Crazy bot). It saves its games, checkpoints and log in the run directory; Ctrl-C stops it cleanly, and running it again resumes. It uses Apple Silicon's GPU (MPS) when one is available. The flags and their defaults are in `run.py`; how it works is `docs/stockNavalon.md` section 6.
 
 ## Editor setup
 

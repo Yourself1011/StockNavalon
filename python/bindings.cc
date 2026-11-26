@@ -497,6 +497,9 @@ void bindGame(nb::module_ &m) {
         .def("embassy_income", &Game::embassyIncome, "player"_a)
         .def("tech_cost", &Game::techCost, "player"_a, "tech"_a)
 
+        .def("position_hash", &Game::positionHash,
+             "A hash of everything that decides what can happen from here, units and "
+             "cities by tile, so the same position reached in another order hashes the same.")
         .def("legal_commands", &Game::legalCommands,
              "Every legal command for the current player, except Resign.")
         .def("is_legal", &Game::isLegal, "command"_a)
@@ -763,6 +766,8 @@ void bindConfigs(nb::module_ &m) {
         .def_rw("count_evaluations", &SearchConfig::countEvaluations)
         .def_rw("replies", &SearchConfig::replies,
                 "turn search: how the opponent's replies are drawn (Replies)")
+        .def_rw("transpositions", &SearchConfig::transpositions,
+                "one node per position, whichever order reached it (command search)")
         .def_rw("backup", &SearchConfig::backup,
                 "how a node's value comes from its children's (Backup)");
     m.def("regularized_policy", &regularizedPolicy, "prior"_a, "q"_a, "lambda_"_a,
@@ -1546,6 +1551,40 @@ void bindSearch(nb::module_ &m) {
         "leaves): leaves per move are (count, mean value for the searcher) of "
         "where its simulations ended: in the searcher's own turn, an "
         "opponent's, the searcher's later turns, the game's end.");
+    m.def(
+        "search_positions",
+        [](const Game &game, const EncodingConfig &encoding, nb::callable evaluate,
+           const SearchConfig &config, bool networkBeliefs, std::uint64_t seed) {
+            PythonEvaluator evaluator(encoding, evaluate);
+            int me = game.currentPlayer;
+            std::optional<Beliefs> beliefs;
+            if (networkBeliefs) {
+                std::vector<Evaluation> results;
+                evaluator.evaluate({EvalRequest{.game = &game, .player = me, .moves = nullptr,
+                                                .wantsBeliefs = true}},
+                                   results);
+                beliefs = std::move(results.at(0).beliefs);
+            }
+            if (!beliefs) {
+                beliefs = priorBeliefs(makeView(game, me));
+            }
+            BatchedSearch batched({&game}, {*beliefs}, config, seed);
+            run(batched, evaluator);
+            BatchedSearch::PositionCounts c = batched.positionCounts(0, encoding);
+            nb::dict out;
+            out["own_turn_nodes"] = c.ownTurnNodes;
+            out["own_turn_distinct"] = c.ownTurnDistinct;
+            out["nodes"] = c.nodes;
+            out["distinct"] = c.distinct;
+            out["exact"] = c.exact;
+            return out;
+        },
+        "game"_a, "encoding"_a, "evaluate"_a, "search"_a, "network_beliefs"_a = true,
+        "seed"_a = 0,
+        "For measuring transpositions: one search as `search` runs it, then its "
+        "nodes and how many distinct positions they hold (the mover's network input), "
+        "within the searcher's own turn and in all, and exactly (exact: by "
+        "Game.position_hash).");
     m.def(
         "profile_start",
         [] {

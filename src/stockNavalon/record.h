@@ -94,7 +94,7 @@ struct GameRecord {
     // the value target; empty in older records
     std::vector<int> finalCities;
     // in a match, the side that played seat 0 (the other side played seat
-    // 1); not saved with the record
+    // 1); saved since records kept it ("seat" in the header), else 0
     int seatZeroSide = 0;
     // ended by the stalemate cutoff (SelfPlayConfig::stallTurns) rather than
     // the turn limit; not saved with the record

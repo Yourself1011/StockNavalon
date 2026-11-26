@@ -8,11 +8,13 @@
 #include "command.h"
 #include <array>
 #include "determinize.h"
+#include "encoding.h"
 #include "game.h"
 #include "legalMoves.h"
 #include "plans.h"
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 #include <optional>
 #include <random>
 #include <utility>
@@ -129,6 +131,12 @@ struct SearchConfig {
     // (SearchResult::values) stay means.
     enum class Backup { MEAN, PBAR, PBAR_OPPONENT };
     Backup backup = Backup::MEAN;
+    // One node per position in a tree, whichever order of commands reached
+    // it (Game::positionHash; notes/design.md section 11): a simulation
+    // reaching a position already searched carries on below it, and a move's
+    // value is its child's own average, from every line into it. Command
+    // search only (not with turnSearch).
+    bool transpositions = false;
 };
 
 // The policy PUCT approximately heads toward (Grill et al. 2020, "Monte-Carlo
@@ -282,6 +290,15 @@ class BatchedSearch {
         }
     };
     DepthStats takeDepthStats() { return std::exchange(depthStats, {}); }
+    // For measuring transpositions: `game`'s nodes, and how many distinct
+    // positions they hold as the network sees them (the mover's input),
+    // within the root player's turn and in all, and exactly
+    // (Game::positionHash: facings and the like the input leaves out).
+    // Positions only repeat within a tree, each its own determinization.
+    struct PositionCounts {
+        int ownTurnNodes = 0, ownTurnDistinct = 0, nodes = 0, distinct = 0, exact = 0;
+    };
+    PositionCounts positionCounts(int game, const EncodingConfig &encoding) const;
     const Game &rootGame(int tree) const { return trees.at(tree).nodes[0].game; }
 
   private:
@@ -299,6 +316,8 @@ class BatchedSearch {
         int toMove;
         // turn changes since the root
         int crossed;
+        // its position's hash (Game::positionHash), with transpositions
+        std::uint64_t hash = 0;
         // a finished game, or a line at the horizon: scored, not searched
         bool terminal = false, atHorizon = false;
         // scored yet, and the value for toMove, and the utility moves are
@@ -359,6 +378,8 @@ class BatchedSearch {
         int resume = -1;
         // the path of the simulation in progress: node, move taken
         std::vector<std::pair<int, int>> path;
+        // with transpositions: each node by its position's hash
+        std::unordered_map<std::uint64_t, int> positions;
         // the node waiting for an evaluation, -1 if none
         int waiting = -1;
         std::mt19937_64 rng;
@@ -391,6 +412,12 @@ class BatchedSearch {
     std::vector<int> requestTree;
 
     Node makeNode(Game game, LegalMoves legal, int crossed) const;
+    bool merging() const { return config.transpositions && !config.turnSearch; }
+    // with transpositions: a node's own average utility for its player to
+    // move, its evaluation and everything backed up through it
+    double meanUtility(const Node &node) const;
+    // a tree's first node, kept in its position table when merging
+    void addRoot(Tree &tree, Node root);
     // runs the tree's current simulation until it needs an evaluation (true)
     // or completes without one (false)
     bool descend(Tree &tree);

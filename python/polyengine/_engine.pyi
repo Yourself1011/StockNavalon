@@ -667,6 +667,11 @@ class Game:
 
     def tech_cost(self, player: int, tech: TechType) -> int: ...
 
+    def position_hash(self) -> int:
+        """
+        A hash of everything that decides what can happen from here, units and cities by tile, so the same position reached in another order hashes the same.
+        """
+
     def legal_commands(self) -> list[Command]:
         """Every legal command for the current player, except Resign."""
 
@@ -1160,6 +1165,13 @@ class SearchConfig:
 
     @replies.setter
     def replies(self, arg: Replies, /) -> None: ...
+
+    @property
+    def transpositions(self) -> bool:
+        """one node per position, whichever order reached it (command search)"""
+
+    @transpositions.setter
+    def transpositions(self, arg: bool, /) -> None: ...
 
     @property
     def backup(self) -> Backup:
@@ -1727,6 +1739,11 @@ def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search:
 def search(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> tuple[list[Command], list[int], list[float], list[float], int, list[list[tuple[int, float]]]]:
     """
     One search for the player to move, as the CLI's bot does, `evaluate` as for run_cli, with these settings (SearchConfig). Returns (moves, visits, values, priors, chosen index, leaves): leaves per move are (count, mean value for the searcher) of where its simulations ended: in the searcher's own turn, an opponent's, the searcher's later turns, the game's end.
+    """
+
+def search_positions(game: Game, encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, seed: int = 0) -> dict:
+    """
+    For measuring transpositions: one search as `search` runs it, then its nodes and how many distinct positions they hold (the mover's network input), within the searcher's own turn and in all, and exactly (exact: by Game.position_hash).
     """
 
 def profile_start() -> None:

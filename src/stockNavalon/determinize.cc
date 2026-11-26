@@ -139,53 +139,6 @@ void sampleUnexplored(Game &g, const Beliefs &beliefs, const Known &known,
     }
 }
 
-// Renumbers units and cities by tile, dropping dead units, so a sample
-// carries nothing of the order things happened in the real game
-void canonicalize(Game &g) {
-    std::vector<Unit> units;
-    for (const Unit &u : g.units) {
-        if (u.alive) {
-            units.push_back(u);
-        }
-    }
-    std::sort(units.begin(), units.end(),
-              [](const Unit &a, const Unit &b) { return a.tile < b.tile; });
-
-    std::vector<int> order(g.cities.size());
-    for (std::size_t i = 0; i < order.size(); i++) {
-        order[i] = static_cast<int>(i);
-    }
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return g.cities[a].tile < g.cities[b].tile;
-    });
-    std::vector<int> newIndex(g.cities.size());
-    std::vector<City> cities;
-    for (int old : order) {
-        newIndex[old] = static_cast<int>(cities.size());
-        cities.push_back(g.cities[old]);
-    }
-    auto renumber = [&](int city) { return city < 0 ? -1 : newIndex[city]; };
-    for (Tile &tile : g.tiles) {
-        tile.territory = renumber(tile.territory);
-        tile.unit = -1;
-    }
-    for (Unit &u : units) {
-        u.home = renumber(u.home);
-        u.passengerHome = renumber(u.passengerHome);
-    }
-    for (Player &p : g.players) {
-        p.capital = renumber(p.capital);
-    }
-    for (auto &[city, step] : g.populationQueue) {
-        city = renumber(city);
-    }
-    g.units = std::move(units);
-    g.cities = std::move(cities);
-    for (std::size_t i = 0; i < g.units.size(); i++) {
-        g.tiles[g.units[i].tile].unit = static_cast<int>(i);
-    }
-}
-
 // a city's border radius
 int borderRadius(const City &city) {
     return city.borderGrown ? Rules::GROWN_BORDER_RADIUS
@@ -1065,7 +1018,8 @@ std::optional<Game> sample(const Game &real, int player,
         }
     }
 
-    canonicalize(g);
+    // carrying nothing of the order things happened in the real game
+    g.canonicalize();
     return g;
 }
 

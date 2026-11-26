@@ -1,8 +1,8 @@
 # Integration with the real game
 
-A plan, not built. **The first goal is checking our engine against the real game:** are the rules sound and complete, and is the map generator believable. Matches against the game's built-in Crazy bot come after. Online play, human replays and a live advisor are out of scope (the user's decisions, 2026-11-19). The rules spec is [`src/engine/GAME.md`](../src/engine/GAME.md); how the engine implements it, [`src/engine/ENGINE.md`](../src/engine/ENGINE.md).
+**The goal is checking our engine against the real game:** are the rules sound and complete, and is the map generator believable; then matches against the game's built-in Crazy bot. All of it is built (the oracle, map comparison, the mirror, scenarios, Crazy matches: [`docs/oracle.md`](../docs/oracle.md)); this file keeps the findings and what's still open. Online play, human replays and a live advisor are out of scope (the user's decisions, 2026-11-19). The rules spec is [`src/engine/GAME.md`](../src/engine/GAME.md); how the engine implements it, [`src/engine/ENGINE.md`](../src/engine/ENGINE.md).
 
-**The approach:** load the game's own rules library from the Steam install and drive it headlessly as a reference (an *oracle*). Play games on both engines side by side, with our bot choosing the moves, and compare after every command. Compare real generated maps with ours by their statistics.
+**The approach:** load the game's own rules library from the Steam install and drive it headlessly as a reference (an *oracle*). Play games on both engines side by side (random moves, set-up scenarios, our bot against Crazy) and compare after every command. Compare real generated maps with ours by their statistics.
 
 ## 1. What bengreff/polytopia did
 
@@ -36,50 +36,22 @@ A plan, not built. **The first goal is checking our engine against the real game
 
 ## 3. The oracle
 
-Built (`src/oracle/`, [`docs/oracle.md`](../docs/oracle.md)) up to `new`, `state` and `map`: a small C++ program of our own, separate from the engine, that loads the pinned library and serves it over stdin/stdout (one request a line, one JSON answer a line). It runs in its own process, so a crash in the game's code (or the runtime's global state) never reaches ours, and the engine never links against Midjiwan's code. The Python side drives it.
+Built (`src/oracle/`; its requests in [`docs/oracle.md`](../docs/oracle.md)): a small C++ program of our own, separate from the engine, that loads the pinned library and serves it over stdin/stdout. It runs in its own process, so a crash in the game's code (or the runtime's global state) never reaches ours, and the engine never links against Midjiwan's code. The Python side drives it.
 
-| Request | Answer |
-| --- | --- |
-| `new` (map type, size, tribes, seed, settings) | a game built as the app builds a pass-and-play Might game; returns its id |
-| `map` (game) | the generated map: terrain, resources, villages, ruins, capitals, climate per tile |
-| `legal` (game, player) | the legal commands from the game's own generators (not `IsValid` sweeps) |
-| `apply` (game, command) | applies it with `ActionManager.ExecuteCommand`; returns the new state |
-| `state` (game) | the state projection (section 4) as JSON, by reflection |
-| `ai` (game) | the built-in AI's command, for later (section 7) |
-
-- Built from the class layout dumped with Cpp2IL or Il2CppDumper, plus Ghidra for any method whose behaviour needs reading (game creation especially).
-- **Is the oracle the real game?** Our game construction could differ from the app's in some setting. Two cheap checks: settings read from a pass-and-play game started in the app (its save, or a Frida snapshot like bengreff's) match ours; and a short game played in the app with the same seed gives the same map. bengreff showed this can be made exact; we need it only once per version.
+- **Is the oracle the real game?** Not checked yet. Our game construction could differ from the app's in some setting. Two cheap checks: settings read from a single-player game started in the app (its save, or a Frida snapshot like bengreff's) match ours; and a few games played in the app the same way play the same. bengreff showed this can be made exact; we need it only once per version.
 
 ## 4. Rules: games on both engines
 
-**The mirror:** a polyengine `Game` kept in step with the oracle's game, command by command.
+**The mirror** (`src/oracle/mirror.py`, docs/oracle.md "Mirroring a game"): a polyengine `Game` started from the real map and kept in step with the oracle's game, command by command, comparing the legal lists (as sets, after translation: a command only the real game allows is a missing or wrong rule, one only we allow a made-up one) and the parts of the state both model. Random outcomes are read off the real game and forced on ours (`Game::forced`); an Explorer is forced as the tiles it revealed, so its walk itself isn't checked.
 
-```
-oracle (real rules)                          polyengine (ours)
-  new ── map ──► translate to MapData ──────► Game
-  legal ◄──────────────────────────────────── compare with LegalMoves
-  apply ◄── translate ◄── chosen Command ◄─── bot or coverage policy picks
-  state ─────────────────────────────────────► compare with our projection
-```
-
-- **Start:** the oracle generates the map, which becomes a `MapData` (`src/engine/map.h`): terrain, resources, villages, ruins, lighthouses, capitals in seat order, climate regions. Both games then start from the same position.
-- **Commands:** our command set is one-to-one with the real `CommandType`s (GAME.md section 2, "Actions"), so translation is one table: type, tile, argument. Tiles map through one coordinate transform, worked out once (origin, y up or down, axis order).
-- **Who picks the moves:** the user's suggestion, our bot, played on the mirror through `makeView` as in training, so the games look like the ones the engine actually has to get right. Its move goes to both engines. Bot games alone miss rules it rarely or never uses (Destroy Embassy, Disband, most diplomacy, rare unit skills, late techs), so a share of commands come from a **coverage policy**: a random legal command, weighted towards the command types, units and skills least exercised so far.
-- **What's compared, after every command:**
-  - **legal lists**, as sets after translation. A command the real game allows and we don't is a missing or wrong rule; one we allow and it doesn't is a rule we've made up. This is the completeness check, and it catches errors before they're played.
-  - **the state projection**: the parts our engine models. Units (type, owner, tile, health, veteran, moved and attacked this turn), cities (owner, level, population, buildings, rewards, walls), tiles (terrain, resource, improvement, owner, explored per player), and each player's stars, income, techs, score, tasks and diplomacy. Everything else (skins, names, AI memory) is left out.
-- **Randomness:** combat is deterministic, but a few outcomes aren't, and the mirror must take them from the oracle. In our engine they're the `Game::randomInt` calls: the ruin reward and its tech (`ruins.cc`), a converted unit's home city (`combat.cc`), the explorer's path (`fog.cc`). Built as `Game::forced` (`force_ruin`, `force_explorer`, `force_converted_home` in Python): the mirror applies a command to the real game first, reads the outcome off the real state, and fixes it for ours before applying it there. An explorer is forced as the tiles it revealed, so its walk itself isn't checked. Empty in training. If the real game is random somewhere ours isn't (or the other way round), it shows up as a mismatch.
-- **On a mismatch:** stop that game, and save both states before and after, the command and the legal lists as a fixture. Each one is a translation bug or a rules bug. A rules fix follows ENGINE.md's usual path: GAME.md updated and marked **(game)**, a new `RuleVersions` number, and a test made from the fixture. GAME.md's **VERIFY** items should all resolve this way.
-- **Settings:** the real 1v1 Might format first (Lakes, 14×14), then every map type and size, more players, peace treaties on, and Domination, since the engine keeps all of these as settings.
-- **The report**, per batch of games: commands compared, mismatches by kind, and a coverage table (each command type, unit, skill, improvement, tech and city reward: how many times exercised). A rule never exercised hasn't been checked, however many games pass.
+- **On a mismatch:** a translation bug or a rules bug. A rules fix follows ENGINE.md's usual path: GAME.md updated and marked **(game)**, a new `RuleVersions` number, and a test. GAME.md's **VERIFY** items should all resolve this way.
+- **Not built:** a **coverage policy** (random legal commands weighted towards the command types, units and skills least exercised so far) and a **coverage table** per batch (each command type, unit, skill, improvement, tech and city reward: how many times exercised). A rule never exercised hasn't been checked, however many games pass; the scenarios cover some by hand.
 
 ### First comparison (2026-11-20)
 
 `src/oracle/mirror.py` (docs/oracle.md, "Mirroring a game"), random legal commands, Lakes 11×11, 2 players. At first every game diverged within 5–40 commands; after the fixes below, about 250 on average (up to 1,100), 30 games a run.
 
 **Oracle and mirror fixes** (not rules): nature (player 255) has a turn of its own after every player's; the real `ActionManager` doesn't finish a command's queued actions inside `ExecuteCommand`, so the oracle now calls `ForceUpdate` until it's idle (this alone removed most fog differences); the client only acts on explored tiles, so the oracle's legal list skips the rest (the commands' own checks allow roads in the fog); a real `MoveCommand` from a boat onto land is our Disembark; a city's `xp` is our population (its `population` is a running total); a bridge is a building in the real game, a road on water in ours.
-
-**Timing the mirror allows for** (both engines end up the same): a city's new level is scored, and the population past it counted, only once its reward is picked; with a peace offer waiting at turn start, the turn's income comes once it's answered; the Pacifist task shows done a little after its count reaches 5.
 
 **Rules fixed**, each a `RuleVersions` number (5–31) and in GAME.md, from the mirror and from reading the game's code (with subagents, `annot.py` over the ISIL):
 - Disband only a unit that hasn't moved or attacked (`CanDisband`).
@@ -96,7 +68,7 @@ oracle (real rules)                          polyengine (ours)
 - City connections as the game finds them (`FindConnectedCities`, `HasMatchingTransportPath`, `UpdateRoutes`): from the original capital over roads, bridges, cities, villages and ports, fog or not; a step into another player's land needs peace between the two tiles' owners; water routes join two of a player's ports at most 5 apart by the game's path; recomputed at the end of a command that built a road, bridge or port, destroyed something, examined a ruin, grew borders, answered a peace offer, captured a city or explored a tile.
 - Creep units (Cloak) get nothing from roads. Without Fishing or Sailing a bridge can't be entered straight from its side. A unit heals at the home rate in an ally's borders. Pacifist: an attack resets the count at once and the turn's end still counts. A boat on a bridge can disembark where it is.
 
-**Timing the mirror allows for** (both engines end up the same): a city's new level is scored, and the population past it counted, only once its reward is picked; while a reward is pending the rest of the command's actions wait (a reveal that found a lighthouse, an Explorer's walk), so explored tiles and score aren't compared until it's picked, and the rest of the Explorer is revealed in ours after (`force_reveal`); with a peace offer waiting at turn start, the turn's start (income, temples) comes once it's answered; the Pacifist task shows done a little after its count reaches 5.
+**Timing the mirror allows for** (both engines end up the same): a city's new level is scored, and the population past it counted, only once its reward is picked; while a reward is pending the rest of the command's actions wait (a reveal that found a lighthouse, an Explorer's walk, a unit made or embarking, stars paid), so explored tiles and score aren't compared until it's picked, the rest of the Explorer is revealed in ours after (`force_reveal`), and the units and stars are read from the real `ActionStack`'s pending actions; with a peace offer waiting at turn start, the turn's start (income, temples) comes once it's answered; the Pacifist task shows done a little after its count reaches 5.
 
 **Scenarios** (2026-11-21, `src/oracle/scenarios.py`): mirrored games set up to exercise one rule at a time (docs/oracle.md, "Scenarios"). About 62–65 of 90 scenario games of 300 commands run clean. Rules they found, also fixed (versions 32–35): within a turn a tribe is met only by exploring a tile that shows it (`MEET_ON_EXPLORE`); a unit pushed onto a port embarks and its turn ends (`PUSH_EMBARK_STOPS`; pushes onto open water don't happen, only onto ports); starfish need a boat that hasn't used its turn (`HARVEST_NEEDS_ACTION`, the "manual" improvement); a turn's income waits for a reward or peace offer pending at its start (`INCOME_AFTER_CHOICES`). Stomps turn units as attacks do. Capital Vision now runs after every command again (a regression from `MEET_ON_EXPLORE`, caught by the `fights` scenario).
 
@@ -127,7 +99,7 @@ oracle (real rules)                          polyengine (ours)
 - A melee kill onto a peace partner's port (it embarks there, by the same rule as a move) can't be checked in two players, since the ally's own units can't be attacked. Nor can a killer without Fishing on its own port.
 - Facing on multi-tile moves with path ties: the search matches, so any remaining difference would be in step costs or accessibility (`getMovementCostDefault`, `IsTileAccessible`); none seen since.
 - Only population is held back at a level-up in ours. Other actions after it (score, a reveal's rest) aren't, which the mirror allows for.
-- Not yet compared: other map types and sizes, more players, the bot's games and a coverage table.
+- Not yet compared: sizes other than 11×11 and 14×14, more players, peace treaties on, Domination (every map type is covered by the Crazy games, section 7).
 
 ## 5. Maps: is the generator believable
 
@@ -164,7 +136,7 @@ So the order and the per-type steps agree (the community's description came from
 - **Too few villages:** Lakes 8.8 against 10.2, Drylands 8.2 against 11.0 (no water there, so it's the placement rules: post-terrain spacing or the edge bands), Archipelago 7.1 against 9.7, Continents 6.7 against 9.0. Fewer villages also means fewer land resources (metal, fruit, game).
 - **Capitals too close:** 6.1–7.5 tiles apart against 7.3–8.6 (Chebyshev), except Pangea (equal).
 - **Climate regions too uneven:** the larger region holds 59% of the land against 51–54% (Drylands, Lakes, Archipelago); real regions split land more evenly.
-- **AquaCrop**, Aquarion's water crop, is on every real map with water (7 on Lakes, 17 on Archipelago), whatever the tribes; we have no such resource. Fish are correspondingly fewer (Lakes 13.8 against our 23.9). For regular tribes it's a water tile that can't hold fish. What it blocks (ports? fishing?) is for phase 3.
+- **AquaCrop**, Aquarion's water crop, is on every real map with water (7 on Lakes, 17 on Archipelago), whatever the tribes; we have no such resource. Fish are correspondingly fewer (Lakes 13.8 against our 23.9). For regular tribes it's a water tile that can't hold fish.
 - **Shallow water and ocean:** total water is right on Lakes (27% each), but real Lakes have 6.8% ocean against our 0.4%: real lakes are fewer and larger (largest 39 tiles against 26), deep enough for ocean in the middle. Our lakes crowd the capitals: water within 2 tiles of a capital 8.6 against 4.5, coastal capitals 90% against 62%.
 - **Too much water** on Continents (48% against 39%) and Water World (91% against 85%), with too many landmasses: Continents 5.6 against 3.1, Pangea 5.5 against exactly 2 (always one continent and one islet, it seems), Water World 7.8 against 3.2.
 - **Ruins on water:** Lakes 0.19 against our 0.01; Archipelago 0.31 against 1.0.
@@ -211,7 +183,7 @@ So the order and the per-type steps agree (the community's description came from
 - **Starting resources** top up the capital's neighbours to the tribe's list instead of adding to them (Hoodrick 4.4 game against 2.5), on random neighbours.
 - Left: AquaCrop itself (its attempt leaves the tile empty for now); Oumaji's field share 1.2 points high; Vengir's region on Lakes 1.9 points drier; starting-resource counts within 0.2 a capital. Pooled, every resource count is now within noise on every map type except metal on Archipelago and Pangea (0.5–0.75 low). Also seen: **starfish** too few on Lakes (2.0 / 2.85) and Continents (3.0 / 3.9), our 1 per 25 water tiles being off, and the **fairness** gap (real capitals differ by 3.0–3.3 resources within 2, ours by 0.9–1.3).
 **Starfish and AquaCrop done** (2026-11-20), for the door to special tribes:
-- **AquaCrop** is a resource (`ResourceTypes::AQUACROP`, last), placed like the others (tries at 0.3 on water and ocean, times the tribe's modifier, so an Aquarion modifier will work when it's added) and kept on the tile. Visible to everyone and unused, since its tech and the Aqua Farm aren't in the engine. Counts match real maps (Lakes 7.2 / 7.4, Archipelago 16.5 / 15.8). Encoding version 16: its own input plane, last, and an 8th resource in the `unexplored` head; `load_weights` drops a saved head whose shape changed, so older networks still load (tested). Open for phase 3: whether regular tribes see it, and whether it blocks a Port or Bridge.
+- **AquaCrop** is a resource (`ResourceTypes::AQUACROP`, last), placed like the others (tries at 0.3 on water and ocean, times the tribe's modifier, so an Aquarion modifier will work when it's added) and kept on the tile. Visible to everyone and unused, since its tech and the Aqua Farm aren't in the engine. Counts match real maps (Lakes 7.2 / 7.4, Archipelago 16.5 / 15.8). Encoding version 16: its own input plane, last, and an 8th resource in the `unexplored` head; `load_weights` drops a saved head whose shape changed, so older networks still load (tested). Still open: whether regular tribes see it, and whether it blocks a Port or Bridge.
 - **Starfish:** the count is the type's wetness × tiles ÷ 25, rounded up (read from `GenerateInternal`: 3 on 14×14 Lakes, 7 on Water World), placed by random tries over the water tiles. Starfish can be next to corners (13% of Pangea's are; GAME.md had them banned), and one on a water corner is lost to the lighthouse. Real / ours: Archipelago 5.72 / 5.68, Water World 6.83 / 6.77, Continents 3.83 / 3.92, Lakes 2.85 / 3.00, Pangea 3.90 / 3.77 (were 2.0 to 7.0, off by up to 0.9).
 - Tests: plane counts 105 → 106; end-relative plane offsets; a test of loading a pre-AquaCrop network; the target test skips a dead opponent (masks are off then, and a new random game killed one); the tribe-inference test now searches for a map with the start it needs instead of a fixed seed.
 **Fairness, read** (2026-11-20; GAME.md section 18 has the rule). The oracle's new `fairness` and `turfs` requests call the game's `GetInequality` and `CreateTurfs`, which settled the details by comparison: a Python emulation (scratchpad) matches the game's score exactly on 99% of Drylands maps and typically to 0.0003 on water maps.
@@ -239,34 +211,30 @@ So the order and the per-type steps agree (the community's description came from
   - **Water World:** 6–7 per run from 16×16 up: 1–2 villages short (and the AquaCrop near them), landmasses 15–20% fewer, ocean 2 points high.
   - These last are the noise path's fitted parts (which tiles get lifted; how water is cut). Reading `GenerateMapFromNoise`, `GetCapitalNeighborIndices` and `SetTerrainFromNoise` the same way would replace the fitting.
   - The real generator itself failed on 1 game in 150–300 on a few large multi-player configurations; `mapstats` leaves those out.
-- The oracle's general dumper segfaults on a `Dictionary<int, List<TurfTile>>`; `turfs` goes round it through the dictionary's own methods. Worth fixing before phase 3 needs dictionaries.
+- The oracle's dumper segfaulted on a `Dictionary<int, List<TurfTile>>` (it read dictionary entries at the runtime's element size, 8; fixed), so `turfs` goes through the dictionary's own methods.
 
 ## 6. Engine changes this needs
 
-All general, none specific to the real game:
-- **Forced random draws** (section 4): done, as `Game::forced`.
-- **`MapData` covering every feature** of a real start: check lighthouses, starting units, and anything else a real start has that `MapData` can't say.
-- **A state projection** exposed through the Python bindings (one call returning plain arrays), so the bridge compares without restating the engine's state layout.
-- **Legal lists through the bindings,** already there (`LegalMoves`).
+Done, all general: forced random draws (`Game::forced`), real starts as `MapData`, the set-up calls the scenarios use (`set_stars`, `spawn_unit`, ...), and legal lists and state read through the bindings (the mirror projects ours from `Game`'s fields, `project_ours`).
 
 ## 7. Matches against Crazy
 
-Built (2026-11-21): the oracle's `ai` request gives the game's own bot move (`CommandTriggerUtils.TryGetTriggerCommand`, else `AI.GetMove`, as `GameStateUtils.ExecuteCommands` plays a bot's turn), `start <id> keep` keeps Crazy's handicap (4) on its seat, and `mirror.play` takes `ai_seats` and a `pick` for our bot's moves. `python -m stocknavalon.crazy` plays the network against it; runs play it as an anchor with `--crazy-games` (docs/stockNavalon.md). Every game is a mirrored game, so it checks the rules too: it stops at its first difference, which counts for neither side. Crazy sees everything and gets +3★ a turn; our bot stays fog-correct. Still to do: a few games in the real app with the same seeds, to confirm the headless matches play the same way.
+Built (2026-11-21): the oracle's `ai` request gives the game's own bot move (`CommandTriggerUtils.TryGetTriggerCommand`, else `AI.GetMove`, as `GameStateUtils.ExecuteCommands` plays a bot's turn), `start <id> keep` keeps Crazy's handicap (4) on its seat, and `mirror.play` takes `ai_seats` and a `pick` for our bot's moves. `python -m stocknavalon.crazy` plays the network against it; runs play it as an anchor with `--crazy-games` (docs/stockNavalon.md). Every game is a mirrored game, so it checks the rules too: it stops at its first difference, which counts for neither side. Crazy sees everything and gets +3★ a turn; our bot stays fog-correct. Still to do: a few games in the real app, to confirm the headless matches play the same way (section 3).
 
-What the games found (versions 57–76, each in GAME.md), all from the game's own bot doing things random play rarely does:
+What the games found (versions 57–87, each in GAME.md), mostly from the game's own bot doing things random play rarely does:
 - The AI plays `StayCommand`, which the client never offers: our STAY, applied without a legality check. Its memory (`AIState`, `OpinionManager`) breaks the state's JSON, so the dump leaves it out.
 - Captures: nearby producers are re-checked, the border area explored.
 - Unit homes and the cap (the mirror compares homes now): a ruin's soldier and an infiltration's Daggers have none (`GAME_DAGGER_HOMES`; 75 had given the city-tile Dagger one), but a converted Pirate does; a capture takes the city from the other players' units, but not from a boat's passenger, which lands with it (`CAPTURE_SPARES_PASSENGERS`; 77 had wrongly kept every home).
-- The game's "attacked" flag: embarking, Recover, Heal Others, Stay, Capture, Examine Ruins and Harvest set it, as does appearing (trained, converted), so an upgrade gives no attack back. Persist: none if the move-in embarks or lands.
+- The game's "attacked" flag: embarking, Recover, Heal Others, Stay, Capture, Examine Ruins and Harvest set it, and a new unit (trained, spawned, converted) has it until its owner's next turn (`SPENT_UNITS_ATTACKED`), so an upgrade gives no attack back. Persist: none if the move-in embarks or lands.
 - Infiltration as `InfiltrateAction` and `InfiltrationRewardAction` do it (`GAME_INFILTRATION`); Daggers' tiles forced from the real game in the mirror.
 - Damage in the game's integer arithmetic (`INTEGER_DAMAGE`): a retaliation of exactly 1.5 comes out 1.4999 and rounds to 1.
 - Smaller ones: a capture that explores updates the old owner's connections first (`OLD_OWNER_DISCONNECTS_FIRST`; before, the capturer's update could run first and the old connection's population was never taken away); a bump turns the mover and meets the hidden unit's tribe; border growth explores its 5×5; a market counts a level-0 producer as 1; a stomp that hurts, moving onto an enemy city and capturing one are attacks (embassies), a stomp on a hidden unit not (`HIDDEN_STOMPS_UNCOUNTED`); a captured temple keeps its level until its new owner's turn (`TEMPLE_LEVEL_KEPT`); examining a ruin or harvesting starfish reveals the unit doing it.
 - A ruin's Explorer pushes no one (`RUIN_EXPLORER_STAYS`): tried twice from games the mirror had misread; the decode has no push.
-- Not rules: the mirror tells a ruin's reward by the new unit's id, or the pending `TrainAction` when a level-up holds the unit back; while a reward waits, the stars and units the real game holds back (an infiltration's) are read from its pending actions; a game the last capture ends isn't compared after it, nor the reward of a city that capture levels up (the real game waits for it). The search's moves are its samples', so one can be illegal in the real game: the driver plays the most visited legal one. Determinize didn't renumber the population a level-up holds back (crash; fixed, with an invariant in the tests).
+- Not rules: the mirror tells a ruin's reward by the new unit's id, or the pending `TrainAction` when a level-up holds the unit back; while a reward waits, the stars and units the real game holds back (an infiltration's) are read from its pending actions; the dump wrote a boat's effects only as a reference to its passenger's (lists of values are now written in full), and hidden units are compared; a game the last capture ends isn't compared after it, nor the reward of a city that capture levels up (the real game waits for it). The search's moves are its samples', so one can be illegal in the real game: the driver plays the most visited legal one. Determinize didn't renumber the population a level-up holds back (crash; fixed, with an invariant in the tests).
 
 Results (the best network at 320,000 steps, 11×11, 50 turns, `--eval-simulations` 50): 1000 games (2026-11-22) won 302, lost 576, 104 stopped at differences, 18 crashed; after the fixes above, 741 games (2026-11-24) won 266, lost 472 (36%), 2 stopped at differences of the mirror's timing (fixed) and 1 search found no determinization (now says why). The crashes were searches with no moves: an enemy in the fog whose zone of control the player's moves showed, which determinization only matched by chance; it now places one there (docs/stockNavalon.md), and a search with nothing to choose throws.
 
-Still open from these games: A Cloak the real game showed and ours hid, four times. The mirror now compares hidden units (after fixing the oracle's dump, which wrote a boat's effects only as a reference to its passenger's), so the next batch stops at the command that differs. The run's anchor (`--crazy-games`) hasn't been run inside a training run yet.
+Still open: a Cloak the real game showed and ours hid, four times in the 1000 games; not seen in the 741 since hidden units are compared, so either fixed by the reveal rules above or rare. The anchor (`--crazy-games`) hasn't been run inside a training run yet.
 
 ## 8. Phases
 
@@ -274,23 +242,20 @@ Still open from these games: A Cloak the real game showed and ours hid, four tim
 | --- | --- | --- |
 | 0 | Pin the build (dylib, metadata, data file); dump the class layout; diff the 2.18.1 data file against GAME.md's 2.18.0 numbers | We know which classes, fields and methods hold the state, commands, map generator and AI. **Done** except the data diff |
 | 1 | The oracle: runtime up, data loaded, `new` and `map` | A real Lakes 14×14 map as JSON. **Done** (not from a seed: see below) |
-| 2 | Map comparison (section 5) | The report for Lakes 14×14; the gaps listed in GAME.md section 18 and the generator fixed |
-| 3 | `legal`, `apply`, `state`; the translation table and coordinate transform; forced draws; the mirror | One game played to its end on both engines with every command compared |
-| 4 | Games at scale with the bot and the coverage policy; the report; fixtures into tests | Thousands of championship-format games with no mismatches, every rule in the coverage table exercised; then the other settings |
-| 5 | Matches against Crazy (section 7) | A match result in [`runs.md`](runs.md) |
-
-Phases 2 and 3 are independent once 1 is done.
+| 2 | Map comparison (section 5) | The gaps listed in GAME.md section 18 and the generator fixed. **Done** |
+| 3 | `legal`, `apply`, `state`; translation; forced draws; the mirror | One game played to its end on both engines with every command compared. **Done** |
+| 4 | Games at scale; coverage policy and table; fixtures into tests | Thousands of games with no mismatches, every rule in the coverage table exercised; then the other settings. **Partly**: scenarios and Crazy games run nearly clean; no coverage policy or table |
+| 5 | Matches against Crazy (section 7) | A match result. **Done** (section 7); not yet as a run's anchor |
 
 **Found in phases 0 and 1** (2026-11-19):
 - The pinned build is 2.18.1 build 16768: game version 124, rules data still version 28 (as GAME.md's 2.18.0 extraction). That one was in the scratchpad and is gone, so the data diff means checking GAME.md's **(data file)** numbers against the new file rather than diffing two files.
-- **Real maps can't be made from a seed.** `MapGenerator.Generate` makes several candidates, each from a seed from a cryptographic random generator, and keeps the one `MapFairnessCalculations.GetInequality` scores fairest; the loop reads `MapGeneratorSettings.equalityIterations` and `equalityLimit` (how exactly is still to read). Maps are compared as distributions anyway (section 5), and one worth keeping is kept as its JSON. Phase 3 doesn't need seeds either: the mirror imports the map. This is also the answer to GAME.md section 18's open question on how fairness is chosen: `MapFairnessCalculations` is the code to read.
-- The real generator works in **continents** (`WorldContinent`, `AddContinents`, `AddCitiesToContintents`) and places pre-terrain cities, suburbs and post-terrain cities (`MapGeneratorSettings`' densities and suburb counts), then lighthouses, ruins, resources and starfish. Worth reading next to GAME.md section 18 in phase 2.
+- **Real maps can't be made from a seed.** `MapGenerator.Generate` makes several candidates, each from a seed from a cryptographic random generator, and keeps the fairest (section 5, "Fairness, read"). Maps are compared as distributions, and one worth keeping is kept as its JSON; the mirror imports the map.
 - `CreateLocalGame` gives the own player handicap 1 and Crazy handicap 4 (5 stars each to start), as bengreff reported.
 
 ## 9. Risks
 
 - **Game construction is the hard part.** bengreff had to rebuild the client's session setup step by step to match the app. If ours differs (settings, handicaps, starting stars), every game is checked against the wrong reference. Section 3's check is the guard.
 - **Updates move field offsets and method names.** The oracle pins one version and refuses data from another rather than misreading it.
-- **The il2cpp runtime keeps global state.** bengreff saw failures in long-lived processes that a fresh one didn't reproduce. Restart the oracle every so many games, and replay a failing game in a fresh process before calling it a mismatch.
-- **Coverage is the real limit of "complete":** a rule nothing ever triggers passes silently. The coverage table makes that visible; rules that stay at zero get a hand-built position or a scripted sequence of commands.
-- **The bot's games are a narrow sample.** It plays one way; the coverage policy widens it, and the other settings (section 4) widen it further.
+- **The il2cpp runtime keeps global state.** bengreff saw failures in long-lived processes that a fresh one didn't reproduce. Each mirrored game runs in its own oracle process, and `mapstats` restarts it every 25 maps.
+- **Coverage is the real limit of "complete":** a rule nothing ever triggers passes silently. A coverage table would make that visible; rules that stay at zero get a scenario.
+- **The bot's games are a narrow sample.** It plays one way, Crazy another; random play and the scenarios widen it, and the other settings (section 4, "Still open") would widen it further.

@@ -1,63 +1,61 @@
 # To do
 
-The working checklist. Designs behind these items are in [`design.md`](design.md), run history in [`runs.md`](runs.md). When something is built, tick it here and describe it in `docs/`. The ninth run is a testbed: work is judged by whether it belongs in the next run ([`design.md`](design.md) section 10).
+The working checklist. Designs behind these items are in [`design.md`](design.md), run history in [`runs.md`](runs.md), the real-game plan in [`integration.md`](integration.md). When something is built, tick it here and describe it in `docs/`. The ninth run is a testbed: work is judged by whether it belongs in the next run ([`design.md`](design.md) section 10).
 
 ## Now
 
-The value is the bottleneck: it barely sees what villages, ruins, ports and bridges are worth (a captured village +0.02 to +0.045), so neither search can act on them ([`runs.md`](runs.md), "Villages and ruins left alone").
+Training from the ninth run's best (320,000) stopped improving: every run from it got worse against it, and the search barely beats itself with more budget (1,024 simulations against 64: 60%), so self-play's targets carry little over the raw network ([`runs.md`](runs.md), "From 320,000"). One cause measured: transpositions, 21–54% of a search's nodes.
 
-- [ ] **The current settings, now `run.py`'s defaults** (2026-11-19: `--reuse 1 --value-share 0.2 --lr-floor 2.5e-5 --value-lambda 0.95 --gate-threshold 0.5 --gate-opponents 3 --full-share 0.25 --eval-steps 10000 --gate-steps 4000 --parallel 256 --turn-search 0 --replies likely`; all but the search running since 2026-11-18): about 1.8× the games a minute (62 against 34), 320,000 passed against all three opponents (62%), rating 1091 → 1146, held-out value 0.44–0.47. Watch over a day: the next gates and the rating trend; policy KL creeping up (0.66 → 0.70: fewer full searches per game, or the held-out set ageing; `--full-share` toward 0.35 if it keeps rising while gates stall). If it holds, these become the next run's defaults. (Threshold 0 alone drifted down within a few promotions; one-opponent gates at 0.5 let noise decide, 284,000's 68% was mostly luck.)
-- [ ] **Self-play speed** (data is the bottleneck, notes/runs.md "Network size"): self-play's time is now CPU 40%, GPU 47%, waiting for the GPU lock 13%.
-  - [x] profile the CPU side (`profile.h`, `pe.profile_start`/`profile_stop`: thread time per phase). Fixed: the cache fingerprint (four lanes, 11 → 4 µs a position, was 17% of CPU time), legal-move updates (no game copies: 12 → 8 µs a new node). Left: new nodes still ~30% (the game copy 6–9 µs: Game is already flat vectors, so only copy-on-write or smaller state would help), encoding ~24% (threats, view, globals about equal), tree reuse ~150 µs a call (likely freeing the dropped nodes), the reuse check encodes the real game and each root (comparing views instead isn't sound: the encoding reads the game's own move targets, which units in fog affect)
-  - [x] opponent-pool games (20%) run as two sessions like ordinary self-play (`PoolPlay` shares `SelfPlay`'s loop)
-  - [x] gates and anchors on two sessions (`match(sessions=2)`): slower during a run (328,000's gate ran out of time, 20–27 games cut short per part against 0–9), so matches stay on one by default. Worth a try where nothing else shares the GPU (searches.py, versus), or with both sides' positions in one batch per network
+- [x] **Transpositions** built ([`design.md`](design.md) section 11): `Game::positionHash()` with its property tests, `SearchConfig::transpositions` (`--transpositions`), off by default
+- [ ] **Measure them:** `searches.py --transpositions on off` at 64, 256 and 1,024 simulations (depth, then results); then the scaling matches with them on (`--side-simulations 256 64 --transpositions on`)
+  - [x] `pe.search_positions`: repeats per search measured
+  - [ ] measured as in section 11: repeats with it on, depth and turns reached (`searches.py`, on against off), then the scaling matches (256 and 1,024 against 64)
+  - [ ] if more budget then buys strength: a controlled run from 320,000 with it in self-play
+- [ ] **Self-play's search back to command search:** `run.py`'s default is still `--turn-search 0 --replies likely`, which hurt as self-play's target (only command search's first gate improved on 320,000)
+- [ ] **The value target:** λ 0.95 (23%) and λ 1 (36%) both lost to 320,000, both with turn search in self-play; retest with command search, and keep tracking a captured village's value (`stocknavalon.diagnose`)
+- [ ] **Self-play speed** (data is the bottleneck, notes/runs.md "Network size"): self-play's time is CPU 40%, GPU 47%, waiting for the GPU lock 13%. The CPU side is profiled (`profile.h`; left: new nodes ~30%, mostly the game copy; encoding ~24%; tree reuse ~150 µs a call)
   - [ ] a third self-play session, or fetching results without waiting, so the GPU is never idle while a batch is prepared
   - [ ] a small, cheap network for quick searches (half the decisions, never recorded), the main network for full ones
-- [ ] **λ-return value target** (`--value-lambda`, built, with reanalysis): the second try drained the inherited bias (+0.107 → about +0.05) and held-out value is back to about 0.50, but a captured village barely moved (+0.034 against +0.025 for the best network). Raising `--value-share` to 0.2 made no clear difference in its first 3,800 steps. Keep measuring the village value as training goes on.
-- [x] **`stocknavalon.diagnose runs/NAME`** (built; about 30 s for 200 games): one command for any checkpoint, the economy checks made so far: the value change from capturing a village, examining a ruin, building a port or bridge; how often each is taken when possible; the search's target against the prior for them; the share of idle units by game phase. Tracked from the start of the next run.
-- [ ] **Controlled experiments:** short runs from scratch at fixed compute, A against B, so design choices are tested properly rather than on one long noisy run. Queued for it:
-  - [x] network size (`stocknavalon.offline`): 128×10 no better than 64×6 on the same data (policy 2.174 against 2.186, value within noise), both below the run's own network: the bottleneck is data, not capacity (notes/runs.md). Retest with a bigger buffer when there's much more data
+  - [ ] matches on two sessions (`match(sessions=2)`) where nothing else shares the GPU (searches.py, versus); slower during a run
+- [ ] **Controlled experiments:** short runs at fixed compute, A against B (`--init`, `--no-promote`, `--stop-after-gates`). Queued:
   - [ ] the value share with λ targets
-  - [ ] auto-heal at End Turn off in training (Recover gives the same result explicitly; it would stop End Turn bundling every heal into one move, though the data says it's minor: damaged units are idle 16–18% of turns, healthy ones 18–23%)
+  - [ ] auto-heal at End Turn off in training (the data says it's minor: damaged units are idle 16–18% of turns, healthy ones 18–23%)
   - [ ] the side-head loss weights, by held-out value loss
+  - [ ] network size again with a bigger buffer, once there's much more data (128×10 was no better than 64×6)
 
 ## Decisions for the next run ([`design.md`](design.md) section 10)
 
-- [ ] **Gating:** a lower threshold (0.5 broke the stall: 278,000 passed at 52%, then 284,000 at 68%, rating 1132 → 1250; now trying 0, gates as measurements), no gates (KataGo plays the latest network), or gates against several past bests (built: `--gate-opponents`, the same games split among them, judged on the total), so a promotion can't win by countering its predecessor alone. A "not measurably worse" rule (fail only below 50% by about 2 standard errors) is a middle way. Measure gate noise first: the best network against itself on different map sets (`versus --seed`). Optional: SPRT to stop gate matches early.
-- [ ] **Value targets:** λ-return from the start (its source a setting, decided by measurement: the training network's raw values, reanalysed, now; self-play's recorded search values, fresh enough if self-play always plays the latest network; search values from the latest network, MuZero's Reanalyse, about 64× the cost; the run measuring each against held-out results now and then)
-- [ ] **The search to train with:** a search that's to matter (turn-level or localized, below) has to be settled before the restart and trained with from the start
-- [ ] **Network size:** small for now (no gain from 128×10 at this data rate, and self-play would be about 3× slower); compute goes into more and more informative games instead: self-play's CPU cost, positions per game, varied starts. Revisit with much more data
+- [ ] **Gating:** now threshold 0.5 against 3 past bests (`--gate-opponents`); the alternative is no gates (KataGo plays the latest network). Measure gate noise first: the best network against itself on different map sets (`versus --seed`). Optional: SPRT to stop gate matches early.
+- [ ] **Value targets:** λ-return from the start, its source decided by measurement (the training network's raw values, reanalysed, now; self-play's recorded search values; MuZero's Reanalyse, about 64× the cost)
+- [ ] **The search to train with:** settled before the restart and trained with from the start: command search with transpositions if section 11 pays off; turn-level or localized search only once it beats that
+- [ ] **Network size:** small for now (no gain from 128×10 at this data rate, and self-play would be about 3× slower); revisit with much more data
 - [ ] **Generality:** what drives the restart (more players, larger maps); new code avoids assuming two players or 11×11 maps
 
-## Rules and the real game ([`design.md`](design.md), "Playing the real game")
+## The real game ([`integration.md`](integration.md))
 
-- [ ] **A checklist of mechanics to try by hand in the real game**, until differential testing exists: zone of control and fog, boats, Stomp, healing at End Turn, pushes, meeting through diplomacy. Every rule fix so far was found by eye (each is a `RuleVersions` number in `game.h`, so old records replay as they were played).
-- [ ] read PolyMod's API, and bengreff's, Polyfish's and superhuman-polytopia-bot's code: what's reusable (state extraction, command mapping), and their licenses
-- [ ] stage 1, read-only: a PolyMod mod writing the game state and each command to a file or socket
-  - [ ] differential testing of polyengine against the real game, re-syncing at chance events
-  - [ ] real maps against our map generator, by their distributions
-- [ ] stage 2, control: the bot playing the real game offline through the mod, against the built-in bots (never online)
-- [ ] **Player memory** (`PlayerMemory`, `updateMemory`), needed for the real game: what the game doesn't show again (road builders, the score history, own effects on others' scores, attacks, conversions, first occupation), with a test that it matches the engine's fields after every command
+The oracle runs the real game's rules; mirrored games and matches against Crazy check ours command by command (docs/oracle.md).
+
+- [ ] the Cloak the real game showed and ours hid: the next mirrored batch stops at it
+- [ ] `--crazy-games` inside a training run (not run yet)
+- [ ] a few games in the real app with the same seeds, to confirm the headless matches play the same way
+- [ ] map comparison (integration.md phase 2) and games at scale with every rule covered (phase 4)
 
 ## Training, later
 
 - [ ] **Peace treaties back on, as a rules curriculum** like fog: off at first, then a growing share of games with treaties (records already keep the setting per game), once the bot wins games reliably. Measure the churn (treaty breaks per player-turn). Needed for more than two players. If it churns: an input for what a break would cost now.
-- [ ] **Forced openings** ([`design.md`](design.md), "Forced openings: a plan library"): the bot plays passively on continents and waterworld (a mind-bender build-up), never trying the bridge or naval attack that beats it. Built: the bridge rush, in matches (`searches.py --plan bridge none --map-types continents`). Tested from turn 0 (notes/runs.md): the bridge investment loses (29%: the crossing helps the stronger side, which then wasn't the builder), naval even (50%), so the network's caution early is about right. But once ahead on continents it stalls: 35 turns to finish against 13–20 elsewhere, wins 59% (14% undecided) against 73–80%; a stronger `--win-sooner` (0.2) changed nothing. Built for that: `--plan convert --plan-when-ahead 0.5` (cross, then march, once the side's own value reaches +0.5). Next: its test (`searches.py --plan convert none --plan-when-ahead 0.5 --plan-turns 10 --map-types continents`, judged by the "once ahead" lines); if it converts better, the plan library in self-play with situational plans
-- [ ] **Varied starting positions** ([`design.md`](design.md), "Varied starting positions"): games forked from positions in recent games (including where one side's value fell below −0.5) or started after a forced opening plan, so the bot learns strategies it doesn't play yet (rider roads, defender catapults, naval) and practises rare situations
-- [x] **Prioritized opponents in the pool** (built, `--pool-weighting pfsp`, the default for new starts): pool opponents drawn by (1 − the current network's win rate against each)²; the status line shows the hardest
-- [ ] **Tune the search's settings by play** (once the network is more mature): an SPSA tuner, as Stockfish and Leela Chess Zero use, for the tie-breaks and similar settings, so they're set by what wins rather than by hand
-- [ ] **A loop that can use more hardware:** several self-play workers feeding one trainer on its own GPU; built when the hardware is there. One evaluation server per network shared by every search in a process (KataGo's design) is the general form of `crazy.Batcher`; worth it once GPU sharing is the measured bottleneck (self-play, gates and reanalysis already batch well; the best network is the only one several sources share). Started: self-play now runs in one worker process (`worker.py`, `--self-play-process`, 2026-11-22), since self-play inside the run's process ran about 30% slower than alone (15,500 positions a second against 22,500: the interpreter lock and cores shared with training). Check the run's positions a second after the switch; more workers only pay with more GPU
+- [ ] **Forced openings** ([`design.md`](design.md), "Forced openings"): built in matches (`searches.py --plan`); the bridge rush lost from turn 0 (29%), naval even, but once ahead on continents the bot stalls. Next: `searches.py --plan convert none --plan-when-ahead 0.5 --plan-turns 10 --map-types continents`, judged by the "once ahead" lines; if it converts better, the plan library in self-play
+- [ ] **Varied starting positions** ([`design.md`](design.md), "Varied starting positions"): games forked from positions in recent games (including where one side's value fell below −0.5) or started after a forced opening plan
+- [ ] **Tune the search's settings by play** (once the network is more mature): an SPSA tuner for the tie-breaks and similar settings
+- [ ] **A loop that can use more hardware:** several self-play workers feeding one trainer on its own GPU, when the hardware is there; self-play already runs in its own process (`worker.py`). One evaluation server per network shared by every search in a process (KataGo's; the general form of `crazy.Batcher`) once GPU sharing is the measured bottleneck
 - [ ] **Scripted opponent styles** (rushers, turtles, expanders) in the opponent pool, for beliefs calibrated to styles the bot doesn't play itself
 
-## Search, later (parked until the value is stronger)
+## Search, later
 
-- [ ] **Planning turns ahead** ([`design.md`](design.md) section 9; read the Tribes papers first, a Polytopia-like research framework):
-  - [x] turn search built (`SearchConfig::turnSearch`, `--turn-search`); even with command search at 512 evaluations (52% over four matches)
-  - [ ] retest turn search once the value is better, also at self-play's budget (`--evaluations 64`)
-  - [ ] explore localization: focused local search around villages, ruins, cities and contact points (only the units near enough to matter, both sides, 2–3 turns), and learned focus (unit intents: where each unit will be in 2–3 turns)
-  - [x] tested the opponent's replies and the backup (notes/runs.md, "The opponent's replies and the backup"): turn search 0 with likely replies beat command search 55% ± 5 over two map sets at self-play's budget; discrepancy replies and the π̄ backup showed no reliable effect (64 and 256 evaluations). Next: train with `--turn-search 0 --replies likely` and watch the gates; retest discrepancy and π̄ once the policy is stronger or budgets larger
+- [ ] **Planning turns ahead** ([`design.md`](design.md) section 9): turn search is built (`SearchConfig::turnSearch`) but even with command search at 512 evaluations and worse as self-play's target. Retest after transpositions, and once the value is better
+  - [ ] explore localization: focused local search around villages, ruins, cities and contact points, and learned focus (unit intents)
+  - [ ] retest discrepancy replies and the π̄ backup once the policy is stronger or budgets larger
   - [ ] stop sampling new turns when the budget is nearly spent (commandVisits 8 and 1000 overspent about 15%)
-- [ ] **Stage 2 search:** one shared tree with observation branching, and the particle filter between turns (ISMCTS-style, multiple-observer, so scouting gets its value: the bot ends turns with units that could have scouted, 5–11% of turns)
+- [ ] **Stage 2 search:** one shared tree with observation branching, and the particle filter between turns (ISMCTS-style, so scouting gets its value: the bot ends turns with units that could have scouted, 5–11% of turns)
 - [ ] **Several worlds per search:** one sequential halving per game, shared by its trees, values and the policy target averaged per world; today each tree halves on its own and pooling by visits weighs a move by the worlds where it looks best (inflating End Turn; `stocknavalon.play`'s 4 worlds; self-play and gates use 1)
 - [ ] **Tree reuse across turns,** fog-free (the opponent's reply is in the tree too)
 
@@ -65,8 +63,8 @@ The value is the bottleneck: it barely sees what villages, ruins, ports and brid
 
 - [ ] **More than two players** ([`design.md`](design.md), "Treaties, and more than two players"): a value per seat, placement targets, mixed-seat gates, a horizon over several players' turns; then treaties in multiplayer, by curriculum, with the opponent pool from the start
 - [ ] **Determinization:** more than two players; repair (city connections, unit caps); fewer rejections (draw parts within the remaining score budget: about 60% rejected with the prior, mostly on turn 0); faster (a fresh map is generated for every draw); enemy cities with no evidence and fogged city levels, from a city head
-- [ ] **Memory of enemy units seen before** (an encoding change, so for a restart): the input is the current view only, so a unit seen last turn that moved into fog is forgotten, and the belief heads can only rediscover it from the unexplained score. Add the last-seen enemy units to the view and encoding (type, tile, turns since seen; fair: the player saw them), so the beliefs can place them. Fits with **Player memory** (below the real-game items)
-- [ ] **Surprise attacks, measured:** over held-out games, each city captured or unit killed by a unit hidden at the start of that turn: seen before or not, and the probability the beliefs gave a hidden unit on or near its real tile; hidden-unit placement calibration per tile, especially on enemy cities (newly trained units) and near own cities. (Seen by eye: a rider trained in fog on the enemy capital took a weak warrior and the capital next turn, turn search on)
+- [ ] **Memory of enemy units seen before** (an encoding change, so for a restart): the input is the current view only, so a unit seen last turn that moved into fog is forgotten. Add the last-seen enemy units to the view and encoding (type, tile, turns since seen), so the beliefs can place them
+- [ ] **Surprise attacks, measured:** over held-out games, each city captured or unit killed by a unit hidden at the start of that turn: seen before or not, and the probability the beliefs gave a hidden unit on or near its real tile; hidden-unit placement calibration per tile, especially on enemy cities and near own cities
 - [ ] **Beliefs:** which belief heads make the opponent look weaker in sampled worlds (0.17 worse for it than in the real game); learned beliefs against the fixed priors (calibration, accuracy, rejection rate, strength in a match)
 - [ ] **Tribe inference:** measure against stronger opponents (the measurements are against the random bot); tighten later turns by tracking where each unit could be; units or buildings a tribe couldn't have yet
 - [ ] **Export the model** (TorchScript or ONNX) to run inside C++ for play without Python
@@ -77,22 +75,22 @@ The value is the bottleneck: it barely sees what villages, ruins, ports and brid
 - [ ] **The stars and income heads:** whether they help (the held-out value in the opening, and where the bot builds)
 - [ ] **Decided games:** destroys and disband-retrain cycles per game, and game length in decided positions, since the tie-breaks
 - [ ] **Normalizing instead of augmenting:** transform every position so the player's own capital is in one fixed region
-- [ ] **Count heads:** exact integers with a cap and a mixture of negative binomials now; compare fixed-width buckets, a single negative binomial, and exact integers for stars, by held-out log-likelihood and how realistic determinized samples are
+- [ ] **Count heads:** compare the current heads with fixed-width buckets, a single negative binomial, and exact integers for stars, by held-out log-likelihood and how realistic determinized samples are
 
 ## Done
 
 Details in `docs/` and [`runs.md`](runs.md).
 
-- Training: wins-only value with cut-off games valued by their final search value; side heads (score lead, territory, stars and income ahead, short-term values, turns left); EMA weights, gates and anchors; the fog schedule run to 100%; network beliefs; handicap and catch-up games; the opponent pool; the λ-return value target with reanalysis; NaN guards; a held-out set kept across encoding changes, with a bias measure; a rating from all matches; `--init`
-- Search: Gumbel at the root (default); first-play urgency; tree reuse within a turn; exploration candidates; tie-breaks for decided games; the horizon cutoff removed; an evaluation cache; turn search; per-side settings in matches
-- Speed: float16 inference, thread pools for self-play's CPU work, self-play's time split in the status line
+- Training: wins-only value with cut-off games valued by their final search value; side heads; EMA weights, gates against several past bests and anchors; the fog schedule run to 100%; network beliefs; handicap and catch-up games; the opponent pool, prioritized (`--pool-weighting pfsp`); the λ-return value target with reanalysis; gate games trained on the better side's moves; NaN guards; a held-out set kept across encoding changes, with a bias measure; a rating from all matches; `--init`, `--no-promote`, `--stop-after-gates`
+- Search: Gumbel at the root (default); first-play urgency; tree reuse within a turn; exploration candidates; tie-breaks for decided games; the horizon cutoff removed; an evaluation cache; turn search with likely and discrepancy replies; per-side settings in matches
+- Speed: float16 inference, thread pools for self-play's CPU work, the CPU profile and its fixes (fingerprint, legal-move updates), opponent-pool games on two sessions, self-play in its own process, self-play's time split in the status line
 - Encoding: map type, cities in danger (reach and lethal planes), handicap globals, shore and bridges
-- Rules: diplomacy introduces the sender, bridges need land on both sides, adjacent pushes (the houdini), the leftover step after a road step, enemies in fog exerting zone of control (hidden units not), a Giant stomping as it embarks; records keep their rules version (`RuleVersions`) and replay as they were played (`GameRecord::replaysLegally`)
-- Tools: `versus` (full matches, with a gate replay), `searches.py` (searches at equal cost), `stocknavalon.play --explain` and `--turn-search`, `pe.search` with leaf breakdowns, one shared move search (`moveSearch.h`), search and self-play settings as objects (`pe.SearchConfig`, `pe.SelfPlayConfig`, `stocknavalon/settings.py`)
+- Rules: every fix gets a `RuleVersions` number, and records replay as they were played (`GameRecord::replaysLegally`); the fixes from mirrored and Crazy games are in integration.md section 7
+- Real game: the oracle, mirrored games, Crazy matches (`stocknavalon.crazy`, `--crazy-games`, `stocknavalon.play --crazy`)
+- Tools: `versus`, `searches.py`, `stocknavalon.diagnose`, `stocknavalon.offline`, `stocknavalon.losses`, `stocknavalon.play --explain` and `--turn-search`, `pe.search` with leaf breakdowns, one shared move search (`moveSearch.h`), search and self-play settings as objects (`pe.SearchConfig`, `pe.SelfPlayConfig`, `stocknavalon/settings.py`)
 
 ## Open questions
 
-- **The score formula:** verify the mid-game rules (temple levels, population and level-up bonuses, losses) against real games.
-- **Human games:** are any records available? Supervised pre-training or belief fine-tuning on them would help a lot.
-- **The goal:** a strong bot under a time limit per move, eventually playing the real game, or mainly a research platform?
+- **The score formula:** verify the mid-game rules against real games (the oracle can now).
+- **The goal:** a strong bot under a time limit per move, or mainly a research platform? (Online play and human replays are out of scope: integration.md.)
 - **Compute:** this machine (Apple Silicon) for now; anything more decides network size and self-play volume.

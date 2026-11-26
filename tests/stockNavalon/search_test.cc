@@ -763,3 +763,45 @@ TEST_CASE("every way of drawing replies and backing up stays within budget, and 
         }
     }
 }
+
+TEST_CASE("with transpositions, a position reached in another order is one node, and the search goes deeper") {
+    // four warriors that can each move: their moves commute, so the turn's
+    // positions are reached in many orders
+    Game game = emptyGame();
+    for (auto [x, y] : std::vector<std::pair<int, int>>{{1, 3}, {3, 1}, {3, 3}, {2, 5}}) {
+        addUnit(game, 0, UnitTypes::WARRIOR, x, y);
+    }
+    ScoreEvaluator evaluator;
+    EncodingConfig encoding;
+    Beliefs beliefs = priorBeliefs(makeView(game, 0));
+    double depth[2];
+    for (bool merge : {false, true}) {
+        CAPTURE(merge);
+        SearchConfig config{.simulations = 400, .samples = 1};
+        config.transpositions = merge;
+        BatchedSearch search({&game}, {beliefs}, config, 3);
+        run(search, evaluator);
+        BatchedSearch::PositionCounts counts = search.positionCounts(0, encoding);
+        if (merge) {
+            CHECK(counts.exact == counts.nodes);
+        } else {
+            CHECK(counts.exact < counts.nodes);
+        }
+        BatchedSearch::DepthStats stats = search.takeDepthStats();
+        REQUIRE(stats.simulations > 0);
+        depth[merge] = static_cast<double>(stats.depth) / stats.simulations;
+
+        if (merge) {
+            // tree reuse keeps it one node per position
+            SearchResult result = search.result(0);
+            Command played = result.moves[result.chosen >= 0 ? result.chosen : 0];
+            if (search.reuse(played, config)) {
+                run(search, evaluator);
+                BatchedSearch::PositionCounts again = search.positionCounts(0, encoding);
+                CHECK(again.exact == again.nodes);
+            }
+        }
+    }
+    MESSAGE("mean depth: " << depth[0] << " without, " << depth[1] << " with transpositions");
+    CHECK(depth[1] > depth[0]);
+}

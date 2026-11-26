@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 
 namespace {
 // A Gumbel(0, 1) draw for a command, from the seed and the command alone, so
@@ -184,7 +185,7 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
             Tree tree{.game = i, .rng = std::mt19937_64(seeds())};
             tree.nodes.reserve(config.simulations + 2);
             LegalMoves legal(copy);
-            tree.nodes.push_back(makeNode(std::move(copy), legal, 0));
+            addRoot(tree, makeNode(std::move(copy), legal, 0));
             trees.push_back(std::move(tree));
             continue;
         }
@@ -207,7 +208,7 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
             // at most one new node a simulation, so references stay valid
             tree.nodes.reserve(config.simulations + 2);
             LegalMoves legal(*sample);
-            tree.nodes.push_back(makeNode(std::move(*sample), legal, 0));
+            addRoot(tree, makeNode(std::move(*sample), legal, 0));
             trees.push_back(std::move(tree));
         }
     }
@@ -215,6 +216,25 @@ BatchedSearch::BatchedSearch(const std::vector<const Game *> &gameList,
     for (int i = 0; i < games; i++) {
         gumbelSeeds.push_back(config.gumbel ? seeds() : 0);
     }
+}
+
+void BatchedSearch::addRoot(Tree &tree, Node root) {
+    if (merging()) {
+        root.hash = root.game.positionHash();
+        tree.positions[root.hash] = 0;
+    }
+    tree.nodes.push_back(std::move(root));
+}
+
+double BatchedSearch::meanUtility(const Node &node) const {
+    double sum = node.utility;
+    for (std::size_t a = 0; a < node.moves.size(); a++) {
+        sum += node.utilityTotal[a];
+    }
+    for (double t : node.turnUtilityTotal) {
+        sum += t;
+    }
+    return sum / (1 + node.parentVisits);
 }
 
 BatchedSearch::Node BatchedSearch::makeNode(Game game, LegalMoves legal,
@@ -334,12 +354,30 @@ bool BatchedSearch::descend(Tree &tree) {
                 game.applyUnchecked(node.moves[best]);
                 legal.update(node.game, game);
                 laps.mark(profiling::NODE_APPLY);
-                bool newTurn = game.currentPlayer != node.toMove;
-                int crossed = node.crossed + newTurn;
-                tree.nodes.push_back(makeNode(std::move(game), std::move(legal), crossed));
-                laps.mark(profiling::NODE_MAKE);
-                // push_back may not move nodes (reserved), but re-fetch anyway
-                tree.nodes[n].child[best] = static_cast<int>(tree.nodes.size()) - 1;
+                // a position another order of commands already reached:
+                // that node, unless it's on this simulation's own path (no
+                // line within a turn comes back to a position, but if one
+                // did, a cycle would never end)
+                std::uint64_t hash = merging() ? game.positionHash() : 0;
+                auto known = merging() ? tree.positions.find(hash) : tree.positions.end();
+                if (known != tree.positions.end() && known->second != n &&
+                    std::none_of(tree.path.begin(), tree.path.end(),
+                                 [&](const auto &step) { return step.first == known->second; })) {
+                    node.child[best] = known->second;
+                } else {
+                    bool newTurn = game.currentPlayer != node.toMove;
+                    int crossed = node.crossed + newTurn;
+                    Node made = makeNode(std::move(game), std::move(legal), crossed);
+                    made.hash = hash;
+                    tree.nodes.push_back(std::move(made));
+                    laps.mark(profiling::NODE_MAKE);
+                    int index = static_cast<int>(tree.nodes.size()) - 1;
+                    if (merging()) {
+                        tree.positions.try_emplace(hash, index);
+                    }
+                    // push_back may not move nodes (reserved), but re-fetch anyway
+                    tree.nodes[n].child[best] = index;
+                }
             }
             tree.path.push_back({n, best});
             n = tree.nodes[n].child[best];
@@ -572,6 +610,13 @@ bool BatchedSearch::repliesAt(const Tree &tree, const Node &node) const {
 double BatchedSearch::edgeUtility(const Tree &tree, const Node &node, int edge) const {
     bool move = edge >= 0;
     int e = move ? edge : -edge - 1;
+    if (config.backup == SearchConfig::Backup::MEAN && move && merging()) {
+        // the child's own average, from every line into it (for a child with
+        // this one parent, the same as the edge's)
+        const Node &child = tree.nodes[node.child[e]];
+        double mean = meanUtility(child);
+        return child.toMove == node.toMove ? mean : -mean;
+    }
     if (config.backup == SearchConfig::Backup::MEAN) {
         return move ? node.utilityTotal[e] / node.visits[e]
                     : node.turnUtilityTotal[e] / node.turnVisits[e];
@@ -582,7 +627,7 @@ double BatchedSearch::edgeUtility(const Tree &tree, const Node &node, int edge) 
 
 std::vector<double> BatchedSearch::rootUtilityTotals(const Tree &tree) const {
     const Node &root = tree.nodes[0];
-    if (config.backup == SearchConfig::Backup::MEAN) {
+    if (config.backup == SearchConfig::Backup::MEAN && !merging()) {
         return root.utilityTotal;
     }
     std::vector<double> out(root.moves.size(), 0.0);
@@ -966,6 +1011,12 @@ bool BatchedSearch::reuse(const Command &played, const SearchConfig &next) {
             kept.push_back(std::move(node));
         }
         tree.nodes = std::move(kept);
+        tree.positions.clear();
+        if (merging()) {
+            for (std::size_t k = 0; k < tree.nodes.size(); k++) {
+                tree.positions.try_emplace(tree.nodes[k].hash, static_cast<int>(k));
+            }
+        }
         // the visits kept count towards the next decision's simulations (and
         // their evaluations, at what a simulation cost so far)
         double each = tree.simulations > 0
@@ -1183,6 +1234,41 @@ SearchResult BatchedSearch::result(int game) const {
             best = g + choice;
             out.chosen = static_cast<int>(i);
         }
+    }
+    return out;
+}
+
+BatchedSearch::PositionCounts BatchedSearch::positionCounts(int game,
+                                                            const EncodingConfig &encoding) const {
+    PositionCounts out;
+    std::vector<float> planes(static_cast<std::size_t>(planeCount(encoding)) * encoding.mapSize *
+                              encoding.mapSize),
+        globals(globalCount(encoding));
+    for (const Tree &tree : trees) {
+        if (tree.game != game) {
+            continue;
+        }
+        std::unordered_set<std::size_t> own, all;
+        std::unordered_set<std::uint64_t> exact;
+        for (const Node &node : tree.nodes) {
+            exact.insert(node.game.positionHash());
+            encodeState(node.game, node.toMove, encoding, planes.data(), globals.data(),
+                        config.fullInformation);
+            std::string key(reinterpret_cast<const char *>(planes.data()),
+                            planes.size() * sizeof(float));
+            key.append(reinterpret_cast<const char *>(globals.data()),
+                       globals.size() * sizeof(float));
+            std::size_t hash = std::hash<std::string>{}(key);
+            out.nodes++;
+            all.insert(hash);
+            if (node.crossed == 0) {
+                out.ownTurnNodes++;
+                own.insert(hash);
+            }
+        }
+        out.distinct += static_cast<int>(all.size());
+        out.exact += static_cast<int>(exact.size());
+        out.ownTurnDistinct += static_cast<int>(own.size());
     }
     return out;
 }

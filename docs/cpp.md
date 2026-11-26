@@ -2,16 +2,17 @@
 
 polyengine, the game engine, is a C++20 library. Bots, search and self-play in C++ use it directly. There's no binding layer, and nothing between your code and the engine. The rules it implements are in [`src/engine/GAME.md`](../src/engine/GAME.md); the choices made where the rules are silent are in [`src/engine/ENGINE.md`](../src/engine/ENGINE.md).
 
-Two complete, compiled examples go with this guide:
+Compiled examples go with this guide:
 
 - [`examples/random_game.cc`](../examples/random_game.cc): a full game between two random bots.
 - [`examples/one_ply_search.cc`](../examples/one_ply_search.cc): a small search bot using `LegalMoves` and copies.
+- [`examples/search_vs_random.cc`](../examples/search_vs_random.cc): stockNavalon's search against the random bot.
 
 ## Building and linking
 
 Every rule number lives in the engine: tables in `data/` and the rest in `rules.h` (score amounts, costs, rewards, radii). Code on top of the engine should read rules from there rather than writing the numbers itself, so it follows the engine when the game changes.
 
-CMake builds the engine as the static library target `engine`, with `src/engine` as its include directory. stockNavalon's code (the encoding and tribe inference) is the separate target `stocknavalon`, with `src/stockNavalon` as its include directory; it links the engine, so linking `stocknavalon` gives you both. Build with the presets (see the README):
+CMake builds the engine as the static library target `engine`, with `src/engine` as its include directory. stockNavalon's code (encoding, search, self-play; [`stockNavalon.md`](stockNavalon.md)) is the separate target `stocknavalon`, with `src/stockNavalon` as its include directory; it links the engine, so linking `stocknavalon` gives you both. Build with the presets (see the README):
 
 ```bash
 cmake --preset release
@@ -19,7 +20,7 @@ cmake --build --preset release
 ./build/release/random_game
 ```
 
-The `dev` preset builds the same targets with sanitizers, for catching memory errors and undefined behaviour while developing a bot.
+`check` builds them optimized with sanitizers and checked containers, for the full test suite (`ctest --preset check`); `dev` is the same unoptimized, with debug info.
 
 To add your own program, add it to `CMakeLists.txt` the way the examples are:
 
@@ -49,11 +50,12 @@ while (!game.gameOver() && game.turn < 100) {
 
 ### Things to know
 
-- **`Game` is a plain value.** Everything inside refers to everything else by index (tiles, units, cities, players), so `Game copy = game;` is a complete, independent game. Copying a Small map takes about 0.1 µs. Branch a search by copying.
+- **`Game` is a plain value.** Everything inside refers to everything else by index (tiles, units, cities, players), so `Game copy = game;` is a complete, independent game. Branch a search by copying.
 - **Tiles are indices**, `y * size + x`. Use `game.index(x, y)`, `game.tileX(t)`, `game.tileY(t)`. Distance is Chebyshev: diagonals count as one step (`game.distance(a, b)`).
 - **HP, attack and defence are ×10**, so every value is an exact integer. A full-health Warrior has `hp == 100`.
 - **Units are indices into `game.units`**, and dead units stay there with `alive == false`, so always check `alive`. A dead unit's slot is reused, so don't hold on to an index across commands. Find units by tile instead: `game.unitAt(tile)`, or `game.tiles[t].unit`, which is -1 when empty.
-- **Randomness lives in the game** (`GameSettings::seed`, used for ruins and the Explorer), so a copy plays out the same way as the original. Map generation takes its own seed.
+- **Randomness lives in the game** (`GameSettings::seed`), so a copy plays out the same way as the original. Map generation takes its own seed.
+- **Rules have versions.** `GameSettings::rulesVersion` defaults to `RuleVersions::LATEST`; a game recorded under older rules replays under the version its record keeps (ENGINE.md).
 - **Only change the game through commands.** Public functions like `spawnUnit`, `reveal` and `addPopulation` exist for tests and for setting up positions, and they skip the rules.
 
 ### Commands
@@ -70,7 +72,7 @@ A `Command` is `{type, from, to, arg}`. Unused fields are -1.
 | `TRAIN` | city's tile | | `UnitType` |
 | `RESEARCH` | | | `TechType` |
 | `CITYREWARD` | city's tile | | `CityReward` |
-| `PEACETREATY`, `BREAKPEACE`, `ESTABLISHEMBASSY`, `DESTROYEMBASSY` | | | the other player |
+| `PEACETREATY`, `BREAKPEACE`, `ESTABLISHEMBASSY` | | | the other player |
 | `PEACEREQUESTRESPONSE` | | | proposer × 2, plus 1 to accept |
 | `ENDTURN`, `RESIGN` | | | |
 
@@ -78,7 +80,7 @@ A `Command` is `{type, from, to, arg}`. Unused fields are -1.
 
 - **`legalCommands()`** lists every legal command for the current player except Resign. Resign is always legal, but it's left out so random play never picks it.
 - **`apply(command)`** throws `std::invalid_argument` if the command isn't legal. **`applyUnchecked(command)`** skips that check, for commands you took from a legal list.
-- **When a city levels up**, the only legal commands are its two reward options until one is chosen. End Turn isn't legal in between.
+- **When a city levels up or a peace offer arrives**, the only legal commands are its options until one is chosen. End Turn isn't legal in between.
 
 ## Fog: what a bot should look at
 
@@ -101,7 +103,7 @@ A `PlayerView` has:
 
 `legalCommands()` itself never leaks hidden information. It only offers what the player could know is possible: for example, a tile with a hidden enemy on it looks free to move onto.
 
-Search is the exception. Applying commands to copies of the full `Game` lets a search see the future with perfect information, so a fair search needs hidden state sampled from the view. See ENGINE.md and the bot design docs when they exist.
+Search is the exception. Applying commands to copies of the full `Game` lets a search see the future with perfect information, so a fair search needs hidden state sampled from the view (`determinize.h`, [`stockNavalon.md`](stockNavalon.md) section 4).
 
 ## Search: `LegalMoves`
 
@@ -122,7 +124,7 @@ for (const Command &c : legal.commands()) {
 - `commands()` always matches `game.legalCommands()` as a set, though not in the same order. The tests check this after every command on every map type.
 - `apply(game, command)` applies the command to `game` and updates the list. `update(before, after)` updates it for any other change, like several commands at once.
 - It's two flat command lists, so it's cheap to copy into each search node.
-- When it helps: a step of random play costs about 5.7 µs with `LegalMoves`, and about 6.9 µs with `legalCommands()` + `apply()`. End Turn and research rebuild the whole list, since they change everything.
+- A change of player, turn, techs, tasks, monuments, peace or who's alive (End Turn, research...) rebuilds the whole list.
 
 ## Encoding for the network
 
@@ -177,11 +179,12 @@ The headers are the reference; these are the parts a bot uses.
 
 | Header | What's there |
 | --- | --- |
-| `game.h` | `Game`: state, geometry (`index`, `distance`, `forEachNeighbour`), queries (`tileOwner`, `unitAt`, `cityAt`, `income`, `score`, `techCost`, `previewAttack`, `moveTargets`, `attackTargets`, `atPeace`, `explored`, `canSee`), commands (`legalCommands`, `isLegal`, `apply`, `applyUnchecked`) |
+| `game.h` | `GameSettings`, `RuleVersions`, `Game`: state, geometry (`index`, `distance`, `forEachNeighbour`), queries (`tileOwner`, `unitAt`, `cityAt`, `income`, `score`, `techCost`, `previewAttack`, `moveTargets`, `attackTargets`, `atPeace`, `explored`, `canSee`), commands (`legalCommands`, `isLegal`, `apply`, `applyUnchecked`) |
 | `command.h` | `Command`, `CommandTypes`, `toString` |
 | `view.h` | `PlayerView`, `makeView` |
-| `encoding.h` | `EncodingConfig`, `encodeState`, `encodeCommand`, `decodeCommand`, `legalMask` |
+| `encoding.h` (stocknavalon) | `EncodingConfig`, `encodeState`, `encodeCommand`, `decodeCommand`, `legalMask` |
 | `legalMoves.h` | `LegalMoves` |
+| `rules.h` | every rule number not in `data/` |
 | `mapgen.h`, `map.h` | `generateMap`, `MapGenSettings`, `loadMap`, `parseMap`, `MapData` |
 | `tile.h`, `unit.h`, `city.h`, `player.h` | the state structs |
 | `data/*.h` | unit, tech, improvement and tribe tables (`unitInfo(type)`, `techData[tech]`, `improvementInfo(type)`, `tribeData[tribe]`) |

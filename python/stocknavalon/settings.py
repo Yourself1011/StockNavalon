@@ -58,6 +58,10 @@ def add_search_arguments(parser: argparse.ArgumentParser, *, simulations: int,
                         "simulations, or weighted by the regularized policy everywhere or "
                         "where the opponent is to move (search.h, SearchConfig::backup). "
                         "One per side, as --turn-search")
+    g.add_argument("--transpositions", nargs="+", default=None, choices=["on", "off"],
+                   help="one node per position, whichever order of commands reached it "
+                        "(SearchConfig::transpositions; command search only). One per "
+                        "side, as --turn-search")
     g.add_argument("--evaluations", type=int, default=None,
                    help="the budget per determinized game in network evaluations "
                         "instead of --simulations (a sampled turn costs one per "
@@ -80,9 +84,10 @@ def per_side(values: list | None, sides: int, flag: str) -> list:
 
 
 def side_count(args: argparse.Namespace) -> int:
-    """How many sides the per-side flags (--turn-search, --replies, --backup)
-    give values for: 1 when each has one value or none."""
-    return max(len(v) for v in (args.turn_search, args.replies, args.backup, [None]) if v)
+    """How many sides the per-side flags (--turn-search, --replies, --backup,
+    --transpositions) give values for: 1 when each has one value or none."""
+    return max(len(v) for v in (args.turn_search, args.replies, args.backup,
+                                 getattr(args, "transpositions", None), [None]) if v)
 
 
 def side_searches(args: argparse.Namespace, sides: int, **overrides) -> list[pe.SearchConfig]:
@@ -94,6 +99,7 @@ def side_searches(args: argparse.Namespace, sides: int, **overrides) -> list[pe.
     visits = per_side(turn_search_values(args.turn_search), sides, "--turn-search")
     replies = per_side(args.replies, sides, "--replies")
     backups = per_side(args.backup, sides, "--backup")
+    merges = per_side(getattr(args, "transpositions", None), sides, "--transpositions")
     out = []
     for side in range(sides):
         v = visits[side]
@@ -109,6 +115,8 @@ def side_searches(args: argparse.Namespace, sides: int, **overrides) -> list[pe.
             fields["replies"] = REPLIES[replies[side]]
         if backups[side] is not None:
             fields["backup"] = BACKUPS[backups[side]]
+        if merges[side] is not None:
+            fields["transpositions"] = merges[side] == "on"
         fields.update(overrides)
         out.append(pe.search_config(**fields))
     return out

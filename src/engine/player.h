@@ -81,4 +81,5 @@ struct Player {
     bool hasMet(int player) const { return met >> player & 1; }
     bool hasTech(TechTypes::TechType tech) const { return techs.test(tech); }
     bool hasEmbassyWith(int player) const { return embassies >> player & 1; }
+    bool operator==(const Player &) const = default;
 };

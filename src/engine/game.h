@@ -639,6 +639,15 @@ class Game {
     bool hostile(int a, int b) const { return a != b && !atPeace(a, b); }
     // a recent attack between them (EMBASSIES_AT_WAR)
     bool atWar(int a, int b) const;
+    // Renumbers units and cities by tile, dropping dead units, so the same
+    // position reached in a different order becomes the same state
+    // (determinization's samples; checking positionHash)
+    void canonicalize();
+    // A hash of everything that decides what can happen from here, units and
+    // cities by tile, never by index, so the same position reached by
+    // commands in a different order hashes the same (search transpositions,
+    // notes/design.md section 11)
+    std::uint64_t positionHash() const;
     // stars a turn from embassies, built and hosted
     int embassyIncome(int player) const;
     // (GAME_INCOME) what one tribe's embassy in another's land pays a turn,

@@ -90,7 +90,7 @@ pe.Command(pe.CommandType.ENDTURN)
 
 ### Enums
 
-All enums convert to `int`, and can be passed wherever an `int` is expected (e.g. `arg=`).
+All enums but `Replies` and `Backup` convert to `int`, and can be passed wherever an `int` is expected (e.g. `arg=`).
 
 | Enum | Values |
 | --- | --- |
@@ -101,10 +101,12 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | `ResourceType` | `NONE`, `FRUIT`, `CROP`, `GAME`, `METAL`, `FISH`, `STARFISH`, `AQUACROP` |
 | `ImprovementType` | map features (`CITY`, `VILLAGE`, `RUIN`, `LIGHTHOUSE`), buildings, monuments and actions (`HARVESTFRUIT`, `ROAD`, ...) |
 | `UnitType` | land units, then boats (`RAFT`, `SCOUT`, `RAMMER`, `BOMBER`, `JUGGERNAUT`, `DINGHY`, `PIRATE`) |
-| `TechType` | `BASIC` (everyone owns it) and the 25 techs |
+| `TechType` | `BASIC` (everyone owns it) and the techs |
 | `CityReward` | `WORKSHOP`, `EXPLORER`, `CITYWALL`, `RESOURCES`, `POPULATIONGROWTH`, `BORDERGROWTH`, `PARK`, `SUPERUNIT` |
 | `Task` | `PACIFIST`, `WEALTH`, `EXPLORER`, `KILLER`, `NETWORK`, `METROPOLIS`, `GENIUS` |
 | `WinCondition` | `MIGHT`, `DOMINATION` |
+| `RuinReward` | a ruin's outcome, for `force_ruin` |
+| `Replies`, `Backup` | turn search's reply drawing and value backup (`SearchConfig`) |
 
 ### Maps
 
@@ -128,13 +130,13 @@ All enums convert to `int`, and can be passed wherever an `int` is expected (e.g
 | `index(x, y)`, `tile_x(t)`, `tile_y(t)`, `distance(a, b)`, `tile_owner(t)` | geometry |
 | `score(p)` (live), `published_score(p)` (what others see), `score_history`, `income(p)`, `tech_cost(p, tech)` | |
 | `legal_commands()`, `is_legal(c)`, `apply(c)`, `apply_unchecked(c)`, `describe(c)` | commands |
-| `force_ruin(reward, tech=-1)`, `force_explorer(tiles)`, `force_converted_home(tile)`, `force_reveal(player, tiles)` | fix the next random outcome instead of drawing it (`RuinReward`), to follow a game played elsewhere (`src/oracle/mirror.py`) |
-| `set_stars`, `give_tech`, `spawn_unit`, `place_building`, `add_population`, `set_unit_hp`, `set_tile`, `set_city_level`, `add_embassy`, `make_peace`, `set_met` | setting up a position (`src/oracle/scenarios.py`, tests) |
+| `force_ruin(reward, tech=-1)`, `force_explorer(tiles)`, `force_converted_home(tile)`, `force_daggers(daggers)`, `force_reveal(player, tiles)` | fix the next random outcome instead of drawing it (`RuinReward`), to follow a game played elsewhere (`src/oracle/mirror.py`) |
+| `set_stars`, `give_tech`, `spawn_unit`, `set_unit`, `set_unit_ready`, `found_city`, `place_building`, `add_population`, `set_unit_hp`, `set_tile`, `set_city_level`, `add_embassy`, `make_peace`, `set_met` | setting up a position (`src/oracle/scenarios.py`, tests) |
 | `city_income(city)`, `embassy_income(p)`, `at_peace(a, b)` | |
 
 The state classes are read-only:
 
-- **`Tile`:** `terrain`, `resource`, `building`, `level`, `road`, `unit` (an index into the internal unit list, or -1), `territory`, `climate` (a tribe as an int, -1 if none), `explored_by(p)`.
+- **`Tile`:** `terrain`, `resource`, `building`, `level`, `road`, `road_builder` (-1 if the map started with it), `unit` (an index into the internal unit list, or -1), `territory`, `climate` (a tribe as an int, -1 if none), `explored_by(p)`.
 - **`Unit`:** `type`, `passenger` (what a boat carries), `owner`, `tile`, `hp`, `max_hp`, `home`, `kills`, `veteran`, `alive`, `hidden`, `can_move`, `can_attack`, `can_act`, `facing` (the game's directions SW, W, NW, N, NE, E, SE, S).
 - **`City`:** `tile`, `owner`, `level`, `population`, `capital_of`, `connected_for`, `pending_rewards`, `parks`, `workshop`, `wall`.
 - **`Player`:** `tribe`, `stars`, `capital`, `alive`, `kills`, `lighthouses_found`, `techs`, `tasks_done`, `monuments_built` (lists), `has_met(p)`, `has_embassy_with(p)`, `cooling_down_with(p)` (p broke peace with them and can't be attacked yet).
@@ -160,7 +162,7 @@ What the player knows. `everything=True` ignores fog.
 
 | | |
 | --- | --- |
-| `plane_count`, `global_count`, `action_count` | C, G and A (100, 133 and 26,410 for 11×11, 1v1) |
+| `plane_count`, `global_count`, `action_count` | C, G and A |
 | `encode_state(game, player)` | `(planes, globals)`: float32 `[C, N, N]` and `[G]`, from what the player knows |
 | `encode_states(games, players)` | a batch: `[B, C, N, N]` and `[B, G]`, encoded in C++ without the GIL |
 | `legal_mask(game)`, `legal_masks(games)` | uint8 `[A]` or `[B, A]`: 1 for each legal command's slot |
@@ -197,12 +199,16 @@ game.apply(enc.decode_command(game, index))
 | `RandomBot(seed=0)` | `choose(game)` → one command; `play_turn(game, max_commands=200)` → the commands it played |
 | `play_random_games(games, tribes, type=LAKES, size=14, seed=0, max_turns=100)` | plays random games on generated maps, entirely in C++; returns `(winner, turns)` for each, with winner -1 if the turn limit came first |
 | `SearchConfig()`, `search_config(**fields)` | a search's settings, the C++ struct's fields in snake_case (`simulations`, `samples`, `horizon`, `gumbel`, `turn_search`, ...), defaults as in `search.h`; `copy()` |
-| `SelfPlayConfig()`, `self_play_config(**fields)` | self-play's or a match's settings (`selfPlay.h`): `search`, per-side `side_search`, `max_turns`, `fog_share`, `sides`, handicaps, ...; `self_play_config` takes `search` as a `SearchConfig` or a dict of its fields |
+| `SelfPlayConfig()`, `self_play_config(**fields)` | self-play's or a match's settings (`selfPlay.h`): `search`, per-side `side_search`, `max_turns`, `fog_share`, `sides`, handicaps, `failures_path` (where a game whose search fails is saved), ...; `self_play_config` takes `search` as a `SearchConfig` or a dict of its fields |
 | `configure(settings, **fields)` | sets fields on either, refusing names it doesn't have (a typo is an error, not a silently ignored setting) |
 | `search(game, encoding, evaluate, search, network_beliefs=True, seed=0)` | one search for the player to move, as the CLI's bot does; `(moves, visits, values, priors, chosen, leaves)` |
+| `search_positions(game, encoding, evaluate, search, network_beliefs=True, seed=0)` | the same search, returning how many nodes it made and how many distinct positions they hold, within the searcher's turn and in all (for measuring transpositions) |
 | `play_games(config, count, seed=0, threads=1)`, `SelfPlaySession(config, parallel, games, seed=0)`, `run_cli(args, encoding, evaluate, search, ...)` | self-play with the score evaluator, self-play driven by a network, and the terminal game with the bot: each takes the settings objects above |
+| `GameRecord` | a finished game: its start, commands, result and the search's visits per move; `seat_zero_side` is the side that played seat 0 in a match |
+| `save_records(records, path)`, `load_records(path)`, `records_to_text`, `records_from_text` | records to and from the run's text format |
+| `thin_policy_targets(records, share)`, `keep_side_policy_targets(records, side)` | copies keeping the search's visits (what makes a move a training position) on a random share of moves, or on one side's only |
 
-Every entry point takes these objects rather than settings one by one, so a new setting is a field in the C++ struct and a line in the bindings. The training tools' search flags (`--simulations`, `--samples`, `--horizon`, `--exploration`, `--gumbel`, `--gumbel-candidates`, `--score-utility`, `--win-sooner`, `--turn-search`, `--replies`, `--backup`, `--evaluations`) are defined once, in `stocknavalon/settings.py`. `--turn-search` takes `off` or a number, once for every side or once per side (`versus`: A then B; `stocknavalon.play`: per seat; `searches.py` likewise for its pair).
+Every entry point takes these objects rather than settings one by one, so a new setting is a field in the C++ struct and a line in the bindings. The training tools' search flags (`--simulations`, `--samples`, `--horizon`, `--exploration`, `--gumbel`, `--gumbel-candidates`, `--score-utility`, `--win-sooner`, `--turn-search`, `--replies`, `--backup`, `--evaluations`) are defined once, in `stocknavalon/settings.py`. `--turn-search` takes `off` or a number; it, `--replies` and `--backup` take one value for every side or one per side (`versus` and `searches`: A then B; `stocknavalon.play`: per seat).
 
 ## Speed
 
