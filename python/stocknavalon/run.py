@@ -339,10 +339,11 @@ def parser() -> argparse.ArgumentParser:
                         "against the current best; the rest go evenly to the others")
     p.add_argument("--gate-games-trained", type=float, default=1.0,
                    help="the share of a gate's games added to training: only the "
-                        "candidate's moves (the opponents' are older networks'), "
-                        "thinned to self-play's --full-share, since every move had "
-                        "a full search without noise. A gate is a few percent of "
-                        "self-play's games between gates")
+                        "better side's moves (the candidate's if it passed, else the "
+                        "best's, in its games against the candidate), thinned to "
+                        "self-play's --full-share, since every move had a full search "
+                        "without noise. A gate is a few percent of self-play's games "
+                        "between gates")
     p.add_argument("--gate-max-minutes", type=float, default=30.0,
                    help="a gate's time limit, like --eval-max-minutes; games "
                         "still going then count for neither side")
@@ -513,6 +514,14 @@ def parser() -> argparse.ArgumentParser:
                         "of training, for the held-out loss")
     p.add_argument("--minutes", type=float, default=float("inf"),
                    help="stop after this long")
+    p.add_argument("--promote", action=argparse.BooleanOptionalAction, default=True,
+                   help="a gate the candidate passes replaces the best network; "
+                        "--no-promote keeps the starting best throughout (every gate "
+                        "against it, self-play with it) and plays every gate's games "
+                        "in full, for a controlled run")
+    p.add_argument("--stop-after-gates", type=int, default=0,
+                   help="stop once this many gates have given a verdict (0: never), "
+                        "for a short controlled run")
     return p
 
 
@@ -608,12 +617,19 @@ def main():
         if any(k.startswith(NEWER_HEADS) for k in fresh):
             # the average's new heads would start from other random weights
             trainer.ema.load_state_dict(model.state_dict())
-    elif args.init:
-        state = torch.load(args.init, map_location=device)
+    elif args.init or os.path.exists(os.path.join(args.dir, "best.pt")):
+        # --init's weights; or, a run with a best network but no checkpoint
+        # (stopped before its first), from that best network rather than a
+        # random one that self-play's best would then have to wait out
+        source = args.init or os.path.join(args.dir, "best.pt")
+        state = torch.load(source, map_location=device)
         load_weights(model, state["model"])
         trainer.ema.load_state_dict(model.state_dict())
         trainer.steps = state.get("steps", 0)
         initialized = True
+        if not args.init:
+            log(args.dir, {"event": "started from the best network", "steps": trainer.steps,
+                           "reason": "no checkpoint"})
 
     # The city term fades with this run's training steps alone: nothing it
     # affects can bring it back, so it can't loop
@@ -775,6 +791,8 @@ def main():
                 raise player.error
             if evaluator.error is not None:
                 raise evaluator.error
+            if args.stop_after_gates and evaluator.gates_done >= args.stop_after_gates:
+                break
             now = time.perf_counter()
             # the throttle: no more samples than `reuse` per position added,
             # after a new run's warm start on the bootstrap buffer
@@ -860,6 +878,11 @@ def main():
                 last_checkpoint = now
     except KeyboardInterrupt:
         log(args.dir, {"event": "stopping"})
+    except Exception as e:
+        # in the log as well as on the terminal: what stopped the run
+        log(args.dir, {"event": "error", "steps": trainer.steps, "error": str(e),
+                       "traceback": traceback.format_exc()})
+        raise
     finally:
         player.stop.set()
         evaluator.stop.set()
@@ -1141,6 +1164,8 @@ class EvaluationThread(threading.Thread):
         # set while anchor matches are being played
         self.busy = threading.Event()
         self.error = None
+        # gates that have given a verdict (--stop-after-gates)
+        self.gates_done = 0
         self._lock = threading.Lock()
         self._gate = None
         self._anchors = None
@@ -1193,13 +1218,13 @@ class EvaluationThread(threading.Thread):
                      network_beliefs=self.args.network_beliefs and self.fog_share() > 0,
                      peace_treaties=self.args.peace_treaties,
                      threads=self.args.session_threads,
-                     # a gate's games train the candidate's moves only
-                     train_sides=(True, False) if gate else (True, True),
+                     # both sides' moves recorded; a gate keeps the winner's
+                     train_sides=(True, True),
                      # a gate's part (several opponents) stops on its own
                      # share of the decided games and the time
                      settled=(gate_settled(self.args.gate_threshold,
                                            max(2, round(self.args.gate_min_decided * share)))
-                              if gate else None),
+                              if gate and self.args.promote else None),
                      seed=steps if seed is None else seed, gpu_lock=self.gpu_lock,
                      progress=report, progress_seconds=120 if gate else 30,
                      max_minutes=(self.args.gate_max_minutes * share if gate
@@ -1228,11 +1253,13 @@ class EvaluationThread(threading.Thread):
                             **({"opponents": [s for s, _ in opponents]}
                                if len(opponents) > 1 else {})})
         games: list[pe.GameRecord] = []
+        against_best = 0  # how many of them are against the best (first)
         candidate = self.network(weights)
         if len(opponents) == 1:
             result = self._match(candidate, self.network(self.best["model"]),
                                  f"best {best_steps}", steps, self.args.gate_games,
                                  fog_share=self.fog_share(), gate=True, keep=games)
+            against_best = len(games)
         else:
             # the same games, split among the opponents; judged on the total
             result = {"games": 0, "captures": 0, "was_captured": 0, "seconds": 0,
@@ -1244,26 +1271,36 @@ class EvaluationThread(threading.Thread):
                                    f"{'best' if k == 0 else 'step'} {against}", steps, count,
                                    fog_share=self.fog_share(), gate=True, keep=games,
                                    share=count / self.args.gate_games, seed=steps + k)
+                if k == 0:
+                    against_best = len(games)
                 log(self.args.dir, {"event": "gate match", "steps": steps,
                                     "against": against, **part})
                 for key in ("games", "captures", "was_captured", "seconds"):
                     result[key] += part[key]
                 result["opponents"][str(against)] = [part["captures"], part["was_captured"]]
-        # a share of them (by default all), the candidate's moves only, at
-        # self-play's density of training positions
+        verdict = gate_verdict(result, self.args.gate_threshold,
+                               self.args.gate_min_decided)
+        # A share of them (by default all), the better side's moves only, at
+        # self-play's density of training positions: the candidate's if it
+        # passed, else the best's, in its own games (not the older bests',
+        # which it beat): a failing candidate's own moves would feed its
+        # mistakes back into it.
+        passed = verdict == "pass"
+        source = games if passed else games[:against_best]
         rng = np.random.default_rng(steps)
-        kept = [games[i] for i in sorted(rng.choice(
-            len(games), size=round(self.args.gate_games_trained * len(games)),
-            replace=False))] if games else []
+        kept = [source[i] for i in sorted(rng.choice(
+            len(source), size=round(self.args.gate_games_trained * len(source)),
+            replace=False))] if source else []
+        kept = pe.keep_side_policy_targets(kept, 0 if passed else 1)
         kept = pe.thin_policy_targets(kept, self.args.full_share, steps)
         self.on_games(kept)
         result["games_trained_on"] = len(kept)
-        verdict = gate_verdict(result, self.args.gate_threshold,
-                               self.args.gate_min_decided)
+        result["trained_side"] = "candidate" if passed else "best"
         self.on_gate(verdict)
         log(self.args.dir, {"event": "gate", "steps": steps, "best": best_steps,
                             "verdict": verdict, **result})
-        if verdict == "pass":
+        self.gates_done += 1
+        if verdict == "pass" and self.args.promote:
             self.best = {"model": weights, "steps": steps}
             torch.save(self.best, self.best_path + ".tmp")
             os.replace(self.best_path + ".tmp", self.best_path)

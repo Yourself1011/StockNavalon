@@ -140,6 +140,7 @@ uv pip install --python .venv/bin/python --no-build-isolation -e ".[train]"
 .venv/bin/python -m stocknavalon.searches runs/NAME  # Gumbel search against PUCT, same network
 .venv/bin/python -m stocknavalon.versus runs/NAME    # the training network's average against the best, a full match
 .venv/bin/python -m stocknavalon.diagnose runs/NAME  # the economy checks: villages, ruins, ports, bridges, idle units
+.venv/bin/python -m stocknavalon.losses MATCH.txt     # how each side lost the games of a match saved with versus --save
 .venv/bin/python -m stocknavalon.offline --dir runs/NAME --sizes 64x6 128x10  # network sizes trained offline on the run's games, compared
 .venv/bin/python -m stocknavalon.run --dir runs/NAME
 ```

@@ -852,7 +852,8 @@ void bindConfigs(nb::module_ &m) {
         .def_rw("catch_up_from_turn", &SelfPlayConfig::catchUpFromTurn)
         .def_rw("catch_up_below", &SelfPlayConfig::catchUpBelow)
         .def_rw("trailing_search_factor", &SelfPlayConfig::trailingSearchFactor)
-        .def_rw("explore_candidates", &SelfPlayConfig::exploreCandidates);
+        .def_rw("explore_candidates", &SelfPlayConfig::exploreCandidates)
+        .def_rw("failures_path", &SelfPlayConfig::failuresPath);
 }
 
 void bindSearch(nb::module_ &m) {
@@ -1369,6 +1370,15 @@ void bindSearch(nb::module_ &m) {
         "Copies of the records keeping the search's visits (the policy "
         "target, and what makes a move a training position) on a random "
         "share of their moves: a match's games at self-play's density.");
+    m.def(
+        "keep_side_policy_targets",
+        [](std::vector<GameRecord> records, int side) {
+            keepSidePolicyTargets(records, side);
+            return records;
+        },
+        "records"_a, "side"_a,
+        "Copies of a match's records with the search's visits (the policy target, "
+        "and what makes a move a training position) only on `side`'s moves (0 or 1).");
     m.def(
         "run_cli",
         [](std::vector<std::string> args, const EncodingConfig &encoding,

@@ -605,8 +605,12 @@ void Game::applyUnchecked(const Command &command) {
         case STAY:
         case CAPTURE:
         case EXAMINERUINS:
-        case HARVEST:
             units[actor].attacked = true;
+            break;
+        case HARVEST:
+            if (settings.follows(RuleVersions::SPENT_UNITS_ATTACKED)) {
+                units[actor].attacked = true;
+            }
             break;
         default:
             break;

@@ -222,7 +222,7 @@ TEST_CASE("a hidden unit the player was warned of is resampled next to the warni
 TEST_CASE("an enemy in the fog whose zone of control the player's moves show is placed there") {
     // player 0 has explored x, y <= 4, and the Rider at (4,0) the tiles around
     // it; water at (3,1) leaves it one way south, past (4,1), beside the
-    // Warrior at (5,2) in the fog (a draw making (5,2) water is turned down)
+    // Warrior at (5,2) in the fog, the only tile a blocker could be on
     Game real = makeFogGame(bigMap({"3 1 W"}));
     clearUnits(real);
     int rider = addUnit(real, 0, UnitTypes::RIDER, 4, 0);
@@ -237,13 +237,89 @@ TEST_CASE("an enemy in the fog whose zone of control the player's moves show is 
     REQUIRE_FALSE(reaches(real, 4, 2));
 
     Beliefs beliefs = priorBeliefs(makeView(real, 0));
+    DeterminizeStats stats;
     for (std::uint64_t seed = 0; seed < 20; seed++) {
         std::optional<Game> sample =
-            determinize(real, 0, beliefs, seed, Detail::TILES_AND_UNITS);
+            determinize(real, 0, beliefs, seed, Detail::TILES_AND_UNITS, 20, &stats);
         REQUIRE(sample);
         checkInvariants(*sample);
         CHECK_FALSE(reaches(*sample, 4, 2));
+        // one of theirs can stand there: a draw that made it water or a
+        // mountain made it a field instead
+        CHECK(sample->unitAt(sample->index(5, 2)));
     }
+    CHECK(stats.rejected == 0);
+
+    // beliefs that (5,2) is likely a mountain: where the sample gives them
+    // no Climbing, its terrain is drawn again from the ones a unit of theirs
+    // can stand on, by the same beliefs, so a forest (never a field)
+    const int tiles = real.size * real.size;
+    beliefs.terrain.assign(tiles, {});
+    beliefs.resource.assign(tiles, {});
+    beliefs.feature.assign(tiles, {});
+    for (int t = 0; t < tiles; t++) {
+        beliefs.terrain[t][TerrainTypes::FIELD] = 1;
+        beliefs.resource[t][ResourceTypes::NONE] = 1;
+        beliefs.feature[t][static_cast<int>(TileFeature::NONE)] = 1;
+    }
+    beliefs.terrain[real.index(5, 2)] = {};
+    beliefs.terrain[real.index(5, 2)][TerrainTypes::MOUNTAIN] = 0.9f;
+    beliefs.terrain[real.index(5, 2)][TerrainTypes::FOREST] = 0.1f;
+    int forests = 0;
+    for (std::uint64_t seed = 0; seed < 20; seed++) {
+        std::optional<Game> sample =
+            determinize(real, 0, beliefs, seed, Detail::TILES_AND_UNITS, 1);
+        REQUIRE(sample);
+        TerrainTypes::TerrainType terrain = sample->tiles[sample->index(5, 2)].terrain;
+        if (sample->players[1].hasTech(TechTypes::CLIMBING)) {
+            CHECK((terrain == TerrainTypes::MOUNTAIN || terrain == TerrainTypes::FOREST));
+        } else {
+            CHECK(terrain == TerrainTypes::FOREST);
+            forests++;
+        }
+        CHECK(sample->unitAt(sample->index(5, 2)));
+    }
+    CHECK(forests > 0);
+}
+
+TEST_CASE("two enemies in the fog that block a tile only together are placed together") {
+    // mountains leave the Rider at (5,5) two ways to (5,7): past (4,6),
+    // beside a Warrior at (3,6), or past (6,6), beside one at (7,6); both
+    // in the fog. Either alone leaves the other way open
+    std::vector<std::string> mountains;
+    for (auto [x, y] : std::vector<std::pair<int, int>>{
+             {4, 4}, {5, 4}, {6, 4}, {4, 5}, {6, 5}, {5, 6}, {3, 5}, {3, 7}, {4, 7},
+             {7, 5}, {7, 7}, {6, 7}}) {
+        mountains.push_back(std::to_string(x) + " " + std::to_string(y) + " M");
+    }
+    Game real = makeGame(bigMap(mountains));
+    clearUnits(real);
+    int rider = addUnit(real, 0, UnitTypes::RIDER, 5, 5);
+    for (auto [x, y] : std::vector<std::pair<int, int>>{{3, 6}, {7, 6}}) {
+        addUnit(real, 1, UnitTypes::WARRIOR, x, y);
+        real.tiles[real.index(x, y)].explored &= ~std::uint32_t{1};
+    }
+    auto reaches = [&](const Game &g, int x, int y) {
+        std::vector<int> t = g.moveTargets(g.tiles[real.units[rider].tile].unit);
+        return std::find(t.begin(), t.end(), g.index(x, y)) != t.end();
+    };
+    REQUIRE_FALSE(reaches(real, 5, 7));
+    Game one = real;
+    one.units[one.tiles[one.index(7, 6)].unit].alive = false;
+    one.tiles[one.index(7, 6)].unit = -1;
+    REQUIRE(reaches(one, 5, 7));
+
+    Beliefs beliefs = priorBeliefs(makeView(real, 0));
+    DeterminizeStats stats;
+    for (std::uint64_t seed = 0; seed < 20; seed++) {
+        std::optional<Game> sample =
+            determinize(real, 0, beliefs, seed, Detail::TILES_AND_UNITS, 20, &stats);
+        REQUIRE(sample);
+        CHECK_FALSE(reaches(*sample, 5, 7));
+        CHECK(sample->unitAt(sample->index(3, 6)));
+        CHECK(sample->unitAt(sample->index(7, 6)));
+    }
+    CHECK(stats.rejected == 0);
 }
 
 TEST_CASE("only what nothing else explains proves a tech") {

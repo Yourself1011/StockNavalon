@@ -69,6 +69,8 @@ def self_play_settings(args: argparse.Namespace, fog_share: float) -> pe.SelfPla
         catch_up_below=args.catch_up_below,
         trailing_search_factor=args.trailing_search_factor,
         explore_candidates=args.explore_candidates,
+        # a game whose search found nothing to do, to replay
+        failures_path=os.path.join(args.dir, "failures.txt") if getattr(args, "dir", None) else "",
     )
 
 

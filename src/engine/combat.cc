@@ -277,7 +277,7 @@ void Game::convert(int unitIdx, int targetIdx) {
     target.passengerHome = target.home;
     target.canMove = target.canAttack = target.canAct = false;
     // spent, as the game's new units are (an upgrade gives it no attack)
-    target.attacked = settings.follows(RuleVersions::ACTIONS_SET_ATTACKED);
+    target.attacked = settings.follows(RuleVersions::SPENT_UNITS_ATTACKED);
     target.hidden = false;
     revealForUnit(targetIdx);
     unit.canAttack = false;

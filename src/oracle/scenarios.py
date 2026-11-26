@@ -450,8 +450,49 @@ def infiltrations(rng):
     return setup, favouring(kind("AttackCommand", "CaptureCommand", "MoveCommand"), 0.9)
 
 
+def upgrades(rng):
+    """A Warrior beside its own port with an enemy in reach of the port:
+    embarking, upgrading and attacking in the same turn."""
+    def setup(real, game, seat_of):
+        both = Both(real, game, seat_of)
+        seat = game.current_player
+        for tech in ("Fishing", "Sailing", "Ramming"):
+            both.tech(seat, tech)
+        both.stars(seat, 60)
+        x0, y0 = capital(game, seat)
+        land = (pe.TerrainType.FIELD, pe.TerrainType.FOREST)
+        water = (pe.TerrainType.WATER,)
+        for wx, wy in neighbours(game, x0, y0, water):
+            if game.tile_owner(both.tile(wx, wy)) != seat:
+                continue
+            shore = [p for p in neighbours(game, wx, wy, land) if game.tiles[both.tile(*p)].unit < 0]
+            near = [p for p in neighbours(game, wx, wy, land + water)
+                    if game.tiles[both.tile(*p)].unit < 0 and p not in shore[:1]]
+            if not shore or not near:
+                continue
+            both.build(seat, "Port", wx, wy)
+            both.unit(seat, "Warrior", *shore[0], ready=True)
+            both.unit(1 - seat, "Warrior", *near[0])
+            port.append((wx, wy))
+            break
+    port = []
+
+    def choose(rng_, legal):
+        # onto the port, upgrade at once, then attack if the game allows it
+        def at(c, key):
+            return port and (c[key]["x"], c[key]["y"]) == port[0]
+        for liked in (lambda c: c["$type"] == "UpgradeCommand",
+                      lambda c: c["$type"] == "AttackCommand",
+                      lambda c: c["$type"] == "MoveCommand" and at(c, "To")):
+            found = [i for i, c in enumerate(legal) if liked(c)]
+            if found:
+                return rng_.choice(found)
+        return mirror.random_choice(rng_, legal)
+    return setup, choose
+
+
 SCENARIOS = {f.__name__: f for f in (starvation, embassies, pushes, fights, stomps, boats, ports,
-                                     connections, kills, portkills, cloaks, infiltrations)}
+                                     connections, kills, portkills, cloaks, infiltrations, upgrades)}
 
 
 def main():

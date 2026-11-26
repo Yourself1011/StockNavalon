@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -104,6 +105,9 @@ struct SelfPlayConfig {
     // on full searches only, this many of the root's Gumbel candidates are
     // random legal moves (SearchConfig::exploreCandidates)
     int exploreCandidates = 2;
+    // If set, a game whose search finds nothing to do (BatchedSearch::result
+    // throws) is appended here as its record so far, to replay the position
+    std::string failuresPath;
     // per side, a forced plan (plans.h) for planTurns turns: from the start,
     // or with planWhenAhead (not NaN) from the side's first decision with its
     // own search value at least that (its previous one's, a network side's).

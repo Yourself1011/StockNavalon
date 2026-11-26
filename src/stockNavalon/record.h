@@ -134,6 +134,11 @@ struct GameRecord {
 void thinPolicyTargets(std::vector<GameRecord> &records, double share,
                        std::uint64_t seed);
 
+// Drops the search's visits on every move but those of `side` (0 or 1, by
+// seatZeroSide): of a match's games, only one side's moves to train on. The
+// other seat is marked as an opponent pool game's is (poolOpponentSeat).
+void keepSidePolicyTargets(std::vector<GameRecord> &records, int side);
+
 // Records as text, one game after another; appends to the file, or replaces it
 void saveRecords(const std::vector<GameRecord> &records, const std::string &path,
                  bool append = true);

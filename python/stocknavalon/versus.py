@@ -106,6 +106,8 @@ def main():
     parser.add_argument("--dtype", default="float16", choices=sorted(DTYPES))
     parser.add_argument("--channels", type=int, default=64)
     parser.add_argument("--blocks", type=int, default=6)
+    parser.add_argument("--save", help="write the games here, as records (side A's seat "
+                                       "in each is seat_zero_side's), to look at them")
     args = parser.parse_args()
 
     a, b = args.a, args.b
@@ -133,6 +135,9 @@ def main():
                    finish_share=1.0, max_minutes=1e9, keep=records)
 
     clear_progress()
+    if args.save:
+        pe.save_records(records, args.save, append=False)
+        print(f"games saved to {args.save}")
     won, lost = result["captures"], result["was_captured"]
     print(f"\nfull match, {result['games']} games to turn {args.max_turns}, "
           f"{result['seconds'] / 60:.0f} min:")

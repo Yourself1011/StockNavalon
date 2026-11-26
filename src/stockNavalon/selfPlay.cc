@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -369,7 +370,20 @@ void SelfPlaySession::advance(Slot &slot) {
             return;
         }
         // the decision is made: play it and record it
-        SearchResult result = slot.search->result(0);
+        SearchResult result;
+        try {
+            result = slot.search->result(0);
+        } catch (const std::runtime_error &e) {
+            if (config.failuresPath.empty()) {
+                throw;
+            }
+            static std::mutex saving;
+            std::lock_guard<std::mutex> lock(saving);
+            saveRecords({slot.record}, config.failuresPath);
+            throw std::runtime_error(std::string(e.what()) + "; the game so far is the last record in " +
+                                     config.failuresPath + " (its " +
+                                     std::to_string(slot.record.moves.size()) + " moves)");
+        }
         {
             std::lock_guard<std::mutex> lock(depthMutex);
             depth[slot.side] += slot.search->takeDepthStats();

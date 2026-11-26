@@ -752,36 +752,145 @@ std::optional<Game> sample(const Game &real, int player,
         std::vector<float> where(tiles, 0);
         std::vector<int> option(tiles, -1), after(tiles, -1);
         std::vector<std::vector<Option>> found(tiles);
+        // one that exerts zone of control: not hidden
+        auto blockers = [&](int t) {
+            std::vector<Option> out = options(t, false);
+            std::erase_if(out, [](const Option &o) {
+                return unitInfo(o.type).abilities.test(Abilities::HIDE);
+            });
+            return out;
+        };
+        // A tile none of theirs could stand on as sampled (a mountain
+        // without Climbing, water without a boat) gets its terrain drawn
+        // again, from the beliefs, among those one of theirs could stand on
+        // that agree with what the player knows (a shore, a feature): the
+        // player's moves prove someone there
+        std::vector<std::optional<Tile>> redrawn(tiles);
+        auto redraw = [&](int t) -> std::optional<Tile> {
+            using namespace TerrainTypes;
+            const Tile before = g.tiles[t];
+            int land = view.tiles[t].knownLand;
+            // (a city or lighthouse keeps its own)
+            if (before.building != ImprovementTypes::NONE && before.building != ImprovementTypes::VILLAGE &&
+                before.building != ImprovementTypes::RUIN) {
+                return std::nullopt;
+            }
+            std::vector<int> standable;
+            std::vector<float> weights;
+            for (int k = 0; k < TERRAIN_TYPE_SIZE; k++) {
+                auto terrain = static_cast<TerrainType>(k);
+                if ((land >= 0 && land == isWater(terrain)) ||
+                    (before.building == ImprovementTypes::VILLAGE && terrain != FIELD) ||
+                    (before.building == ImprovementTypes::RUIN && terrain == WATER)) {
+                    continue;
+                }
+                g.tiles[t].terrain = terrain;
+                if (!blockers(t).empty()) {
+                    standable.push_back(k);
+                    weights.push_back(beliefs.terrain.empty() ? 1.0f : beliefs.terrain[t][k]);
+                }
+            }
+            g.tiles[t] = before;
+            if (standable.empty()) {
+                return std::nullopt;
+            }
+            // the beliefs ruling all of them out: any of them, evenly
+            int i = pick(weights, rng);
+            int k = standable[i >= 0 ? i : static_cast<int>(rng() % standable.size())];
+            Tile tile = before;
+            tile.terrain = static_cast<TerrainType>(k);
+            // a resource that fits it, from the beliefs (a village has none)
+            std::array<float, ResourceTypes::RESOURCE_TYPE_SIZE> resource{};
+            if (!beliefs.resource.empty() && before.building != ImprovementTypes::VILLAGE) {
+                resource = beliefs.resource[t];
+            }
+            for (int r = 0; r < ResourceTypes::RESOURCE_TYPE_SIZE; r++) {
+                if (!resourceFitsTerrain(static_cast<ResourceTypes::ResourceType>(r), tile.terrain)) {
+                    resource[r] = 0;
+                }
+            }
+            int r = pick(resource, rng);
+            tile.resource = r >= 0 ? static_cast<ResourceTypes::ResourceType>(r) : ResourceTypes::NONE;
+            return tile;
+        };
+        // the candidates, each with the unit tried there
+        std::vector<int> candidates, tried(tiles, -1);
         for (int t = 0; t < tiles; t++) {
             if (known(t) || g.tiles[t].unit >= 0 || !beside(t)) {
                 continue;
             }
-            // one that exerts zone of control: not hidden
-            found[t] = options(t, false);
-            std::erase_if(found[t], [](const Option &o) {
-                return unitInfo(o.type).abilities.test(Abilities::HIDE);
-            });
+            found[t] = blockers(t);
+            const Tile before = g.tiles[t];
+            if (found[t].empty() && (redrawn[t] = redraw(t))) {
+                g.tiles[t] = *redrawn[t];
+                found[t] = blockers(t);
+            }
             int i = pickOption(found[t]);
-            if (i < 0) {
-                continue;
+            if (i >= 0) {
+                candidates.push_back(t);
+                tried[t] = i;
+                place(t, found[t][i]);
+                int left = excess();
+                g.units.pop_back();
+                g.tiles[t].unit = -1;
+                if (left >= 0 && left < more) {
+                    option[t] = i;
+                    after[t] = left;
+                    where[t] = std::max(b.unitHere.at(t), 0.01f);
+                }
+            }
+            g.tiles[t] = before;
+        }
+        auto settle = [&](int t, int i) {
+            if (redrawn[t]) {
+                g.tiles[t] = *redrawn[t];
             }
             place(t, found[t][i]);
-            int left = excess();
-            g.units.pop_back();
-            g.tiles[t].unit = -1;
-            if (left >= 0 && left < more) {
-                option[t] = i;
-                after[t] = left;
-                where[t] = std::max(b.unitHere.at(t), 0.01f);
+            placed++;
+        };
+        int at = pick(where, rng);
+        if (at >= 0) {
+            settle(at, option[at]);
+            more = after[at];
+            continue;
+        }
+        // No one alone takes a move away: a tile the player could reach two
+        // ways, each past a different unit of theirs. Two at once, then.
+        std::vector<std::pair<int, int>> pairs;
+        std::vector<float> pairWeights;
+        std::vector<int> pairLeft;
+        for (std::size_t x = 0; x < candidates.size(); x++) {
+            for (std::size_t y = x + 1; y < candidates.size(); y++) {
+                int t = candidates[x], u = candidates[y];
+                const Tile beforeT = g.tiles[t], beforeU = g.tiles[u];
+                for (int c : {t, u}) {
+                    if (redrawn[c]) {
+                        g.tiles[c] = *redrawn[c];
+                    }
+                    place(c, found[c][tried[c]]);
+                }
+                int left = excess();
+                for (int c : {u, t}) {
+                    g.units.pop_back();
+                    g.tiles[c].unit = -1;
+                }
+                g.tiles[t] = beforeT;
+                g.tiles[u] = beforeU;
+                if (left >= 0 && left < more) {
+                    pairs.push_back({t, u});
+                    pairLeft.push_back(left);
+                    pairWeights.push_back(std::max(b.unitHere.at(t), 0.01f) *
+                                          std::max(b.unitHere.at(u), 0.01f));
+                }
             }
         }
-        int at = pick(where, rng);
-        if (at < 0) {
+        int k = pick(pairWeights, rng);
+        if (k < 0) {
             return reject("no fog tile for the unit the player's moves show");
         }
-        place(at, found[at][option[at]]);
-        placed++;
-        more = after[at];
+        settle(pairs[k].first, tried[pairs[k].first]);
+        settle(pairs[k].second, tried[pairs[k].second]);
+        more = pairLeft[k];
     }
 
     // then the rest, in the fog, none taking away a move the player has

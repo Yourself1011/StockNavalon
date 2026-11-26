@@ -1370,6 +1370,12 @@ class SelfPlayConfig:
     @explore_candidates.setter
     def explore_candidates(self, arg: int, /) -> None: ...
 
+    @property
+    def failures_path(self) -> str: ...
+
+    @failures_path.setter
+    def failures_path(self, arg: str, /) -> None: ...
+
 class LegalMoves:
     """
     The current player's legal commands, updated one command at a time instead of regenerated. For search: keep one next to each Game, and apply commands through it. Always matches game.legal_commands() as a set, though not in the same order.
@@ -1708,6 +1714,11 @@ def thin_policy_targets(records: Sequence[GameRecord], share: float, seed: int =
     Copies of the records keeping the search's visits (the policy target, and what makes a move a training position) on a random share of their moves: a match's games at self-play's density.
     """
 
+def keep_side_policy_targets(records: Sequence[GameRecord], side: int) -> list[GameRecord]:
+    """
+    Copies of a match's records with the search's visits (the policy target, and what makes a move a training position) only on `side`'s moves (0 or 1).
+    """
+
 def run_cli(args: Sequence[str], encoding: Encoding, evaluate: Callable, search: SearchConfig, network_beliefs: bool = True, explain: bool = False, seat_search: Sequence[SearchConfig | None] = [], seat_plans: Sequence[str] = [], plan_turns: int = 20, plan_when_ahead: float = float('nan'), start: object | None = None, before_command: object | None = None, outside_seats: Sequence[int] = [], outside_turn: object | None = None) -> int:
     """
     The engine's terminal game (README "Run"), with the seats given by --bot in `args` played by the search, its positions evaluated by evaluate(planes, globals, rows, slots, belief_rows) -> (move logits, values, raw belief outputs of belief_rows or None), as with SelfPlaySession.submit_move_logits. With network_beliefs, each bot turn samples the hidden state from the network's beliefs (asked once per turn), else from the fixed priors. seat_search gives seats their own search (None, or seats past it: `search`); seat_plans their forced plans (plans.h: none, bridge, naval or convert) for plan_turns turns, from the start or (plan_when_ahead) once the seat's evaluation reaches it. With explain, each bot turn also lists its decisions: the command played and the search's leading moves, with priors, visits and values. For a game played alongside another (stocknavalon.play --crazy): start() returns the starting Game; before_command(game, command) is called before every command a person or a bot plays; outside_seats are played by outside_turn(game), which plays the turn on the game itself and returns its commands. Returns the exit code.
@@ -1733,7 +1744,7 @@ def play_random_games(games: int, tribes: Sequence[Tribe], type: MapType = MapTy
 
 ENCODING_VERSION: int = 16
 
-RULES_VERSION: int = 86
+RULES_VERSION: int = 87
 
 MAP_TYPE_COUNT: int = 6
 

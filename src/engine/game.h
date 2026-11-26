@@ -321,7 +321,13 @@ constexpr int TEMPLE_LEVEL_KEPT = 85;
 // them go, and they're at war (game: CaptureCityAction's RemoveEmbassies,
 // ModifyDiplomacyRelationsFromAttack)
 constexpr int CAPTURE_IS_ATTACK = 86;
-constexpr int LATEST = 86;
+// a new unit (trained, spawned, converted) counts as having attacked until
+// its owner's next turn (game: TrainUnit), and so does a boat that
+// harvests, so upgrading either to a Dash boat gives it no attack. Both
+// were gated by ACTIONS_SET_ATTACKED (68) when added, which changed games
+// recorded from 68 to 86: they replay without them.
+constexpr int SPENT_UNITS_ATTACKED = 87;
+constexpr int LATEST = 87;
 } // namespace RuleVersions
 
 struct GameSettings {

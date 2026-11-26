@@ -114,7 +114,7 @@ int Game::spawnUnit(int player, UnitTypes::UnitType type, int tile, int home) {
               .facing = Directions::nearest(size / 2 - tileX(tile), size / 2 - tileY(tile))};
     // made spent, moved and attacked (game: TrainUnit), until its owner's
     // next turn
-    unit.attacked = settings.follows(RuleVersions::ACTIONS_SET_ATTACKED);
+    unit.attacked = settings.follows(RuleVersions::SPENT_UNITS_ATTACKED);
     auto slot = std::find_if(units.begin(), units.end(),
                              [](const Unit &u) { return !u.alive; });
     int idx;

@@ -156,7 +156,8 @@ void writeRecords(std::ostream &out, const std::vector<GameRecord> &records) {
         for (const IncomeBonus &b : r.incomeBonuses) {
             out << ' ' << b.player << ' ' << b.fromTurn << ' ' << b.extra;
         }
-        out << ' ' << r.catchUp << ' ' << r.poolOpponentSeat << " rules " << r.rulesVersion;
+        out << ' ' << r.catchUp << ' ' << r.poolOpponentSeat << " rules " << r.rulesVersion
+            << " seat " << r.seatZeroSide;
         out << '\n' << r.moves.size() << '\n';
         for (const RecordedMove &m : r.moves) {
             out << m.player;
@@ -295,6 +296,10 @@ std::vector<GameRecord> readRecords(std::istream &in, const std::string &path) {
         if (std::string word; header >> word) {
             if (word == "rules") {
                 header >> r.rulesVersion;
+                // which side sat in seat 0, since it was saved (older: 0)
+                if (std::string next; header >> next && next == "seat") {
+                    header >> r.seatZeroSide;
+                }
             } else {
                 if (word == "1") {
                     r.rulesVersion = RuleVersions::UNSEEN_ZONE_OF_CONTROL;
@@ -511,6 +516,19 @@ void thinPolicyTargets(std::vector<GameRecord> &records, double share,
     for (GameRecord &r : records) {
         for (RecordedMove &m : r.moves) {
             if (!m.visits.empty() && !keep(rng)) {
+                m.visits.clear();
+            }
+        }
+    }
+}
+
+void keepSidePolicyTargets(std::vector<GameRecord> &records, int side) {
+    for (GameRecord &r : records) {
+        // seatZeroSide is the side in seat 0
+        int seat = side == r.seatZeroSide ? 0 : 1;
+        r.poolOpponentSeat = 1 - seat;
+        for (RecordedMove &m : r.moves) {
+            if (m.player != seat) {
                 m.visits.clear();
             }
         }

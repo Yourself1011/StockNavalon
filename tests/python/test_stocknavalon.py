@@ -543,15 +543,18 @@ def test_a_gate_against_several_bests_plays_each_and_judges_the_total(tmp_path):
     final = [e for e in entries if e["event"] == "gate"][-1]
     assert final["games"] == 8 and set(final["opponents"]) == {"10", "8", "6"}
     assert final["captures"] == sum(p["captures"] for p in parts)
-    # every gate game trains, the candidate's moves only
-    assert len(trained) == 8
+    # the better side's moves train: every game's candidate moves if it passed,
+    # else the best's in the games against it
+    passed = final["verdict"] == "pass"
+    assert len(trained) == (8 if passed else 4)
     for r in trained:
-        candidate = 0 if r.seat_zero_side == 0 else 1
-        assert r.pool_opponent_seat == 1 - candidate
+        side = 0 if passed else 1
+        seat = 0 if r.seat_zero_side == side else 1
+        assert r.pool_opponent_seat == 1 - seat
         searched, game = set(r.searched), r.start()
         for i, c in enumerate(r.commands):
             if i in searched:
-                assert game.current_player == candidate
+                assert game.current_player == seat
             game.apply(c)
     # threshold 0: it passes, and becomes the best
     assert verdicts == [final["verdict"]]

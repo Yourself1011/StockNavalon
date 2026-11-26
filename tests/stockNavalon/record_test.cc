@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <stdexcept>
 #include <sstream>
 #include <set>
 #include <tuple>
@@ -64,6 +65,7 @@ TEST_CASE("recorded games replay exactly, and survive a save and load") {
         CHECK(r.finalValues.empty());
     }
     records[0].finalValues = {0.25f, std::nanf("")};
+    records[0].seatZeroSide = 1;
 
     auto path = std::filesystem::temp_directory_path() / "stocknavalon_records_test.txt";
     std::filesystem::remove(path);
@@ -79,6 +81,7 @@ TEST_CASE("recorded games replay exactly, and survive a save and load") {
         CHECK(loaded[i].finalValues.size() == records[i].finalValues.size());
         CHECK(loaded[i].finalTerritory == records[i].finalTerritory);
         CHECK(loaded[i].turnScores == records[i].turnScores);
+        CHECK(loaded[i].seatZeroSide == records[i].seatZeroSide);
         CHECK(sameMoves(loaded[i], records[i]));
     }
     CHECK(loaded[0].finalValues[0] == doctest::Approx(0.25));
@@ -111,7 +114,8 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
         text = all.str();
     }
     std::size_t end = text.find('\n');
-    const std::string rules = " rules " + std::to_string(RuleVersions::LATEST);
+    const std::string rules = " rules " + std::to_string(RuleVersions::LATEST) + " seat " +
+                              std::to_string(records[0].seatZeroSide);
     const std::string header = " 1 1 0 0 0 1 0 0 0 0 -1" + rules;
     REQUIRE(text.compare(end - header.size(), header.size(), header) == 0);
     // the formats before: no version (the flags it has say version 2), and
@@ -131,7 +135,7 @@ TEST_CASE("a record saved before diplomacy introduced the sender replays without
         }
         CHECK(loadRecords(path.string()).at(0).rulesVersion == version);
     }
-    text.erase(end - 29, 29);
+    text.erase(end - 20 - rules.size(), 20 + rules.size());
     {
         std::ofstream out(path, std::ios::trunc);
         out << text;
@@ -1636,5 +1640,64 @@ TEST_CASE("opponent-pool games: only the current network's moves train, at eithe
         CHECK(loaded[g].poolOpponentSeat == records[g].poolOpponentSeat);
         // new records play by the current zone of control rule
         CHECK(loaded[g].rulesVersion == RuleVersions::LATEST);
+    }
+}
+
+TEST_CASE("a game whose search finds nothing to do is saved to replay it") {
+    // no samples: every search has nothing to choose from
+    SelfPlayConfig config;
+    config.search.simulations = 4;
+    config.search.samples = 0;
+    config.failuresPath = (std::filesystem::temp_directory_path() / "stocknavalon_failures.txt").string();
+    std::filesystem::remove(config.failuresPath);
+    SelfPlaySession session(config, 1, 1, 3);
+    ScoreEvaluator evaluator;
+    std::vector<Evaluation> results;
+    auto play = [&] {
+        while (!session.done()) {
+            const std::vector<EvalRequest> &requests = session.pending();
+            if (requests.empty()) {
+                break;
+            }
+            evaluator.evaluate(requests, results);
+            session.submit(results);
+        }
+    };
+    CHECK_THROWS_AS(play(), std::runtime_error);
+    std::vector<GameRecord> saved = loadRecords(config.failuresPath);
+    REQUIRE(saved.size() == 1);
+    Game game = saved[0].start();
+    for (const RecordedMove &m : saved[0].moves) {
+        game.apply(m.command);
+    }
+    CHECK_FALSE(game.gameOver());
+    std::filesystem::remove(config.failuresPath);
+}
+
+TEST_CASE("only one side's moves keep their policy targets, whichever seat it had") {
+    SelfPlayConfig config;
+    config.search.simulations = 4;
+    config.maxTurns = 3;
+    // every move a full search, so both sides have targets to keep
+    config.fullShare = 1.0;
+    std::vector<GameRecord> records = playGames(config, 2, 6, 1);
+    records[0].seatZeroSide = 0;
+    records[1].seatZeroSide = 1;
+    for (int side : {0, 1}) {
+        CAPTURE(side);
+        std::vector<GameRecord> kept = records;
+        keepSidePolicyTargets(kept, side);
+        for (const GameRecord &r : kept) {
+            int seat = side == r.seatZeroSide ? 0 : 1;
+            CHECK(r.poolOpponentSeat == 1 - seat);
+            int trained = 0;
+            for (const RecordedMove &m : r.moves) {
+                if (m.player != seat) {
+                    CHECK(m.visits.empty());
+                }
+                trained += !m.visits.empty();
+            }
+            CHECK(trained > 0);
+        }
     }
 }
